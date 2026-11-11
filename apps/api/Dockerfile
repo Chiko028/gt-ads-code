@@ -10,6 +10,21 @@ COPY apps/dashboard/package.json apps/dashboard/package.json
 
 RUN npm ci --workspace @gt-ads/api --include-workspace-root
 
+FROM node:22.23.4-bookworm-slim AS build
+
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
+COPY apps/api/package.json ./apps/api/package.json
+COPY apps/dashboard/package.json ./apps/dashboard/package.json
+
+# Quellen erst nach der Abhaengigkeitsschicht kopieren.
+COPY apps/api ./apps/api
+
+# Reproduzierbarer Build nach apps/api/dist inklusive SQL-Migrationen.
+RUN npm run build --workspace @gt-ads/api
+
 FROM node:22.23.4-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
@@ -18,8 +33,8 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
-COPY apps/api/package.json apps/api/package.json
-COPY apps/api ./apps/api
+COPY apps/api/package.json ./apps/api/package.json
+COPY --from=build /app/apps/api/dist ./apps/api/dist
 
 USER node
 

@@ -1,11 +1,27 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, extname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..", "..");
+
+const SECRET_PATTERNS = [
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
+  /\bsk-[A-Za-z0-9]{20,}\b/,
+];
 
 function readText(relativePath: string): string {
   return readFileSync(join(repoRoot, relativePath), "utf8");
@@ -39,8 +55,8 @@ function loadPackage(relativePath: string): PackageJson {
   return JSON.parse(readText(relativePath)) as PackageJson;
 }
 
-const collectFiles = (relativePath: string): string[] => {
-  const absolute = join(repoRoot, relativePath);
+const collectFiles = (path: string): string[] => {
+  const absolute = isAbsolute(path) ? path : join(repoRoot, path);
   if (!existsSync(absolute)) {
     return [];
   }
@@ -115,6 +131,35 @@ describe("U0 Compose-Check", () => {
       expect(image.endsWith(":latest")).toBe(false);
     }
   });
+
+  it("uebergibt die Pflichtgeheimnisse verpflichtend an den API-Container", () => {
+    const compose = loadCompose();
+    const environment = compose.services?.["api"]?.environment ?? {};
+
+    expect(environment.GT_ADS_CODE_PEPPER).toMatch(
+      /^\$\{GT_ADS_CODE_PEPPER:\?/,
+    );
+    expect(environment.GT_ADS_ADMIN_PASSWORD_HASH).toMatch(
+      /^\$\{GT_ADS_ADMIN_PASSWORD_HASH:\?/,
+    );
+  });
+
+  it("baut die API nach dist und uebernimmt das Artefakt ins Runtime-Image", () => {
+    const apiPackage = loadPackage("apps/api/package.json");
+    expect(apiPackage.scripts?.["build"]).toBeTruthy();
+    expect(existsSync(join(repoRoot, "apps/api/src/index.ts"))).toBe(true);
+
+    const buildConfig = JSON.parse(readText("apps/api/tsconfig.build.json")) as {
+      compilerOptions?: { noEmit?: boolean; outDir?: string; rootDir?: string };
+    };
+    expect(buildConfig.compilerOptions?.noEmit).toBe(false);
+    expect(buildConfig.compilerOptions?.outDir).toBe("dist");
+    expect(buildConfig.compilerOptions?.rootDir).toBe("src");
+
+    const dockerfile = readText("apps/api/Dockerfile");
+    expect(dockerfile).toMatch(/RUN npm run build --workspace @gt-ads\/api/);
+    expect(dockerfile).toMatch(/COPY --from=build \/app\/apps\/api\/dist/);
+  });
 });
 
 describe("U0 Secret-Check", () => {
@@ -147,19 +192,13 @@ describe("U0 Secret-Check", () => {
   });
 
   it("findet keine typischen Geheimnis-Muster im U0-Scope", () => {
-    const patterns = [
-      /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
-      /\bAKIA[0-9A-Z]{16}\b/,
-      /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
-      /\bsk-[A-Za-z0-9]{20,}\b/,
-    ];
     const roots = ["apps/api", "apps/dashboard", "infra/compose", ".env.example", "package.json"];
     const files = roots.flatMap((root) => collectFiles(root));
     const findings: string[] = [];
 
     for (const file of files) {
       const text = readFileSync(file, "utf8");
-      for (const pattern of patterns) {
+      for (const pattern of SECRET_PATTERNS) {
         if (pattern.test(text)) {
           findings.push(file + " passt auf " + pattern.source);
         }
@@ -167,6 +206,29 @@ describe("U0 Secret-Check", () => {
     }
 
     expect(findings).toEqual([]);
+  });
+
+  it("scannt auch verschachtelte Dateien (Regression: doppelter Repo-Praefix)", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "gt-ads-secret-scan-"));
+    try {
+      const nestedDirectory = join(tempRoot, "verschachtelt", "tiefer");
+      mkdirSync(nestedDirectory, { recursive: true });
+      const nestedFile = join(nestedDirectory, "synthetisch.txt");
+      // Synthetisches Muster, im Testquelltext absichtlich zusammengesetzt,
+      // damit der Secret-Scan diese Testdatei selbst nicht markiert.
+      const syntheticSecret = ["ghp", "A".repeat(24)].join("_");
+      writeFileSync(nestedFile, "token=" + syntheticSecret + "\n", "utf8");
+
+      const files = collectFiles(tempRoot);
+      expect(files).toContain(nestedFile);
+
+      const findings = files.filter((file) =>
+        SECRET_PATTERNS.some((pattern) => pattern.test(readFileSync(file, "utf8"))),
+      );
+      expect(findings).toContain(nestedFile);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });
 

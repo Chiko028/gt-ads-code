@@ -31,6 +31,22 @@ services:
       GT_ADS_BIND_HOST: "0.0.0.0"
       GT_ADS_PORT: "8080"
       GT_ADS_DB_URL: "postgres://${GT_ADS_DB_USER:-gt_ads}:${GT_ADS_DB_PASSWORD:?GT_ADS_DB_PASSWORD in infra/compose/.env setzen}@db:5432/${GT_ADS_DB_NAME:-gt_ads}"
+      # Pflichtgeheimnisse: ohne Wert in infra/compose/.env bricht Compose ab,
+      # statt einen Container ohne Startfreigabe zu erzeugen.
+      GT_ADS_CODE_PEPPER: "${GT_ADS_CODE_PEPPER:?GT_ADS_CODE_PEPPER in infra/compose/.env setzen}"
+      GT_ADS_ADMIN_PASSWORD_HASH: "${GT_ADS_ADMIN_PASSWORD_HASH:?GT_ADS_ADMIN_PASSWORD_HASH in infra/compose/.env setzen}"
+      # Uebrige API-Parameter mit den Standardwerten aus config.ts.
+      GT_ADS_REG_CODE_TTL_S: "${GT_ADS_REG_CODE_TTL_S:-900}"
+      GT_ADS_REG_CODE_LENGTH: "${GT_ADS_REG_CODE_LENGTH:-12}"
+      GT_ADS_REG_MAX_FAILS_PER_SOURCE: "${GT_ADS_REG_MAX_FAILS_PER_SOURCE:-5}"
+      GT_ADS_REG_MAX_FAILS_WINDOW_S: "${GT_ADS_REG_MAX_FAILS_WINDOW_S:-900}"
+      GT_ADS_REG_MAX_FAILS_GLOBAL_PER_H: "${GT_ADS_REG_MAX_FAILS_GLOBAL_PER_H:-30}"
+      GT_ADS_CHALLENGE_TTL_S: "${GT_ADS_CHALLENGE_TTL_S:-60}"
+      GT_ADS_ACCESS_TOKEN_TTL_S: "${GT_ADS_ACCESS_TOKEN_TTL_S:-900}"
+      GT_ADS_HEARTBEAT_INTERVAL_S: "${GT_ADS_HEARTBEAT_INTERVAL_S:-900}"
+      GT_ADS_ONLINE_THRESHOLD_S: "${GT_ADS_ONLINE_THRESHOLD_S:-1800}"
+      GT_ADS_ADMIN_SESSION_TTL_S: "${GT_ADS_ADMIN_SESSION_TTL_S:-3600}"
+      GT_ADS_COOKIE_SECURE: "${GT_ADS_COOKIE_SECURE:-false}"
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

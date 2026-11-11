@@ -10,8 +10,13 @@ sie ausschliesslich durch den Betreiber; der Coding-Agent fuehrt sie nicht aus.
 - Eine lokale Datei infra/compose/.env mit den noetigen Werten. Sie ist per
   .gitignore ausgeschlossen und wird **nicht** committet. Vorlage:
   .env.example im Repository-Wurzelverzeichnis.
-- Pflicht fuer den Start: GT_ADS_DB_PASSWORD muss in infra/compose/.env
-  gesetzt sein; ohne Wert bricht Compose mit einer Meldung ab.
+- Pflicht fuer den Start: GT_ADS_DB_PASSWORD, GT_ADS_CODE_PEPPER und
+  GT_ADS_ADMIN_PASSWORD_HASH muessen in infra/compose/.env gesetzt sein; ohne
+  Wert bricht Compose mit einer Meldung ab.
+- Den Admin-Passwort-Hash erzeugt `npm run -s hash-password -w @gt-ads/api`.
+  Der scrypt-Hash enthaelt `$`-Zeichen und muss in .env in einfachen
+  Anfuehrungszeichen stehen (zum Beispiel `GT_ADS_ADMIN_PASSWORD_HASH='scrypt$...'`),
+  damit Compose ihn nicht als Variablenreferenz interpretiert.
 
 ## Start und Stopp
 
@@ -21,6 +26,11 @@ Im Verzeichnis infra/compose:
     docker compose -f docker-compose.dev.yml ps
     docker compose -f docker-compose.dev.yml logs -f api
     docker compose -f docker-compose.dev.yml down
+
+Das API-Image kompiliert die TypeScript-Quellen im Build-Stage nach
+apps/api/dist und uebernimmt nur dieses Artefakt samt Node-Abhaengigkeiten in
+das Runtime-Image. Der Container startet `node apps/api/dist/index.js`;
+fehlende Pflichtgeheimnisse verweigern den Start bereits in config.ts.
 
 Zum vollstaendigen Loeschen der Dev-Daten (nur Dev-/Testdaten, kein
 Produktbezug):
@@ -40,6 +50,10 @@ Produktbezug):
 
 - GT_ADS_ENV=dev ist in der Compose-Datei fest gesetzt. prod ist nicht
   vorgesehen; der Server verweigert den Start ausserhalb von dev/test.
+- GT_ADS_CODE_PEPPER und GT_ADS_ADMIN_PASSWORD_HASH werden per Compose-
+  Interpolation an den API-Container uebergeben. Die uebrigen Parameter aus
+  .env.example werden ebenfalls weitergereicht; fehlen sie, gelten die
+  Standardwerte aus apps/api/src/config.ts.
 - Images sind auf konkrete Versionen gepinnt (kein latest):
   postgres:17.6-bookworm und node:22.23.4-bookworm-slim im API-Dockerfile.
 - Ressourcenlimits (Annahme aus ARCHITEKTUR §8): db 1 GB, api 512 MB.
