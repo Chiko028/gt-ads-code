@@ -1,0 +1,70 @@
+[Unit]
+Description=GT-Ads Coding-Runner (Warteschlange, Freigabe, Limits; Agent in rootless Podman)
+After=network-online.target gt-ads-egress-proxy.service
+Wants=network-online.target gt-ads-egress-proxy.service
+
+[Service]
+Type=simple
+User=occoder
+Group=occoder
+# Zugriffsgruppe fuer den Steuer-Socket: nur der OpenClaw-Dienst (Statusagent -> MCP-Bruecke) darf anfragen.
+SupplementaryGroups=openclaw
+RuntimeDirectory=gtads-runner
+RuntimeDirectoryMode=0711
+WorkingDirectory=/var/lib/occoder
+Environment=HOME=/var/lib/occoder
+Environment=XDG_RUNTIME_DIR=/run/user/OCCODER_UID
+Environment=PATH=/usr/bin:/bin
+LoadCredential=telegram_bot_token:/etc/gt-ads/runner-credentials/telegram_bot_token
+LoadCredential=deepseek_api_key:/etc/gt-ads/runner-credentials/deepseek_api_key
+LoadCredential=gemini_api_key:/etc/gt-ads/runner-credentials/gemini_api_key
+# -E -s statt -I: -I entfernt das Skriptverzeichnis aus dem Suchpfad (ModuleNotFoundError, Neustart-Schleife)
+# Rootless Podman tritt dem Namensraum eines vorhandenen Pause-Prozesses bei. Wurde der ausserhalb des Dienstes gestartet (z. B. durch
+# Pruef-/Installationsskripte), sieht Podman das echte /tmp statt des privaten /tmp dieses Dienstes und findet die Env-Datei von OpenClaw
+# nicht (2026-11-11: "container.env: permission denied"). Daher vor dem Start den Pause-Prozess beenden; der naechste Aufruf legt ihn im Dienst an.
+ExecStartPre=-/usr/bin/podman system migrate
+ExecStart=/usr/bin/python3 -E -s /opt/gt-ads/runner/runner_daemon.py /etc/gt-ads/runner.json
+# Pause-Prozess sofort IM Dienst anlegen, damit kein Skript ausserhalb (Pruefung/Installation als occoder) ihn zuerst anlegt.
+ExecStartPost=-/usr/bin/podman unshare true
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=60
+
+# Haertung, soweit rootless Podman sie zulaesst (Abweichungen begruendet):
+# - NoNewPrivileges=no: newuidmap/newgidmap (setuid) werden fuer rootless Podman gebraucht.
+# - RestrictNamespaces/SystemCallFilter nicht gesetzt: Benutzer-Namespaces, mount, unshare sind die Grundlage von Podman.
+# - Die Container selbst laufen ohne Netz, ohne Capabilities, read-only; nur der Workspace ist beschreibbar.
+NoNewPrivileges=no
+ProtectSystem=strict
+ReadWritePaths=/var/lib/occoder /run/user/OCCODER_UID
+# ProtectHome=no: ProtectHome=yes versteckt auch /run/user/<uid> (Podman-Laufzeitverzeichnis) -> Podman startet nicht (Diagnose 2026-11-10).
+# /home und /root bleiben ueber InaccessiblePaths gesperrt.
+ProtectHome=no
+PrivateTmp=yes
+ProtectKernelModules=yes
+# ProtectKernelLogs=no: die Option ueberdeckt /proc/kmsg; dann verweigert der Kernel Containern ein eigenes /proc
+# ("error mounting proc ... operation not permitted", Auftraege #8/#9). Belegt am 2026-11-11 per systemd-run mit sonst
+# identischer Abschottung: nur ohne ProtectKernelLogs startet der Container. Kernel-Logs liest der Runner trotzdem nicht
+# (kein Mitglied von adm/systemd-journal, dmesg eingeschraenkt).
+ProtectKernelLogs=no
+ProtectControlGroups=no
+LockPersonality=yes
+RestrictRealtime=yes
+# Obergrenze fuer setuid-Programme im Dienst (der Runner selbst laeuft als occoder ohne Capabilities). newuidmap/newgidmap brauchen
+# diese Rechte, um den Benutzer-Namensraum fuer rootless Podman INNERHALB des Dienstes anzulegen (uid 0 im Container -> SETFCAP).
+# Belegt am 2026-11-11 per systemd-run mit denselben Abschottungen: nur SETUID+SETGID(+SETFCAP+DAC_OVERRIDE) scheitert, diese Menge funktioniert.
+# Die Container selbst laufen weiterhin mit --cap-drop ALL, no-new-privileges, ohne Netz; DeepSeek arbeitet nur im Container.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETFCAP CAP_DAC_OVERRIDE CAP_SYS_ADMIN
+# AF_NETLINK: Podman richtet Netz-Namensraeume per Netlink ein (auch bei --network none); kein Internetzugang (IPAddressDeny bleibt).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+UMask=0077
+IPAddressDeny=any
+IPAddressAllow=localhost
+# Planungsbereich (Codex-Entwuerfe, Codex-Anmeldung des Planers) und Planer-Zugangsdaten sind fuer den Runner und damit fuer DeepSeek unsichtbar.
+InaccessiblePaths=/srv /root /home /etc/gt-ads/credentials /etc/gt-ads/openclaw-credentials /var/lib/openclaw -/var/lib/gt-ads-plan -/etc/gt-ads/planner-credentials
+MemoryMax=3G
+CPUQuota=300%
+TasksMax=1024
+
+[Install]
+WantedBy=multi-user.target

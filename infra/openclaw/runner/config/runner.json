@@ -1,0 +1,321 @@
+{
+  "db_path": "/var/lib/occoder/runner/runner.sqlite",
+  "socket_path": "/run/gtads-runner/control.sock",
+  "approve_socket_path": "/run/gtads-runner/approve.sock",
+  "specs_root": "/var/lib/occoder/specs",
+  "workspace_dir": "/var/lib/occoder/workspace",
+  "home": "/var/lib/occoder",
+  "xdg_runtime_dir": "/run/user/OCCODER_UID",
+  "openclaw_node": "/opt/openclaw/node/bin/node",
+  "openclaw_js": "/opt/openclaw/app/node_modules/openclaw/openclaw.mjs",
+  "operator_chat_id": 0,
+  "socket_group": "openclaw",
+  "pilot_budget_usd": 10,
+  "artifacts_dir": "/var/lib/occoder/artifacts",
+  "reviews": {
+    "enabled": true,
+    "max_rounds": 3,
+    "limit_percent": 80,
+    "safety_margin_percent": 10
+  },
+  "gemini": {
+    "enabled": true,
+    "model": "gemini-flash-latest",
+    "max_requests_per_day": 10,
+    "min_interval_s": 15,
+    "max_prompt_chars": 60000
+  },
+  "price_usd_per_million_tokens": {
+    "input": 0.3,
+    "output": 1.2
+  },
+  "packages": {
+    "WP-009": {
+      "enabled": true,
+      "synthetic": true,
+      "spec_files": [
+        "WP-009/DEEPSEEK-AUFTRAG.md",
+        "WP-009/SPEZIFIKATION.md"
+      ],
+      "task_file": "WP-009/DEEPSEEK-AUFTRAG.md",
+      "template_dir": "/opt/gt-ads/runner/templates/sandbox-demo",
+      "budget_usd": 2,
+      "max_tokens": 300000
+    },
+    "GT-ADS-001": {
+      "enabled": true,
+      "spec_files": [
+        "GT-ADS-001/SPEZIFIKATION.md",
+        "GT-ADS-001/ARCHITEKTUR.md",
+        "GT-ADS-001/API-VERTRAG.md",
+        "GT-ADS-001/TESTPLAN.md",
+        "GT-ADS-001/DEEPSEEK-AUFTRAG.md",
+        "GT-ADS-001/runner/U0.md",
+        "GT-ADS-001/runner/U1.md",
+        "GT-ADS-001/runner/U2.md",
+        "GT-ADS-001/runner/U3.md",
+        "GT-ADS-001/runner/U4.md",
+        "GT-ADS-001/runner/U5.md",
+        "GT-ADS-001/runner/U6.md",
+        "GT-ADS-001/runner/U7.md",
+        "GT-ADS-001/runner/U8.md",
+        "GT-ADS-001/runner/U10.md"
+      ],
+      "task_file": "GT-ADS-001/DEEPSEEK-AUFTRAG.md",
+      "budget_usd": 2,
+      "max_tokens": 1000000,
+      "units": [
+        {
+          "id": "U0",
+          "title": "Minimalgeruest",
+          "prompt_file": "GT-ADS-001/runner/U0.md",
+          "allowed_paths": [
+            "package.json",
+            "package-lock.json",
+            ".env.example",
+            ".gitignore",
+            "apps/api/",
+            "apps/dashboard/",
+            "infra/compose/"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000
+        },
+        {
+          "id": "U1",
+          "title": "Datenbank",
+          "prompt_file": "GT-ADS-001/runner/U1.md",
+          "allowed_paths": [
+            "apps/api/",
+            "package.json",
+            "package-lock.json"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000,
+          "depends": [
+            "U0"
+          ]
+        },
+        {
+          "id": "U2",
+          "title": "Krypto und Konfiguration",
+          "prompt_file": "GT-ADS-001/runner/U2.md",
+          "allowed_paths": [
+            "apps/api/",
+            "package.json",
+            "package-lock.json"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000,
+          "depends": [
+            "U1"
+          ]
+        },
+        {
+          "id": "U3",
+          "title": "Registrierung und Audit",
+          "prompt_file": "GT-ADS-001/runner/U3.md",
+          "allowed_paths": [
+            "apps/api/",
+            "package.json",
+            "package-lock.json"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000,
+          "depends": [
+            "U2"
+          ]
+        },
+        {
+          "id": "U4",
+          "title": "Geraeteauthentifizierung",
+          "prompt_file": "GT-ADS-001/runner/U4.md",
+          "allowed_paths": [
+            "apps/api/",
+            "package.json",
+            "package-lock.json"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000,
+          "depends": [
+            "U3"
+          ]
+        },
+        {
+          "id": "U5",
+          "title": "Heartbeat und Status",
+          "prompt_file": "GT-ADS-001/runner/U5.md",
+          "allowed_paths": [
+            "apps/api/",
+            "package.json",
+            "package-lock.json"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000,
+          "depends": [
+            "U4"
+          ]
+        },
+        {
+          "id": "U6",
+          "title": "Admin-API",
+          "prompt_file": "GT-ADS-001/runner/U6.md",
+          "allowed_paths": [
+            "apps/api/",
+            "package.json",
+            "package-lock.json"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000,
+          "depends": [
+            "U5"
+          ]
+        },
+        {
+          "id": "U7",
+          "title": "Maschinenlesbarer Vertrag und Contract-Tests",
+          "prompt_file": "GT-ADS-001/runner/U7.md",
+          "allowed_paths": [
+            "contracts/gt-ads-001/",
+            "apps/api/",
+            "package.json",
+            "package-lock.json"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000,
+          "depends": [
+            "U6"
+          ]
+        },
+        {
+          "id": "U8",
+          "title": "Dashboard",
+          "prompt_file": "GT-ADS-001/runner/U8.md",
+          "allowed_paths": [
+            "apps/dashboard/",
+            "apps/api/",
+            "package.json",
+            "package-lock.json"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000,
+          "depends": [
+            "U7"
+          ]
+        },
+        {
+          "id": "U10",
+          "title": "Betriebsunterlagen",
+          "prompt_file": "GT-ADS-001/runner/U10.md",
+          "allowed_paths": [
+            "infra/compose/README.md",
+            "apps/api/README.md",
+            "apps/dashboard/README.md",
+            "apps/android/README.md"
+          ],
+          "test": {
+            "cmd": [
+              "sh",
+              "-c",
+              "npm run -s typecheck && npm test -s"
+            ],
+            "db": true
+          },
+          "max_tokens": 1000000,
+          "depends": [
+            "U8"
+          ]
+        }
+      ],
+      "plan_max_tokens": 6000000,
+      "synthetic": false
+    }
+  },
+  "price_source": "DeepSeek deepseek-flash, Spitzenpreis (Eingabe ohne Cache) laut api-docs.deepseek.com/quick_start/pricing (Stand 2026-11-10); bewusst die teuerste Angabe, damit das Kostenlimit frueh greift",
+  "supply_dir": "/var/lib/occoder/supply",
+  "integration_dir": "/var/lib/occoder/integration",
+  "seeds_dir": "/var/lib/occoder/seeds",
+  "dev_image": "gtads-dev:2",
+  "defaults": {
+    "max_attempts": 10,
+    "timeout_s": 3600
+  },
+  "defaults_note": "Zentral (Betreiber 2026-11-11): 10 Korrekturversuche und 60 Minuten Gesamtlaufzeit je Teilauftrag einschliesslich Korrekturen; Kosten begrenzt durch budget_usd je Teilauftrag und pilot_budget_usd gesamt",
+  "release_dir": "/var/lib/gt-ads-release",
+  "release_target": "GT-ADS-001",
+  "release_defaults": {
+    "budget_usd": 2,
+    "max_tokens": 1000000,
+    "test": {
+      "cmd": [
+        "sh",
+        "-c",
+        "npm run -s typecheck && npm test -s"
+      ],
+      "db": true
+    }
+  }
+}

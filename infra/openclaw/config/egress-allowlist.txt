@@ -1,0 +1,10 @@
+# GT-Ads Egress-Allowlist (Phase A). Eine Domain je Zeile, keine Wildcards, keine IPs. Nur Port 443 (CONNECT).
+# Aenderungen nur per PR mit Betreiberfreigabe; danach verify.sh erneut ausfuehren.
+api.telegram.org   # Telegram Bot API (Long Polling, Antworten)
+api.deepseek.com   # DeepSeek-Modellaufrufe (deepseek/deepseek-flash)
+# Codex-Review ueber ChatGPT-OAuth (WP-011): nur Anmeldung und Abo-Backend. api.openai.com steht BEWUSST NICHT hier:
+# Ohne diesen Host ist jede nutzungsabhaengige OpenAI-API-Abrechnung technisch unmoeglich, selbst bei falscher Konfiguration.
+auth.openai.com
+chatgpt.com
+# Gemini (WP-012): optionaler, beratender Zusatz-Reviewer, ausschliesslich SYNTHETISCHE Beispiele, kostenloser API-Tarif (Betreiberentscheidung 2026-11-10).
+generativelanguage.googleapis.com

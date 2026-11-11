@@ -1,0 +1,27 @@
+{
+  "home": "/var/lib/gt-ads-plan",
+  "db_path": "/var/lib/gt-ads-plan/planner.sqlite",
+  "prompt_dir": "/var/lib/gt-ads-plan/prompts",
+  "socket_path": "/run/gtads-planner/control.sock",
+  "approve_socket_path": "/run/gtads-planner/approve.sock",
+  "socket_group": "gtads-plan-ctl",
+  "operator_chat_id": 0,
+  "release_dir": "/var/lib/gt-ads-release",
+  "seed_tar": "/var/lib/gt-ads-plan/seeds/gt-ads-main.tar",
+  "context_files": [
+    "docs/fortschritt/STATUS.md",
+    "docs/ARBEITSPAKETE/MVP_ROADMAP.md",
+    "docs/konzept/ROADMAP.md",
+    "docs/entscheidungen/OFFENE_ENTSCHEIDUNGEN.md",
+    "docs/konzept/ANFORDERUNGEN.md",
+    "docs/ARBEITSPAKETE/GT-ADS-001/"
+  ],
+  "context_max_chars": 80000,
+  "plan_timeout_s": 900,
+  "openclaw_node": "/opt/openclaw/node/bin/node",
+  "openclaw_js": "/opt/openclaw/app/node_modules/openclaw/openclaw.mjs",
+  "quota": {
+    "limit_percent": 80,
+    "safety_margin_percent": 10
+  }
+}

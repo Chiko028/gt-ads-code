@@ -1,0 +1,58 @@
+[Unit]
+Description=GT-Ads Codex-Planer (Arbeitspaket-Entwuerfe, Freigabe per Telegram-Schaltflaeche; eigene Identitaet ocplan)
+After=network-online.target gt-ads-egress-proxy.service
+Wants=network-online.target gt-ads-egress-proxy.service
+
+[Service]
+Type=simple
+User=ocplan
+Group=ocplan
+# Eigene Socket-Gruppe: Mitglied ist NUR der OpenClaw-Dienst (Plugin + MCP-Bruecke). Der Runner (occoder) ist nicht Mitglied -> erreicht die Planer-Sockets nicht.
+SupplementaryGroups=gtads-plan-ctl
+RuntimeDirectory=gtads-planner
+RuntimeDirectoryMode=0711
+WorkingDirectory=/var/lib/gt-ads-plan
+Environment=HOME=/var/lib/gt-ads-plan
+Environment=PATH=/usr/bin:/bin
+LoadCredential=telegram_bot_token:/etc/gt-ads/planner-credentials/telegram_bot_token
+ExecStart=/usr/bin/python3 -E -s /opt/gt-ads/runner/planner_daemon.py /etc/gt-ads/planner.json
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=30
+
+# Volle Haertung (kein Podman noetig: Codex hat keine Werkzeuge)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/gt-ads-plan /var/lib/gt-ads-release
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=no
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+IPAddressDeny=any
+IPAddressAllow=localhost
+# Kein Zugriff auf Coding-Runner, DeepSeek-Zustand, Repository, OpenClaw-Gateway-Zustand oder fremde Zugangsdaten
+InaccessiblePaths=/srv /root /home -/var/lib/occoder -/var/lib/openclaw -/etc/gt-ads/credentials -/etc/gt-ads/openclaw-credentials -/etc/gt-ads/runner-credentials
+# 2026-11-11: Codex-Lauf (openclaw agent --local) wurde bei 1G vom OOM-Killer beendet (oom-kill, Planer mit Neustart).
+# 3G wie der Runner; Node-Heap begrenzt der Dienst selbst (NODE_OPTIONS in planner_daemon.py). OOMPolicy=continue: trifft es
+# den Codex-Prozess, scheitert nur diese Planung (Meldung), der Planer laeuft weiter.
+MemoryMax=3G
+OOMPolicy=continue
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+{
+  "id": "gtads-freigabe",
+  "name": "GT-Ads Freigabe",
+  "description": "Deterministische Telegram-Freigaben (Schaltflaechen) fuer Coding-Runner und Codex-Planer; ohne Sprachmodell.",
+  "categories": ["other"],
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "operatorId": { "type": "string", "pattern": "^[0-9]{5,15}$" },
+      "runnerApproveSocket": { "type": "string" },
+      "plannerApproveSocket": { "type": "string" },
+      "runnerControlSocket": { "type": "string" },
+      "plannerControlSocket": { "type": "string" }
+    },
+    "required": ["operatorId"]
+  }
+}

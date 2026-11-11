@@ -1,0 +1,66 @@
+// GT-Ads OpenClaw - Phase A: Chat- und Statusagent (nur lesen), Gateway nur lokal.
+// Vorlage; Platzhalter __…__ werden von deploy/install.sh gesetzt. KEINE Geheimnisse in dieser Datei:
+//  - Telegram-Token: systemd-Credential (tokenFile)
+//  - DeepSeek-Schluessel und Gateway-Token: Umgebung des Dienstes, aus systemd-Credentials (deploy/start-gateway.sh)
+// Geprueft mit: openclaw config validate / openclaw security audit (OpenClaw 2026.11.2).
+{
+  update: { channel: "stable", auto: { enabled: false }, checkOnStart: false }, // Updates nur per PR
+  telemetry: { enabled: false },
+  // Einziger Weg ins Internet: lokaler Allowlist-Proxy (infra/openclaw/egress-proxy); der Dienst darf per systemd nur Loopback.
+  proxy: { enabled: true, proxyUrl: "http://127.0.0.1:3128" },
+  gateway: { mode: "local", bind: "loopback", port: 18789, auth: { mode: "token" } },
+  session: { dmScope: "per-channel-peer" },
+  browser: { enabled: false },
+  hooks: { enabled: false },
+  commands: { restart: false, config: false, bash: false },
+  // gtads-freigabe: deterministische Telegram-Schaltflaechen (Freigeben/Ablehnen/Details) -> Freigabe-Sockets; ohne Sprachmodell (runner/deploy/install-planner.sh)
+  plugins: {
+    load: { paths: ["/opt/gt-ads/openclaw-plugins/gtads-freigabe"] },
+    entries: { deepseek: { enabled: true }, "gtads-freigabe": { enabled: true, config: { operatorId: "__ALLOWED_USER_ID__" } } },
+  },
+  // Duenne Bruecke zum Coding-Runner (Freigabe/Limits entscheidet der Runner, nicht das Modell); installiert von runner/deploy/install-coder.sh
+  mcp: { servers: { "gtads-coder": { command: "/usr/bin/python3", args: ["-I", "/opt/gt-ads/runner/mcp_server.py"], env: { GTADS_RUNNER_SOCK: "/run/gtads-runner/control.sock", GTADS_PLANNER_SOCK: "/run/gtads-planner/control.sock" } } } },
+  models: { catalogRefresh: { enabled: false } }, // kein Abruf von catalog.openclaw.ai (Beobachtung im Fallen-Proxy-Test); Preise/Metadaten bleiben auf Release-Stand
+  tools: {
+    elevated: { enabled: false },
+    exec: { security: "deny", ask: "always" },
+    fs: { workspaceOnly: true },
+    deny: [
+      "gateway", "cron", "sessions_spawn", "sessions_send",
+      "group:runtime", "group:automation", "group:web", "group:ui",
+      "write", "edit", "apply_patch",
+    ],
+  },
+  agents: {
+    defaults: {
+      model: "deepseek/deepseek-flash", // DeepSeek V4.1 Flash (Katalog-ID laut OpenClaw- und DeepSeek-Dokumentation)
+      maxConcurrent: 1,
+      timeoutSeconds: 300,
+      sandbox: { mode: "off" }, // Phase A: keine Shell-/Schreibwerkzeuge vorhanden; Coding-Agent erst mit Runner-Sandbox (WP-007 Phase B)
+    },
+    entries: {
+      status: {
+        name: "GT-Ads Status",
+        workspace: "/var/lib/openclaw/workspace-status",
+        tools: {
+          profile: "minimal", alsoAllow: ["read", "ls", "gtads-coder__*"], // Minimalprofil + Lesen im Workspace + die fuenf Runner-Werkzeuge (MCP)
+          deny: ["write", "edit", "apply_patch", "group:runtime", "group:automation", "group:web", "group:ui", "gateway", "cron", "sessions_spawn", "sessions_send"],
+          fs: { workspaceOnly: true },
+          exec: { security: "deny", ask: "always" },
+          elevated: { enabled: false },
+        },
+      },
+    },
+  },
+  bindings: [{ agentId: "status", match: { channel: "telegram" } }],
+  channels: {
+    telegram: {
+      enabled: __TELEGRAM_ENABLED__, // wird erst von deploy/switch-telegram-to-openclaw.sh auf true gesetzt
+      tokenFile: "/run/credentials/gt-ads-openclaw.service/telegram_bot_token",
+      dmPolicy: "allowlist",
+      allowFrom: ["__ALLOWED_USER_ID__"], // nur der Betreiber (numerische ID); Gruppen und Fremde gesperrt
+      groupPolicy: "disabled",
+      capabilities: { inlineButtons: "dm" }, // Schaltflaechen nur im privaten Chat
+    },
+  },
+}

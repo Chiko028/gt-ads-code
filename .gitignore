@@ -1,0 +1,29 @@
+# Secrets und Umgebungen – niemals committen
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+id_*
+secrets/
+# Daten
+data/
+backups/
+*.dump
+*.sql.gz
+# Build/IDE
+node_modules/
+dist/
+build/
+.gradle/
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Python-Caches (aus Testlaeufen) nie committen
+__pycache__/
+*.pyc

@@ -1,0 +1,22 @@
+#!/usr/bin/python3 -I
+"""Zweiter Faktor fuer SENSIBLE Freigaben (Deployments, Rechte, Infrastruktur): nur root, nur nach dem Telegram-Klick (30 Min).
+   sudo gtads-confirm runner job:<Nr>
+   sudo gtads-confirm planner CX-<Nr>
+Der Dienst prueft die Identitaet ueber SO_PEERCRED (Kernel), nicht ueber diesen Aufruf."""
+import json
+import os
+import socket
+import sys
+
+SOCKS = {"runner": "/run/gtads-runner/approve.sock", "planner": "/run/gtads-planner/approve.sock"}
+if len(sys.argv) != 3 or sys.argv[1] not in SOCKS:
+    sys.exit(__doc__)
+if os.geteuid() != 0:
+    sys.exit("Nur als root (sudo).")
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+    s.settimeout(30)
+    s.connect(SOCKS[sys.argv[1]])
+    s.sendall((json.dumps({"cmd": "strong_confirm", "subject": sys.argv[2]}) + "\n").encode())
+    reply = json.loads(s.makefile().readline())
+print(json.dumps(reply, ensure_ascii=False, indent=1))
+sys.exit(0 if reply.get("ok") else 1)

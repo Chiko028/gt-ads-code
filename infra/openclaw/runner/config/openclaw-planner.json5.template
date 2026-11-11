@@ -1,0 +1,33 @@
+// OpenClaw-Konfiguration NUR fuer den Codex-Planer (Benutzer ocplan, eingebettet per `openclaw agent --local`, kein Gateway-Listener).
+// Platzhalter: __WORKSPACE__ (leeres Verzeichnis im Planungsbereich; wird von install-planner.sh gesetzt).
+// Codex bekommt KEINE Werkzeuge: keine Datei-, Shell-, Netz- oder Nachrichtenwerkzeuge. Der Roadmap-Kontext steht im Prompt (vom Planer-Dienst gelesen).
+{
+  update: { channel: "stable", auto: { enabled: false }, checkOnStart: false },
+  telemetry: { enabled: false },
+  proxy: { enabled: true, proxyUrl: "http://127.0.0.1:3128" },
+  gateway: { mode: "local", bind: "loopback", port: 18798 },   // nie gestartet; eigener Port, damit die CLI nicht an fremde Gateways geraet
+  browser: { enabled: false },
+  hooks: { enabled: false },
+  commands: { restart: false, config: false, bash: false },
+  models: { catalogRefresh: { enabled: false } },
+  tools: { elevated: { enabled: false } },
+  agents: {
+    ownership: "explicit",
+    defaults: { skipBootstrap: true, maxConcurrent: 1, timeoutSeconds: 900, sandbox: { mode: "off" } },
+    entries: {
+      planner: {
+        name: "GT-Ads Codex-Planer",
+        workspace: "__WORKSPACE__",
+        model: "openai/gpt-6-astra",   // ChatGPT-OAuth (Abo), kein API-Key; api.openai.com ist im Proxy nicht erlaubt
+        models: { "openai/gpt-6-astra": { agentRuntime: { id: "openclaw" } } },
+        tools: {
+          profile: "minimal",
+          deny: ["read", "ls", "exec", "process", "write", "edit", "apply_patch", "group:fs", "group:runtime", "group:web", "group:ui", "group:automation",
+                 "group:sessions", "group:memory", "gateway", "cron", "sessions_spawn", "sessions_send", "message", "nodes", "canvas", "github_publish"],
+          exec: { security: "deny", ask: "always" },
+          elevated: { enabled: false },
+        },
+      },
+    },
+  },
+}

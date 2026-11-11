@@ -1,0 +1,202 @@
+#!/usr/bin/python3 -I
+"""gtads-deploy - eng begrenzte root-Aktionen fuer GT-Ads OHNE Passwort (Betreiber 2026-11-11: "suche eine Loesung").
+
+Nur ueber sudoers fuer genau dieses Programm freigegeben (setup-deploy-sudo.sh). Grundsaetze:
+- Installiert NUR Staende, die auf GitHub nach main gemergt wurden: der Commit muss von GitHub signiert sein (web-flow,
+  Fingerabdruck fest eingetragen) und darf nie hinter dem zuletzt installierten Stand liegen (kein Zurueckrollen).
+  Lokale, nicht gemergte Aenderungen (auch von Claude) sind unsigniert und werden abgelehnt.
+- Der Quellcode wird nie direkt aus dem Arbeitsverzeichnis des Benutzers ausgefuehrt: Der Benutzer erzeugt ein Git-Bundle,
+  root uebernimmt es mit Objektpruefung (fsck) in ein eigenes Repository und exportiert genau den geprueften Commit.
+- Feste Aktionen, keine freien Argumente, keine Shell. Dieses Programm, die sudoers-Regel und der GitHub-Schluessel werden
+  nur durch den Betreiber (setup-deploy-sudo.sh) geaendert, nie durch dieses Programm.
+Grenze (ehrlich): main ist auf GitHub nicht geschuetzt (privates Repo im Gratis-Tarif). Wer das GitHub-Konto steuert, kann
+GitHub-signierte Commits auf main erzeugen. Die Pruefung verhindert also lokale/ungemergte Staende, nicht Missbrauch des
+GitHub-Kontos.
+
+Aktionen:
+  gtads-deploy status
+  gtads-deploy install planner|coder|gateway
+  gtads-deploy verify-isolation
+  gtads-deploy journal runner|planner|gateway|proxy [MINUTEN<=240]
+"""
+
+import os
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+REPO = "/srv/taxiwerbung/app/gt-ads"
+REF = "refs/remotes/origin/main"
+STATE = "/var/lib/gtads-deploy"
+KEYRING = "/etc/gtads-deploy/github-web-flow.gpg"
+FINGERPRINTS = {"5DE3E0509C47EA3CF04A42D34AEE18F83AFDEB23", "968479A1AFF927E37D1A566BB5690EEEBB952194"}  # GitHub web-flow
+LOG = "/var/log/gtads-deploy.log"
+TARGETS = {"planner": "infra/openclaw/runner/deploy/install-planner.sh", "coder": "infra/openclaw/runner/deploy/install-coder.sh",
+           "gateway": "infra/openclaw/deploy/install.sh"}
+UNITS = {"runner": "gt-ads-coding-runner", "planner": "gt-ads-planner", "gateway": "gt-ads-openclaw", "proxy": "gt-ads-egress-proxy"}
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "HOME": "/root", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+       "GIT_TERMINAL_PROMPT": "0"}
+GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "transfer.fsckObjects=true",
+       "-c", "fetch.fsckObjects=true", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always"]
+SECRET = [re.compile(p) for p in (r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", r"\bsk-[A-Za-z0-9_\-]{2,}", r"AIza[0-9A-Za-z_\-]{20,}",
+                                  r"\b\d{8,10}:[A-Za-z0-9_-]{30,}", r"\bgh[pousr]_[A-Za-z0-9]{20,}", r"[A-Za-z0-9_\-+=]{40,}",
+                                  r"(?i)(token|password|passwort|secret|api[_-]?key|bearer)(\s*[:=]\s*|\s+)\S{6,}")]
+
+
+def die(msg, code=1):
+    log("FEHLER " + msg)
+    print("gtads-deploy: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def log(msg):
+    try:
+        with open(LOG, "a", encoding="utf-8") as handle:
+            handle.write("%s uid=%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), os.environ.get("SUDO_UID", "?"), msg[:300]))
+        os.chmod(LOG, 0o600)
+    except OSError:
+        pass
+
+
+def run(args, **kw):
+    return subprocess.run(args, env=dict(ENV, **kw.pop("env", {})), **kw)
+
+
+def redact(text):
+    for p in SECRET:
+        text = p.sub("<entfernt>", text)
+    return text
+
+
+def repo_owner():
+    st = os.stat(REPO)
+    return pwd.getpwuid(st.st_uid).pw_name
+
+
+def fetch_verified():
+    """Gemergten Stand als geprueftes Commit in STATE/repo.git holen. Rueckgabe: sha."""
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    os.chmod(STATE, 0o700)
+    bare = os.path.join(STATE, "repo.git")
+    if not os.path.isdir(bare):
+        run(GIT + ["init", "-q", "--bare", bare], check=True)
+    owner = repo_owner()
+    # Das Bundle erzeugt der Eigentuemer des Arbeitsverzeichnisses (nicht root): fremde Git-Konfiguration laeuft nie als root.
+    bundle = os.path.join(tempfile.mkdtemp(prefix="bundle-", dir="/tmp"), "main.bundle")
+    pw = pwd.getpwnam(owner)
+    os.chown(os.path.dirname(bundle), pw.pw_uid, pw.pw_gid)  # nur der Eigentuemer schreibt hinein (0700); root liest
+    res = subprocess.run(["runuser", "-u", owner, "--", "git", "-C", REPO, "bundle", "create", bundle, REF],
+                         env={"PATH": ENV["PATH"], "HOME": pwd.getpwnam(owner).pw_dir, "LANG": "C.UTF-8"}, capture_output=True, text=True)
+    if res.returncode != 0 or not os.path.isfile(bundle):
+        die("Bundle konnte nicht erzeugt werden (git fetch im Repository ausgefuehrt?): " + redact(res.stderr[-200:]))
+    try:
+        res = run(GIT + ["-C", bare, "fetch", "-q", "--no-tags", bundle, "+%s:refs/heads/candidate" % REF], capture_output=True, text=True)
+        if res.returncode != 0:
+            die("Bundle-Pruefung fehlgeschlagen: " + redact(res.stderr[-300:]))
+    finally:
+        shutil.rmtree(os.path.dirname(bundle), ignore_errors=True)
+    sha = run(GIT + ["-C", bare, "rev-parse", "candidate^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        die("ungueltiger Commit")
+    gnupg = os.path.join(STATE, "gnupg")
+    if not os.path.isdir(gnupg):
+        os.makedirs(gnupg, mode=0o700)
+        run(["gpg", "--homedir", gnupg, "--batch", "--quiet", "--import", KEYRING], check=True, capture_output=True)
+    res = run(GIT + ["-C", bare, "verify-commit", "--raw", sha], capture_output=True, text=True, env={"GNUPGHOME": gnupg})
+    fprs = set(re.findall(r"^\[GNUPG:\] VALIDSIG ([0-9A-F]{40})", res.stderr, re.M))
+    if res.returncode != 0 or not (fprs & FINGERPRINTS):
+        die("Commit %s ist NICHT von GitHub signiert (nur auf GitHub gemergte Staende werden installiert)" % sha[:10])
+    last = os.path.join(STATE, "deployed")
+    if os.path.exists(last):
+        with open(last) as handle:
+            prev = handle.read().strip()
+        if prev and prev != sha and run(GIT + ["-C", bare, "merge-base", "--is-ancestor", prev, sha]).returncode != 0:
+            die("Commit %s liegt nicht nach dem zuletzt installierten Stand %s (kein Zurueckrollen)" % (sha[:10], prev[:10]))
+    return bare, sha
+
+
+def export(bare, sha):
+    work = os.path.join(STATE, "work")
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work, mode=0o700)
+    archive = subprocess.Popen(GIT + ["-C", bare, "archive", sha], stdout=subprocess.PIPE, env=ENV)
+    res = run(["tar", "-x", "--no-same-owner", "-C", work], stdin=archive.stdout)
+    archive.stdout.close()
+    if archive.wait() != 0 or res.returncode != 0:
+        die("Export fehlgeschlagen")
+    return work
+
+
+def install(target):
+    if target not in TARGETS:
+        die("Ziel unbekannt (erlaubt: %s)" % ", ".join(TARGETS))
+    bare, sha = fetch_verified()
+    work = export(bare, sha)
+    log("install %s %s (GitHub-signiert)" % (target, sha[:10]))
+    print("Installiere %s aus gemergtem, von GitHub signiertem Stand %s" % (target, sha[:10]), flush=True)
+    # sync-runner-specs.sh liest Spezifikationen/Seed aus GTADS_REPO@GTADS_REF (geprueftes Repository statt Arbeitsverzeichnis)
+    res = subprocess.run(["bash", os.path.join(work, TARGETS[target])], cwd="/",
+                         env=dict(ENV, GTADS_REPO=bare, GTADS_REF=sha))
+    if res.returncode != 0:
+        die("Installation %s fehlgeschlagen (Exit %d)" % (target, res.returncode), res.returncode)
+    with open(os.path.join(STATE, "deployed.tmp"), "w") as handle:
+        handle.write(sha + "\n")
+    os.replace(os.path.join(STATE, "deployed.tmp"), os.path.join(STATE, "deployed"))
+    log("installiert %s %s" % (target, sha[:10]))
+    print("OK: %s installiert (%s)" % (target, sha[:10]))
+
+
+def verify_isolation():
+    bare, sha = fetch_verified()
+    work = export(bare, sha)
+    log("verify-isolation %s" % sha[:10])
+    sys.exit(subprocess.run(["bash", os.path.join(work, "infra/openclaw/runner/deploy/verify-isolation.sh")], cwd="/", env=ENV).returncode)
+
+
+def journal(unit, minutes):
+    if unit not in UNITS:
+        die("Dienst unbekannt (erlaubt: %s)" % ", ".join(UNITS))
+    if not re.fullmatch(r"\d{1,3}", minutes or "30") or not 1 <= int(minutes or "30") <= 240:
+        die("Minuten 1-240")
+    res = run(["journalctl", "-u", UNITS[unit], "--since", "-%smin" % (minutes or "30"), "--no-pager", "-q", "-o", "short-iso"],
+              capture_output=True, text=True)
+    lines = res.stdout.splitlines()[-200:]
+    print(redact("\n".join(lines)))
+
+
+def status():
+    for key, unit in UNITS.items():
+        res = run(["systemctl", "show", unit, "-p", "ActiveState", "-p", "ActiveEnterTimestamp", "-p", "NRestarts", "--value"], capture_output=True, text=True)
+        print("%-8s %s" % (key, " | ".join(res.stdout.split("\n")[:3])))
+    last = os.path.join(STATE, "deployed")
+    prev = "-"
+    if os.path.exists(last):
+        with open(last) as handle:
+            prev = handle.read().strip()[:10]
+    print("zuletzt installiert: %s" % prev)
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        die("nur ueber sudo")
+    if not argv:
+        die(__doc__.strip().split("Aktionen:")[1])
+    cmd = argv[0]
+    if cmd == "status" and len(argv) == 1:
+        return status()
+    if cmd == "install" and len(argv) == 2:
+        return install(argv[1])
+    if cmd == "verify-isolation" and len(argv) == 1:
+        return verify_isolation()
+    if cmd == "journal" and len(argv) in (2, 3):
+        return journal(argv[1], argv[2] if len(argv) == 3 else "30")
+    die("unbekannte Aktion")
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    main(sys.argv[1:])

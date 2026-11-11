@@ -1,0 +1,10 @@
+{
+  "name": "gt-ads-openclaw-host",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Gepinnte OpenClaw-Installation fuer GT-Ads (exakte Version; Aktualisierung nur per PR)",
+  "dependencies": {
+    "openclaw": "2026.11.2"
+  },
+  "engines": { "node": ">=24.22.1 <25" }
+}

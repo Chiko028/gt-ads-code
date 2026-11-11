@@ -1,0 +1,15 @@
+# GT-Ads Telegram-Gateway - Beispielkonfiguration (KEINE Geheimnisse; Token/Schluessel kommen als systemd-Credentials).
+# Alle Werte sind Vorschlaege (Annahmen) und konfigurierbar; E73 bestaetigt oder aendert sie.
+
+# Numerische Telegram-Benutzer-ID des Betreibers (E68). Leer/0 = Normalmodus startet nicht.
+# Ermittlung: Setup-Modus (siehe deploy/README.md), NICHT raten.
+allowed_user_id = 0
+
+model = "deepseek-flash"      # laut DeepSeek-Dokumentation 2026-11-09 (V4.1-Flash); Name kann sich aendern
+max_input_chars = 2000
+max_output_tokens = 800
+rate_per_minute = 5
+daily_message_limit = 100     # Schutz vor Leerlaufen des Guthabens (E73)
+poll_timeout_s = 50
+http_timeout_s = 60
+setup_mode_max_s = 600

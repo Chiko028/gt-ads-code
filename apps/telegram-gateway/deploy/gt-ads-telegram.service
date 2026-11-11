@@ -1,0 +1,56 @@
+# GT-Ads Telegram-Gateway (Phase 1: nur Chat, Status, schreibgeschützt)
+# Vorlage; Installation nur durch den Betreiber mit sudo (deploy/install.sh).
+[Unit]
+Description=GT-Ads Telegram-Gateway (Phase 1, schreibgeschuetzt)
+Documentation=file:///opt/gt-ads/telegram-gateway/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=taxiagent
+Group=taxiagent
+# Code ist root-eigen und fuer taxiagent nur lesbar.
+WorkingDirectory=/opt/gt-ads/telegram-gateway
+ExecStart=/usr/bin/python3 -s -B -m gtads_tg.main --config /etc/gt-ads/telegram-gateway.toml --state-dir /srv/taxiagents/telegram/state
+# Geheimnisse nur als systemd-Credentials aus root-eigenen Dateien (0600 root).
+LoadCredential=telegram_bot_token:/etc/gt-ads/credentials/telegram_bot_token
+LoadCredential=deepseek_api_key:/etc/gt-ads/credentials/deepseek_api_key
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=10
+
+# Sandbox (Abgleich mit: systemd-analyze security gt-ads-telegram)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+UMask=0077
+ReadWritePaths=/srv/taxiagents/telegram/state
+InaccessiblePaths=/srv/taxiwerbung /home /root
+MemoryMax=256M
+CPUQuota=25%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

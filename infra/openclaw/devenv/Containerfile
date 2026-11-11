@@ -1,0 +1,12 @@
+# GT-Ads Entwicklungs-Sandbox v2 (WP-013): Node 22, npm, TypeScript-Werkzeuge ueber die gepinnte Paketversorgung, PostgreSQL 17.
+# Keine Secrets, kein Netz zur Laufzeit (die Container laufen mit --network none), laeuft als unprivilegierter Benutzer (UID wird beim Start gesetzt).
+# Basis per Digest gepinnt (node:22-trixie-slim, Debian 13). Aktualisierung nur bewusst per PR.
+FROM docker.io/library/node:22-trixie-slim@sha256:be1e2a3dc2c4fd68cdfadad2a696a280e0d2749098bee509230174d72fb768c6
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends bash ca-certificates git postgresql-17 postgresql-client-17 procps \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --uid 10001 --create-home --shell /bin/bash agent
+COPY with-postgres.sh /usr/local/bin/with-postgres
+RUN chmod 0755 /usr/local/bin/with-postgres
+ENV HOME=/tmp/home NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false NPM_CONFIG_AUDIT=false NPM_CONFIG_IGNORE_SCRIPTS=true NODE_ENV=development
+WORKDIR /work

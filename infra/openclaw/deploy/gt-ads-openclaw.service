@@ -1,0 +1,75 @@
+# GT-Ads OpenClaw-Gateway (Phase A: Chat- und Statusagent, nur lesen). Vorlage; Installation nur durch den Betreiber mit sudo.
+# Netzwerkgrenze: IPAddressDeny=any + IPAddressAllow=localhost -> der Dienst erreicht NUR Loopback; Internet nur ueber
+# den Allowlist-Proxy 127.0.0.1:3128 (gt-ads-egress-proxy.service).
+[Unit]
+Description=GT-Ads OpenClaw-Gateway (Chat- und Statusagent, schreibgeschuetzt)
+After=network-online.target gt-ads-egress-proxy.service
+Wants=network-online.target gt-ads-egress-proxy.service
+
+[Service]
+Type=simple
+User=openclaw
+Group=openclaw
+StateDirectory=openclaw
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/openclaw
+Environment=HOME=/var/lib/openclaw
+Environment=OPENCLAW_STATE_DIR=/var/lib/openclaw/.openclaw
+Environment=OPENCLAW_CONFIG_PATH=/var/lib/openclaw/.openclaw/openclaw.json
+Environment=OPENCLAW_DISABLE_BONJOUR=1
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=1024
+Environment=NODE_USE_ENV_PROXY=1
+Environment=HTTPS_PROXY=http://127.0.0.1:3128
+Environment=HTTP_PROXY=http://127.0.0.1:3128
+Environment=NO_PROXY=127.0.0.1,localhost,::1
+# Geheimnisse nur als systemd-Credentials aus root-eigenen Dateien (0600 root).
+LoadCredential=telegram_bot_token:/etc/gt-ads/openclaw-credentials/telegram_bot_token
+LoadCredential=deepseek_api_key:/etc/gt-ads/openclaw-credentials/deepseek_api_key
+LoadCredential=gateway_token:/etc/gt-ads/openclaw-credentials/gateway_token
+# Schutz vor doppeltem Telegram-Polling (laeuft als root ausserhalb der Sandbox, root-eigenes Skript).
+ExecStartPre=+/opt/openclaw/bin/guard-no-double-polling.sh openclaw
+ExecStart=/opt/openclaw/bin/start-gateway.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+# Sandbox (Abgleich mit: systemd-analyze security gt-ads-openclaw)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+# ProcSubset=pid NICHT setzen: OpenClaw liest /proc/sys/kernel/random/boot_id fuer die Gateway-Sperre; ohne Zugriff scheitert der Start (WP-007, Ursache per Journal belegt).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# V8 (Node.js) benoetigt JIT-Speicher: MemoryDenyWriteExecute kann hier NICHT aktiviert werden (dokumentierte Ausnahme).
+MemoryDenyWriteExecute=no
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+UMask=0077
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadOnlyPaths=/opt/openclaw
+InaccessiblePaths=/srv /home /root /etc/gt-ads/credentials /etc/gt-ads/openclaw-credentials
+# Gemessen (WP-007): Ruhe-RSS ~1,2-1,3 GiB, 6 Worker; 1,5 GiB fuehrte zum OOM-Kill, 1 Kern zu 94 % CPU-Drosselung und >4 min Start.
+MemoryMax=3G
+CPUQuota=300%
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

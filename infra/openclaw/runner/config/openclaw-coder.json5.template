@@ -1,0 +1,78 @@
+// OpenClaw-Konfiguration NUR fuer den Coding-Agenten (Benutzer occoder, eingebettet per `openclaw agent --local`, kein Gateway-Listener).
+// Platzhalter: __WORKSPACE__, __UID__, __GID__ (werden von install-coder.sh gesetzt).
+{
+  update: { channel: "stable", auto: { enabled: false }, checkOnStart: false },
+  telemetry: { enabled: false },
+  proxy: { enabled: true, proxyUrl: "http://127.0.0.1:3128" },
+  // Kein Gateway in diesem Zustandsverzeichnis: eigener, nie belegter Port, damit die CLI NICHT an das Gateway des Statusagenten (anderer Port,
+  // anderer Benutzer, anderes Auth-Profil) gerät, sondern lokal arbeitet (Kontingentabfrage, Modellliste, Reviews).
+  gateway: { mode: "local", bind: "loopback", port: 18799 },   // einziger Weg ins Netz: Egress-Proxy (nur api.deepseek.com)
+  browser: { enabled: false },
+  hooks: { enabled: false },
+  commands: { restart: false, config: false, bash: false },
+  plugins: { entries: { deepseek: { enabled: true } } },
+  models: { catalogRefresh: { enabled: false } },
+  tools: { elevated: { enabled: false } },
+  agents: {
+    ownership: "explicit",   // Pflicht bei mehreren Agenten (coder, reviewer)
+    defaults: {
+      // Kein OpenClaw-Bootstrap (AGENTS.md/SOUL.md ...) im Workspace: der Workspace ist ein Git-Arbeitsstand, der je Auftrag neu angelegt wird.
+      // Ohne diese Einstellung verweigert OpenClaw nach dem Neuanlegen den Start (WorkspaceVanishedError, Frist 24 h; im Wegwerf-Lauf belegt).
+      skipBootstrap: true,
+      model: "deepseek/deepseek-flash",
+      maxConcurrent: 1,
+      timeoutSeconds: 900,
+      sandbox: {
+        mode: "all",
+        backend: "podman",
+        scope: "agent",
+        workspaceAccess: "rw",
+        docker: { image: "gtads-sandbox:1", network: "none", readOnlyRoot: true, capDrop: ["ALL"], user: "__UID__:__GID__" },
+      },
+    },
+    entries: {
+      // Codex-Reviewer (WP-011): nur lesend, Workspace read-only, Anmeldung per ChatGPT-OAuth (kein API-Key; api.openai.com ist im Proxy nicht erlaubt).
+      // Eigene OpenClaw-Laufzeit statt Codex-App-Server, damit unsere Werkzeugpolitik und die Sandbox gelten.
+      reviewer: {
+        name: "GT-Ads Codex-Reviewer",
+        workspace: "__WORKSPACE__",
+        model: "openai/gpt-6-astra",   // laut OpenClaw-Doku das Abo-Modell; nach dem Login mit `openclaw models list --provider openai` pruefen (verify-codex.sh)
+        models: { "openai/gpt-6-astra": { agentRuntime: { id: "openclaw" } } },
+        sandbox: { workspaceAccess: "ro" },
+        tools: {
+          profile: "minimal",
+          alsoAllow: ["read", "ls"],
+          deny: ["exec", "process", "write", "edit", "apply_patch", "group:web", "group:ui", "group:automation", "gateway", "cron", "sessions_spawn", "sessions_send", "message", "nodes", "canvas", "github_publish"],
+          exec: { security: "deny", ask: "always" },
+          elevated: { enabled: false },
+        },
+      },
+      coder: {
+        name: "GT-Ads Coder",
+        workspace: "__WORKSPACE__",
+        // WP-013: Entwicklungs-Sandbox v2 (Node 22, TypeScript-Werkzeuge der gepinnten Paketversorgung, PostgreSQL 17 via `with-postgres`).
+        // Weiterhin: kein Netz, Root-FS schreibgeschuetzt, ohne Capabilities, UID von occoder; /tmp ist der einzige fluechtige Schreibort ausser dem Workspace.
+        sandbox: {
+          docker: {
+            image: "gtads-dev:2",
+            network: "none",
+            readOnlyRoot: true,
+            capDrop: ["ALL"],
+            user: "__UID__:__GID__",
+            tmpfs: ["/tmp:rw,size=1g"],
+            env: { HOME: "/tmp/home", NPM_CONFIG_OFFLINE: "true", NPM_CONFIG_IGNORE_SCRIPTS: "true", NPM_CONFIG_UPDATE_NOTIFIER: "false" },
+            memory: "3g",
+            pidsLimit: 512,
+          },
+        },
+        tools: {
+          profile: "minimal",
+          alsoAllow: ["exec", "process", "read", "ls", "write", "edit", "apply_patch"],   // nur Arbeit im Container-Workspace
+          deny: ["group:web", "group:ui", "group:automation", "gateway", "cron", "sessions_spawn", "sessions_send", "message", "nodes", "canvas", "github_publish"],
+          exec: { host: "sandbox", security: "full", ask: "off" },   // "full" gilt NUR im Container (kein Netz, kein Root, nur Workspace)
+          elevated: { enabled: false },
+        },
+      },
+    },
+  },
+}
