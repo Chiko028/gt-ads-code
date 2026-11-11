@@ -6,7 +6,8 @@
   "description": "GT-Ads API (Fastify, TypeScript)",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "hash-password": "tsx scripts/hash-password.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.5",
