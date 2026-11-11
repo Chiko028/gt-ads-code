@@ -27,3 +27,7 @@ build/
 # Python-Caches (aus Testlaeufen) nie committen
 __pycache__/
 *.pyc
+
+# Node-Testartefakte
+coverage/
+*.tsbuildinfo

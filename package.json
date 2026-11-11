@@ -1,0 +1,18 @@
+{
+  "name": "gt-ads",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GT-Ads – Testbackend und Verwaltungsdashboard (GT-ADS-001)",
+  "workspaces": [
+    "apps/api",
+    "apps/dashboard"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  }
+}

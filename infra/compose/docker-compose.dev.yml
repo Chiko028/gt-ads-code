@@ -1,0 +1,44 @@
+# GT-ADS-001 – Dev-/Test-Stack. Nur der Betreiber startet ihn auf dem VPS.
+# Veroeffentlicht ausschliesslich 127.0.0.1:8080; die Datenbank hat keinen Port.
+name: gt-ads-dev
+
+services:
+  db:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_DB: "${GT_ADS_DB_NAME:-gt_ads}"
+      POSTGRES_USER: "${GT_ADS_DB_USER:-gt_ads}"
+      POSTGRES_PASSWORD: "${GT_ADS_DB_PASSWORD:?GT_ADS_DB_PASSWORD in infra/compose/.env setzen}"
+    volumes:
+      - gt_ads_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    mem_limit: 1g
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      GT_ADS_ENV: "dev"
+      # Im Container muss auf 0.0.0.0 gelauscht werden; nach aussen ist nur
+      # die Loopback-Bindung unten sichtbar.
+      GT_ADS_BIND_HOST: "0.0.0.0"
+      GT_ADS_PORT: "8080"
+      GT_ADS_DB_URL: "postgres://${GT_ADS_DB_USER:-gt_ads}:${GT_ADS_DB_PASSWORD:?GT_ADS_DB_PASSWORD in infra/compose/.env setzen}@db:5432/${GT_ADS_DB_NAME:-gt_ads}"
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 512m
+    restart: unless-stopped
+
+volumes:
+  gt_ads_db:
+    name: gt_ads_dev_db
