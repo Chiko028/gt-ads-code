@@ -189,6 +189,45 @@ async function fetchRow(
   return result.rows[0] ?? null;
 }
 
+describe("CX-009 Migration 0002", () => {
+  it("legt Geraete-Fremdschluessel, Unique(device_id,event_id) und den Auswertungsindex an", async () => {
+    const constraints = await pool.query<{
+      conname: string;
+      contype: string;
+      referenced: string | null;
+    }>(
+      [
+        "select c.conname,",
+        "       c.contype,",
+        "       case when c.contype = 'f' then c.confrelid::regclass::text end as referenced",
+        "  from pg_constraint c",
+        " where c.conrelid = 'telemetry_observations'::regclass",
+      ].join(" "),
+    );
+
+    const foreignKeys = constraints.rows.filter((row) => row.contype === "f");
+    expect(foreignKeys).toHaveLength(1);
+    expect(foreignKeys[0]?.referenced).toBe("devices");
+
+    const unique = constraints.rows.find(
+      (row) =>
+        row.contype === "u" &&
+        row.conname === "telemetry_observations_device_event_unique",
+    );
+    expect(unique).toBeDefined();
+
+    const indexes = await pool.query<{ indexdef: string }>(
+      "select indexdef from pg_indexes where schemaname = 'public' and tablename = 'telemetry_observations'",
+    );
+    const definitions = indexes.rows.map((row) => row.indexdef);
+    expect(
+      definitions.some((definition) =>
+        definition.includes("(device_id, occurred_at, event_id)"),
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("CX-009 idempotenter Telemetrie-Speicherkern", () => {
   it("wiederholte und parallele identische Aufrufe erzeugen genau einen Datensatz", async () => {
     const events = [observation(), observation(), observation()];
