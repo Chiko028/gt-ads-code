@@ -1,19 +1,13 @@
 import { pathToFileURL } from "node:url";
-import Fastify, { type FastifyInstance } from "fastify";
 import { isPubliclyReachableBind, loadConfig, type AppConfig } from "./config.js";
+import { createServer } from "./http/server.js";
+
+export { createServer } from "./http/server.js";
 
 /**
- * Erzeugt die Fastify-Instanz des API-Gerüsts. Fachliche Routen folgen in
- * den späteren Unteraufgaben; dieser Einstiegspunkt macht das in U0 gebaute
- * dist-Artefakt startbar und erzwingt den Pflichtgeheimnis-Guard.
+ * Startet den Prozess und beendet ihn bei SIGINT/SIGTERM geordnet.
+ * Die fachlichen Routen werden in http/server.ts registriert.
  */
-export function createServer(config: AppConfig): FastifyInstance {
-  return Fastify({
-    logger: { level: config.env === "test" ? "silent" : "info" },
-  });
-}
-
-/** Startet den Prozess und beendet ihn bei SIGINT/SIGTERM geordnet. */
 export async function startServer(config: AppConfig = loadConfig()): Promise<void> {
   const server = createServer(config);
 

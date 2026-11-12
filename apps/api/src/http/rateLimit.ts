@@ -106,3 +106,89 @@ export class RateLimiter {
     }
   }
 }
+
+/**
+ * Begrenzung von Registrierungsfehlversuchen je Quelle und global
+ * (SPEZIFIKATION.md Abschnitt 7, ARCHITEKTUR.md Abschnitt 4).
+ * Geprueft wird vor der Verarbeitung, gezaehlt wird nur ein Fehlversuch.
+ */
+export interface RegistrationRateLimitOptions {
+  perSourceMax: number;
+  perSourceWindowMs: number;
+  globalMax: number;
+  globalWindowMs: number;
+  now?: () => number;
+}
+
+const GLOBAL_KEY = "global";
+
+export class RegistrationRateLimiter {
+  readonly perSource: RateLimiter;
+  readonly global: RateLimiter;
+
+  constructor(options: RegistrationRateLimitOptions) {
+    this.perSource = new RateLimiter({
+      max: options.perSourceMax,
+      windowMs: options.perSourceWindowMs,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+    this.global = new RateLimiter({
+      max: options.globalMax,
+      windowMs: options.globalWindowMs,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+  }
+
+  /**
+   * Prueft beide Grenzen, ohne zu zaehlen. Ist eine Grenze erreicht, wird
+   * die laengste verbleibende Wartezeit als Retry-After geliefert.
+   */
+  check(sourceKey: string): RateLimitResult {
+    const source = this.perSource.peek(sourceKey);
+    const global = this.global.peek(GLOBAL_KEY);
+    if (source.allowed && global.allowed) {
+      return {
+        allowed: true,
+        remaining: Math.min(source.remaining, global.remaining),
+        retryAfterSeconds: 0,
+        resetAtMs: Math.max(source.resetAtMs, global.resetAtMs),
+      };
+    }
+
+    const blocking = [source, global].filter((result) => !result.allowed);
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: Math.max(
+        ...blocking.map((result) => result.retryAfterSeconds),
+      ),
+      resetAtMs: Math.max(...blocking.map((result) => result.resetAtMs)),
+    };
+  }
+
+  /** Zaehlt einen Fehlversuch bei Quelle und global. */
+  recordFailure(sourceKey: string): void {
+    this.perSource.hit(sourceKey);
+    this.global.hit(GLOBAL_KEY);
+  }
+
+  /** Nur fuer Tests: alle Zaehler verwerfen. */
+  reset(): void {
+    this.perSource.reset();
+    this.global.reset();
+  }
+}
+
+/** Baut den Limiter aus den validierten Konfigurationswerten. */
+export function createRegistrationRateLimiter(config: {
+  registrationMaxFailsPerSource: number;
+  registrationMaxFailsWindowSeconds: number;
+  registrationMaxFailsGlobalPerHour: number;
+}): RegistrationRateLimiter {
+  return new RegistrationRateLimiter({
+    perSourceMax: config.registrationMaxFailsPerSource,
+    perSourceWindowMs: config.registrationMaxFailsWindowSeconds * 1000,
+    globalMax: config.registrationMaxFailsGlobalPerHour,
+    globalWindowMs: 3600 * 1000,
+  });
+}
