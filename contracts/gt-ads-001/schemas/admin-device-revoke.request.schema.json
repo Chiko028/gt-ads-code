@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdminDeviceRevokeRequest",
+  "description": "POST /v1/admin/devices/{id}/revoke (API-VERTRAG.md Abschnitt 5); der Request hat keinen Inhalt.",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 0
+}

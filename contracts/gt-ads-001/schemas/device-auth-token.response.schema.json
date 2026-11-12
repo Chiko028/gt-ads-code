@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceAuthTokenResponse",
+  "description": "Antwort 200 von POST /v1/device/auth/token (API-VERTRAG.md Abschnitt 3).",
+  "type": "object",
+  "required": [
+    "access_token",
+    "token_type",
+    "expires_at"
+  ],
+  "properties": {
+    "access_token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "token_type": {
+      "type": "string",
+      "enum": [
+        "Bearer"
+      ]
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    }
+  }
+}

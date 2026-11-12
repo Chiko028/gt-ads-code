@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceRegistrationResponse",
+  "description": "Antwort 201 von POST /v1/device/register (API-VERTRAG.md Abschnitt 2).",
+  "type": "object",
+  "required": [
+    "device_id",
+    "server_time",
+    "server_env",
+    "config"
+  ],
+  "properties": {
+    "device_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "server_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    },
+    "server_env": {
+      "type": "string",
+      "enum": [
+        "dev",
+        "test"
+      ]
+    },
+    "config": {
+      "type": "object",
+      "required": [
+        "heartbeat_interval_s",
+        "api_version"
+      ],
+      "properties": {
+        "heartbeat_interval_s": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "api_version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        }
+      }
+    }
+  }
+}

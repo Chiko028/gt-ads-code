@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceRegistrationRequest",
+  "description": "POST /v1/device/register (API-VERTRAG.md Abschnitt 2). registration_code wird serverseitig normalisiert (Grossschreibung, Bindestriche/Leerzeichen entfernt, O->0, I/L->1); nach Normalisierung genau 12 Zeichen aus 0123456789ABCDEFGHJKMNPQRSTVWXYZ.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registration_code",
+    "client_request_id",
+    "public_key",
+    "app_env",
+    "device_info"
+  ],
+  "properties": {
+    "registration_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^(?=(?:[ -]*[0-9A-HJ-NP-TV-ZOILa-hj-np-tv-zoil]){12}[ -]*$)[-0-9A-HJ-NP-TV-ZOILa-hj-np-tv-zoil ]+$"
+    },
+    "client_request_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "public_key": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 4096,
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+    },
+    "app_env": {
+      "type": "string",
+      "enum": [
+        "dev",
+        "test"
+      ]
+    },
+    "device_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manufacturer",
+        "model",
+        "os_version",
+        "sdk_int",
+        "app_version",
+        "app_flavor"
+      ],
+      "properties": {
+        "manufacturer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "os_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "sdk_int": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 99
+        },
+        "app_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "app_flavor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    }
+  }
+}

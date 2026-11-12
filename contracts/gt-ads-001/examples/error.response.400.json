@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "invalid_registration_code",
+    "message": "Der Code ist ungültig oder abgelaufen.",
+    "request_id": "SYN-req-0001"
+  }
+}

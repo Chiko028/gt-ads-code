@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdminDeviceListResponse",
+  "description": "Antwort 200 von GET /v1/admin/devices (API-VERTRAG.md Abschnitt 5). connectivity wird zur Lesezeit berechnet; truncated ist nur bei mehr als 500 Geraeten gesetzt.",
+  "type": "object",
+  "required": [
+    "server_time",
+    "online_threshold_s",
+    "items"
+  ],
+  "properties": {
+    "server_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    },
+    "online_threshold_s": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "manufacturer",
+          "model",
+          "os_version",
+          "sdk_int",
+          "app_version",
+          "app_flavor",
+          "state",
+          "registered_at",
+          "last_seen_at",
+          "connectivity"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "manufacturer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "os_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "sdk_int": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99
+          },
+          "app_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "app_flavor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked"
+            ]
+          },
+          "registered_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          },
+          "connectivity": {
+            "type": "string",
+            "enum": [
+              "reachable",
+              "last_seen"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

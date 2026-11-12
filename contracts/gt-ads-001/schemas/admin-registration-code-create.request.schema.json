@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdminRegistrationCodeCreateRequest",
+  "description": "POST /v1/admin/registration-codes (API-VERTRAG.md Abschnitt 5); label ist optional und hoechstens 64 Zeichen lang.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "label": {
+      "type": "string",
+      "maxLength": 64
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdminLoginRequest",
+  "description": "POST /v1/admin/login (API-VERTRAG.md Abschnitt 5).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "password"
+  ],
+  "properties": {
+    "password": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  }
+}

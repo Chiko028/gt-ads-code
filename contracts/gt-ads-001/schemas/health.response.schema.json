@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HealthResponse",
+  "description": "Antwort 200 von GET /health (API-VERTRAG.md Abschnitt 6); enthaelt keine Datenbankinhalte.",
+  "type": "object",
+  "required": [
+    "status",
+    "env",
+    "version"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok"
+      ]
+    },
+    "env": {
+      "type": "string",
+      "enum": [
+        "dev",
+        "test"
+      ]
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?$"
+    }
+  }
+}

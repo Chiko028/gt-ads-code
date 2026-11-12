@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceAuthChallengeRequest",
+  "description": "POST /v1/device/auth/challenge (API-VERTRAG.md Abschnitt 3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "device_id"
+  ],
+  "properties": {
+    "device_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  }
+}

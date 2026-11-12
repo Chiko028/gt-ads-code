@@ -1,0 +1,14 @@
+{
+  "registration_code": "ABCD-EFGH-JKM",
+  "client_request_id": "00000000-0000-4000-8000-000000000001",
+  "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2R2q1wIzVgEnT3JpNsEz0HiI2qziB55JFlyXMIwnrWcAg3Bo0e8w7Y+iKF4B5v6eGk5hPQNHnzWiGiRB0pRccA==",
+  "app_env": "dev",
+  "device_info": {
+    "manufacturer": "SYN-Hersteller",
+    "model": "SYN-Modell",
+    "os_version": "14",
+    "sdk_int": 34,
+    "app_version": "0.1.0",
+    "app_flavor": "dev"
+  }
+}

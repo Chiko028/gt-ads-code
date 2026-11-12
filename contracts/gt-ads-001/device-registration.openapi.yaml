@@ -1,0 +1,489 @@
+openapi: 3.0.3
+info:
+  title: GT-ADS-001 – Geräteregistrierung
+  version: 0.1.0
+  description: |
+    Maschinenlesbare Fassung des API-Vertrags v0.1.0 aus
+    docs/ARBEITSPAKETE/GT-ADS-001/API-VERTRAG.md. Die validierenden Schemas
+    liegen als JSON Schema Draft 2020-12 unter ./schemas/, die synthetischen
+    Beispiele unter ./examples/. Bei Abweichungen gilt der Vertragstext; eine
+    Abweichung ist ein Fehler im Code oder ein CR, nie stillschweigend.
+  contact:
+    name: GT-Ads Projekt
+servers:
+  - url: http://127.0.0.1:8080
+    description: Nur Testumgebung; der Dienst bindet ausschliesslich 127.0.0.1 (AC-20).
+tags:
+  - name: Geraet
+    description: Registrierung, Challenge-Response und Heartbeat der Android-App.
+  - name: Admin
+    description: Dashboard-Sitzung und Geraeteverwaltung (Cookie-Sitzung).
+  - name: Oeffentlich
+    description: Endpunkte ohne Sitzung.
+
+paths:
+  /health:
+    get:
+      tags: [Oeffentlich]
+      summary: Health-Check
+      description: Liefert nur status, env und version; keine Datenbankinhalte.
+      security: []
+      responses:
+        '200':
+          description: Dienst laeuft.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/health.response.schema.json'
+              examples:
+                valid:
+                  externalValue: './examples/health.response.200.json'
+
+  /v1/device/register:
+    post:
+      tags: [Geraet]
+      summary: Geraet registrieren
+      description: |
+        Loest einen einmaligen Registrierungscode atomar ein und legt das Geraet
+        an. Idempotent bei gleichem Code, gleicher client_request_id und gleichem
+        public_key. Codefehler sind nach aussen nicht unterscheidbar (AC-03).
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/device-register.request.schema.json'
+            examples:
+              valid:
+                externalValue: './examples/device-register.request.valid.json'
+              invalidCodeLength:
+                externalValue: './examples/device-register.request.invalid-code-length.json'
+      responses:
+        '201':
+          description: Geraet registriert oder idempotent wiedererkannt.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/device-register.response.schema.json'
+              examples:
+                valid:
+                  externalValue: './examples/device-register.response.201.json'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: environment_mismatch oder key_already_registered.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/error.response.schema.json'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /v1/device/auth/challenge:
+    post:
+      tags: [Geraet]
+      summary: Challenge (Nonce) anfordern
+      description: Nonce ist einmalig und kurzlebig; ein gesperrtes Geraet erhaelt 403 device_revoked.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/device-auth-challenge.request.schema.json'
+            examples:
+              valid:
+                externalValue: './examples/device-auth-challenge.request.valid.json'
+              invalid:
+                externalValue: './examples/device-auth-challenge.request.invalid.json'
+      responses:
+        '200':
+          description: Nonce ausgestellt.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/device-auth-challenge.response.schema.json'
+              examples:
+                valid:
+                  externalValue: './examples/device-auth-challenge.response.200.json'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/DeviceRevoked'
+
+  /v1/device/auth/token:
+    post:
+      tags: [Geraet]
+      summary: Access-Token per Signatur erhalten
+      description: |
+        Prueft die ECDSA-P-256-Signatur der Nachricht
+        gt-ads-auth-v1\n<device_id>\n<nonce> (DER, SHA-256) und gibt ein
+        kurzlebiges Bearer-Token aus. Nonce danach verbraucht.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/device-auth-token.request.schema.json'
+            examples:
+              valid:
+                externalValue: './examples/device-auth-token.request.valid.json'
+              invalid:
+                externalValue: './examples/device-auth-token.request.invalid.json'
+      responses:
+        '200':
+          description: Token ausgestellt; last_seen_at aktualisiert.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/device-auth-token.response.schema.json'
+              examples:
+                valid:
+                  externalValue: './examples/device-auth-token.response.200.json'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/ChallengeInvalid'
+        '403':
+          $ref: '#/components/responses/DeviceRevoked'
+
+  /v1/device/heartbeat:
+    post:
+      tags: [Geraet]
+      summary: Heartbeat senden
+      description: Setzt last_seen_at auf Serverzeit und protokolliert den Clock-Offset. Idempotent.
+      security:
+        - deviceBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/device-heartbeat.request.schema.json'
+            examples:
+              valid:
+                externalValue: './examples/device-heartbeat.request.valid.json'
+              invalid:
+                externalValue: './examples/device-heartbeat.request.invalid.json'
+      responses:
+        '200':
+          description: Heartbeat angenommen.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/device-heartbeat.response.schema.json'
+              examples:
+                valid:
+                  externalValue: './examples/device-heartbeat.response.200.json'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/DeviceRevoked'
+
+  /v1/admin/login:
+    post:
+      tags: [Admin]
+      summary: Admin anmelden
+      description: Setzt das HttpOnly-/SameSite=Strict-Cookie gt_ads_session. Falsches Passwort ist generisch 401.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/admin-login.request.schema.json'
+            examples:
+              valid:
+                externalValue: './examples/admin-login.request.valid.json'
+              invalid:
+                externalValue: './examples/admin-login.request.invalid.json'
+      responses:
+        '204':
+          description: Angemeldet; Cookie gesetzt.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /v1/admin/logout:
+    post:
+      tags: [Admin]
+      summary: Admin abmelden
+      description: Invalidiert die Sitzung und loescht das Cookie.
+      security:
+        - adminSession: []
+      responses:
+        '204':
+          description: Abgemeldet.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/admin/registration-codes:
+    post:
+      tags: [Admin]
+      summary: Registrierungscode erzeugen
+      description: Der Klartext-Code erscheint nur in dieser Antwort, nie wieder (AC-05).
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/admin-registration-code-create.request.schema.json'
+            examples:
+              valid:
+                externalValue: './examples/admin-registration-code-create.request.valid.json'
+              invalid:
+                externalValue: './examples/admin-registration-code-create.request.invalid.json'
+      responses:
+        '201':
+          description: Code erzeugt.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/admin-registration-code-create.response.schema.json'
+              examples:
+                valid:
+                  externalValue: './examples/admin-registration-code-create.response.201.json'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    get:
+      tags: [Admin]
+      summary: Registrierungscodes auflisten
+      description: Ohne Klartext-Code; status ist pending, used, expired oder revoked.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: Liste der Codes.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/admin-registration-codes-list.response.schema.json'
+              examples:
+                valid:
+                  externalValue: './examples/admin-registration-codes-list.response.200.json'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/admin/registration-codes/{id}:
+    delete:
+      tags: [Admin]
+      summary: Unbenutzten Code widerrufen
+      description: Benutzter oder unbekannter Code ergibt 404 not_found.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/CodeId'
+      responses:
+        '204':
+          description: Widerrufen.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/admin/devices:
+    get:
+      tags: [Admin]
+      summary: Geraeteliste
+      description: |
+        Sortiert nach last_seen_at absteigend. connectivity wird zur Lesezeit
+        berechnet (reachable bei jetzt - last_seen_at <= online_threshold_s).
+        Kein Paging; ab 500 Geraeten ist truncated gesetzt.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: Geraeteliste.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/admin-devices-list.response.schema.json'
+              examples:
+                valid:
+                  externalValue: './examples/admin-devices-list.response.200.json'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/admin/devices/{id}:
+    get:
+      tags: [Admin]
+      summary: Geraetedetail
+      description: Listenfelder plus last_clock_offset_ms und registration_code_id.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: Geraetedetail.
+          content:
+            application/json:
+              schema:
+                $ref: './schemas/admin-device-detail.response.schema.json'
+              examples:
+                valid:
+                  externalValue: './examples/admin-device-detail.response.200.json'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/admin/devices/{id}/revoke:
+    post:
+      tags: [Admin]
+      summary: Geraet sperren
+      description: Sperre wirkt sofort auf bestehende Tokens; bereits gesperrt bleibt 204.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/admin-device-revoke.request.schema.json'
+            examples:
+              valid:
+                externalValue: './examples/admin-device-revoke.request.valid.json'
+              invalid:
+                externalValue: './examples/admin-device-revoke.request.invalid.json'
+      responses:
+        '204':
+          description: Gesperrt.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  parameters:
+    ApiVersion:
+      name: X-GT-Ads-Api-Version
+      in: header
+      required: true
+      description: Vertragsversion; aktuell genau "1" (sonst 400 invalid_request).
+      schema:
+        type: string
+        enum: ['1']
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: Optionale Client-ID; der Server erzeugt sonst eine und gibt sie zurueck.
+      schema:
+        type: string
+        maxLength: 200
+    DeviceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CodeId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  securitySchemes:
+    deviceBearer:
+      type: http
+      scheme: bearer
+      description: Kurzlebiges Access-Token aus /v1/device/auth/token.
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: gt_ads_session
+      description: HttpOnly-/SameSite=Strict-Sitzungscookie des Dashboards.
+  responses:
+    BadRequest:
+      description: invalid_request oder invalid_registration_code.
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/error.response.schema.json'
+          examples:
+            invalidRegistrationCode:
+              externalValue: './examples/error.response.400.json'
+    Unauthorized:
+      description: unauthorized (nicht angemeldet, Token ungueltig oder Geraet unbekannt).
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/error.response.schema.json'
+    ChallengeInvalid:
+      description: challenge_invalid (Nonce unbekannt, abgelaufen, benutzt oder Signatur falsch).
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/error.response.schema.json'
+    DeviceRevoked:
+      description: device_revoked (Geraet gesperrt; Token sofort ungueltig).
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/error.response.schema.json'
+    Forbidden:
+      description: forbidden (Origin-/Content-Type-Pruefung oder fehlende Rolle).
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/error.response.schema.json'
+    NotFound:
+      description: not_found.
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/error.response.schema.json'
+    RateLimited:
+      description: rate_limited; Header Retry-After in Sekunden.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            minimum: 1
+          description: Wartezeit in Sekunden.
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/error.response.schema.json'

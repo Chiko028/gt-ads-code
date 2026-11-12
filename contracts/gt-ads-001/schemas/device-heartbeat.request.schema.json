@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceHeartbeatRequest",
+  "description": "POST /v1/device/heartbeat (API-VERTRAG.md Abschnitt 4). seq ist pro App-Installation monoton; device_time dient nur dem clock_offset.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "seq",
+    "device_time",
+    "app_version",
+    "os_version"
+  ],
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "device_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    },
+    "app_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "os_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    }
+  }
+}

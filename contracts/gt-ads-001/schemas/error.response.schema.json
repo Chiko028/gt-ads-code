@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiErrorResponse",
+  "description": "Fehlerformat aller 4xx/5xx-Antworten (API-VERTRAG.md Abschnitt 1). Keine weiteren Details nach aussen.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "error"
+  ],
+  "properties": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "request_id"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "invalid_request",
+            "invalid_registration_code",
+            "environment_mismatch",
+            "key_already_registered",
+            "unauthorized",
+            "challenge_invalid",
+            "device_revoked",
+            "forbidden",
+            "not_found",
+            "rate_limited",
+            "internal_error"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    }
+  }
+}

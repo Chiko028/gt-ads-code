@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdminRegistrationCodeCreateResponse",
+  "description": "Antwort 201 von POST /v1/admin/registration-codes (API-VERTRAG.md Abschnitt 5). Der Code erscheint nur in dieser Antwort; das Schema akzeptiert die kanonische 12-Zeichen-Schreibweise und die gruppierte Anzeigeform XXXX-XXXX-XXXX.",
+  "type": "object",
+  "required": [
+    "id",
+    "code",
+    "label",
+    "expires_at"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{4}(?:-?[0-9A-HJKMNP-TV-Z]{4}){2}$"
+    },
+    "label": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    }
+  }
+}

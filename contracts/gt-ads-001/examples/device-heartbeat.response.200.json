@@ -1,0 +1,7 @@
+{
+  "server_time": "2026-01-01T12:00:01.000Z",
+  "device_state": "active",
+  "config": {
+    "heartbeat_interval_s": 900
+  }
+}

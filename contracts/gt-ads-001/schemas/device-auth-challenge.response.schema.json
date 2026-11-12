@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceAuthChallengeResponse",
+  "description": "Antwort 200 von POST /v1/device/auth/challenge (API-VERTRAG.md Abschnitt 3).",
+  "type": "object",
+  "required": [
+    "nonce",
+    "expires_at"
+  ],
+  "properties": {
+    "nonce": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    }
+  }
+}
