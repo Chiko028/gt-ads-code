@@ -1,49 +1,124 @@
 /**
- * CX-006 / GT-ADS-003 (L-03, F-B04, F-A07): Deterministischer
- * fixed_slot-Schleifenplaner.
+ * CX-025 / CX-006-Ersatz B: Deterministischer Schleifenplan.
  *
- * Der Dienst verarbeitet ausschließlich explizite Eingaben. Er liest keine
- * Systemzeit, filtert nicht nach der aktuellen Uhrzeit und greift nicht auf
- * Datenbank, Netzwerk oder Dateisystem zu. Start- und Endzeitpunkte werden
- * nach der Validierung aus CX-004 unverändert übernommen.
+ * Der Planer baut ausschließlich aus bereits geprüften Belegungen (CX-024)
+ * einen unveränderlich kopierten Taxi-Schleifenplan. Es gibt keine Systemzeit,
+ * keine I/O, keine automatische Platzbelegung, keine Gewichtung, Rotation,
+ * Zufallsreihenfolge, Uhrzeitfilterung oder zusätzliche Standardplätze.
  *
- * Bewusst NICHT enthalten: Standardplatzanzahl, automatische Befüllung,
- * Gewichtung, Rotation, Exklusivität, Wiederholung von Medien ohne eigene
- * Platzbelegung, Upload oder Kampagnenverwaltung.
+ * Die Strukturprüfung (`validateLoopPlan`) arbeitet ausschließlich auf der
+ * serialisierbaren Planstruktur. Sie prüft bewusst KEINE ursprünglichen Taxi-
+ * oder Gruppenzuweisungen, weil diese absichtlich nicht Teil des Plans sind.
+ * Sie ist außerdem keine Autorisierungs- oder Signaturprüfung.
  */
 
 import { validateCampaignRuntime } from "../campaigns/runtimeWindow.js";
 import {
+  MAX_MEDIA_SIZE_BYTES,
+  SPOT_DURATION_MS,
+  validateBookings,
+  type BookingValidationError,
+  type BookingValidationErrorCode,
+} from "./validateBookings.js";
+import {
   LoopPlanError,
-  type LoopPlan,
+  type LoopPlan as LegacyLoopPlan,
+  type LoopPlanCampaign,
+  type LoopPlanErrorCode,
+  type LoopPlanErrorDetails,
+  type LoopPlanInput,
+  type LoopPlanSpot,
+} from "./types.js";
+
+/** Bisherige Typen bleiben für bestehende Aufrufer erreichbar. */
+export {
+  LoopPlanError,
   type LoopPlanCampaign,
   type LoopPlanCampaignStatus,
   type LoopPlanErrorCode,
   type LoopPlanErrorDetails,
   type LoopPlanInput,
+  type LoopPlanMedia,
   type LoopPlanPlacement,
   type LoopPlanSpot,
 } from "./types.js";
 
-// Der Planer ist der öffentliche Einstieg des Moduls; Typen und Fehlerklasse
-// bleiben für Aufrufer direkt erreichbar.
-export * from "./types.js";
-
 /** L-03: Jeder Spot dieser Schleife dauert exakt 15 Sekunden. */
-export const SPOT_DURATION_MS = 15_000;
+export { SPOT_DURATION_MS };
 
 const MIN_SLOT_COUNT = 12;
 const MAX_SLOT_COUNT = 16;
-
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
-const CAMPAIGN_STATUSES: ReadonlySet<LoopPlanCampaignStatus> = new Set([
-  "draft",
-  "active",
-  "paused",
-  "finished",
-  "archived",
-]);
+/** Ein geordneter, vollständig kopierter Eintrag des Schleifenplans. */
+export interface LoopPlanEntry {
+  /** Lückenlose Position 1 bis slotCount, in aufsteigender Reihenfolge. */
+  position: number;
+  campaignId: string;
+  mediaId: string;
+  /** 64 kleingeschriebene Hexzeichen. */
+  sha256: string;
+  sizeBytes: number;
+  durationMs: number;
+  /** Unverändert aus CX-024/CX-004 übernommener UTC-Start. */
+  startAt: string;
+  /** Unverändert aus CX-024/CX-004 übernommenes UTC-Ende. */
+  endAt: string;
+}
+
+/** Deterministischer, serialisierbarer Taxi-Schleifenplan. */
+export interface LoopPlan {
+  taxiId: string;
+  slotCount: number;
+  totalDurationMs: number;
+  entries: LoopPlanEntry[];
+}
+
+/** Stabile Fehlercodes der Plan-Strukturprüfung. */
+export type LoopPlanValidationCode =
+  | "invalid_plan"
+  | "invalid_taxi_id"
+  | "invalid_slot_count"
+  | "invalid_entries"
+  | "invalid_position"
+  | "duplicate_position"
+  | "missing_position"
+  | "invalid_campaign_id"
+  | "invalid_media_id"
+  | "invalid_media"
+  | "invalid_spot_duration"
+  | "invalid_total_duration"
+  | "invalid_runtime_window";
+
+/** Ein feldbezogener Befund der Plan-Strukturprüfung. */
+export interface LoopPlanValidationError {
+  code: LoopPlanValidationCode;
+  field: string;
+  position?: number;
+  message: string;
+}
+
+/** Diskriminiertes Ergebnis der Plan-Strukturprüfung. */
+export type LoopPlanValidationResult =
+  | { valid: true; value: LoopPlan }
+  | { valid: false; errors: LoopPlanValidationError[] };
+
+/**
+ * Strukturierter Fehler des Planbaus. Die Belegungsfehler stammen unverändert
+ * aus CX-024; es wird niemals ein Teilplan zurückgegeben.
+ */
+export class LoopPlanBuildError extends Error {
+  readonly code = "invalid_bookings" as const;
+  readonly errors: readonly BookingValidationError[];
+
+  constructor(errors: readonly BookingValidationError[]) {
+    super(
+      "Die übergebenen Platzbelegungen sind ungültig; es wurde kein Schleifenplan erzeugt.",
+    );
+    this.name = "LoopPlanBuildError";
+    this.errors = errors.map((error) => ({ ...error }));
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -53,341 +128,534 @@ function isNonEmptyText(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => isNonEmptyText(entry));
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function fail(
-  code: LoopPlanErrorCode,
-  message: string,
-  details: LoopPlanErrorDetails = {},
-): never {
-  throw new LoopPlanError(code, message, details);
-}
-
-/**
- * Prüft die Struktur einer übergebenen Kampagne. Die Laufzeit wird über die
- * vorhandene CX-004-Validierung geprüft, damit keine zweite Zeitlogik entsteht.
- */
-function validateCampaign(value: unknown, index: number): LoopPlanCampaign {
-  if (!isRecord(value)) {
-    fail(
-      "invalid_campaign",
-      `Die Kampagne an Index ${index} muss als Objekt vorliegen.`,
-      { field: `campaigns[${index}]` },
-    );
-  }
-
-  if (!isNonEmptyText(value.campaignId)) {
-    fail(
-      "invalid_campaign",
-      `Die Kampagne an Index ${index} benötigt eine nicht leere campaignId.`,
-      { field: `campaigns[${index}].campaignId` },
-    );
-  }
-
-  if (
-    typeof value.status !== "string" ||
-    !CAMPAIGN_STATUSES.has(value.status as LoopPlanCampaignStatus)
-  ) {
-    fail(
-      "invalid_campaign",
-      `Die Kampagne "${value.campaignId}" hat einen unbekannten Zustand.`,
-      { field: "status", campaignId: value.campaignId },
-    );
-  }
-
-  if (!isStringArray(value.targetTaxiIds)) {
-    fail(
-      "invalid_campaign",
-      `Die Kampagne "${value.campaignId}" benötigt targetTaxiIds als Textliste.`,
-      { field: "targetTaxiIds", campaignId: value.campaignId },
-    );
-  }
-
-  if (!isStringArray(value.targetGroupIds)) {
-    fail(
-      "invalid_campaign",
-      `Die Kampagne "${value.campaignId}" benötigt targetGroupIds als Textliste.`,
-      { field: "targetGroupIds", campaignId: value.campaignId },
-    );
-  }
-
-  const runtime = validateCampaignRuntime(value.startAt, value.endAt);
-  if (!runtime.ok) {
-    fail(
-      "invalid_runtime_window",
-      `Die Kampagne "${value.campaignId}" hat kein gültiges UTC-Laufzeitfenster.`,
-      {
-        field: "runtimeWindow",
-        campaignId: value.campaignId,
-        runtimeErrors: runtime.errors,
-      },
-    );
-  }
-
+/** Baut Plan-Einträge ausschließlich neu auf; keine Eingabereferenzen. */
+function toEntry(
+  position: number,
+  campaignId: string,
+  mediaId: string,
+  sha256: string,
+  sizeBytes: number,
+  durationMs: number,
+  startAt: string,
+  endAt: string,
+): LoopPlanEntry {
   return {
-    campaignId: value.campaignId,
-    status: value.status as LoopPlanCampaignStatus,
-    startAt: runtime.value.startAt,
-    endAt: runtime.value.endAt,
-    targetTaxiIds: [...value.targetTaxiIds],
-    targetGroupIds: [...value.targetGroupIds],
+    position,
+    campaignId,
+    mediaId,
+    sha256,
+    sizeBytes,
+    durationMs,
+    startAt,
+    endAt,
   };
 }
 
-/** Prüft eine Medienreferenz; die 15-s-Bedingung folgt separat. */
-function validateMedia(value: unknown, position: number): LoopPlanPlacement["media"] {
-  if (!isRecord(value)) {
-    fail(
-      "invalid_media",
-      `Die Platzbelegung ${position} benötigt eine Medienreferenz.`,
-      { field: "media", position },
-    );
-  }
-
-  if (!isNonEmptyText(value.mediaId)) {
-    fail(
-      "invalid_media",
-      `Die Medienreferenz an Position ${position} benötigt eine mediaId.`,
-      { field: "media.mediaId", position },
-    );
-  }
-
-  if (typeof value.sha256 !== "string" || !SHA256_PATTERN.test(value.sha256)) {
-    fail(
-      "invalid_media",
-      `Die Medienreferenz an Position ${position} benötigt einen SHA-256 in Kleinschreibung.`,
-      { field: "media.sha256", position },
-    );
-  }
-
-  if (
-    typeof value.sizeBytes !== "number" ||
-    !Number.isSafeInteger(value.sizeBytes) ||
-    value.sizeBytes <= 0
-  ) {
-    fail(
-      "invalid_media",
-      `Die Medienreferenz an Position ${position} benötigt eine positive Byteanzahl.`,
-      { field: "media.sizeBytes", position },
-    );
-  }
-
-  return {
-    mediaId: value.mediaId,
-    sha256: value.sha256,
-    sizeBytes: value.sizeBytes,
-    durationMs: value.durationMs as number,
-  };
-}
-
-/** Prüft die lückenlose Positionsmenge 1 bis slotCount. */
-function validatePositions(placements: readonly unknown[], slotCount: number): void {
-  const seen = new Set<number>();
-
-  for (const candidate of placements) {
-    if (!isRecord(candidate)) {
-      fail("invalid_position", "Jede Platzbelegung muss als Objekt vorliegen.", {
-        field: "placements",
-      });
-    }
-
-    const position = candidate.position;
-    if (
-      typeof position !== "number" ||
-      !Number.isSafeInteger(position) ||
-      position < 1 ||
-      position > slotCount
-    ) {
-      fail(
-        "invalid_position",
-        `Positionen müssen ganzzahlig zwischen 1 und ${slotCount} liegen.`,
-        { field: "position", position: typeof position === "number" ? position : undefined },
-      );
-    }
-
-    if (seen.has(position)) {
-      fail(
-        "duplicate_position",
-        `Die Position ${position} ist mehrfach belegt.`,
-        { field: "position", position },
-      );
-    }
-
-    seen.add(position);
-  }
-
-  const missingPositions: number[] = [];
-  for (let position = 1; position <= slotCount; position += 1) {
-    if (!seen.has(position)) {
-      missingPositions.push(position);
-    }
-  }
-
-  if (missingPositions.length > 0) {
-    fail(
-      "missing_position",
-      `Die Positionen sind nicht lückenlos; es fehlen: ${missingPositions.join(", ")}.`,
-      { field: "position", missingPositions },
-    );
-  }
-}
-
-function campaignIsAssigned(
-  campaign: LoopPlanCampaign,
-  taxiId: string,
-  groupIds: ReadonlySet<string>,
-): boolean {
-  // Bewusst boolesche Zuordnung: direkte und Gruppenzuordnung derselben
-  // Kampagne erzeugen keine zusätzliche Belegung.
-  if (campaign.targetTaxiIds.includes(taxiId)) {
-    return true;
-  }
-
-  return campaign.targetGroupIds.some((groupId) => groupIds.has(groupId));
+function totalDurationOf(entries: readonly LoopPlanEntry[]): number {
+  return entries.reduce((sum, entry) => sum + entry.durationMs, 0);
 }
 
 /**
- * Erzeugt aus explizit belegten Plätzen einen deterministischen
- * fixed_slot-Schleifenplan.
- *
- * - slotCount muss ganzzahlig zwischen 12 und 16 liegen.
- * - Positionen müssen lückenlos 1 bis slotCount belegen.
- * - Jeder Spot dauert exakt 15000 ms.
- * - Jede Belegung muss dem Taxi direkt oder über eine übergebene Gruppe
- *   zugeordnet sein.
- * - Nur aktive Kampagnen sind zulässig; fremde Kampagnen werden abgewiesen.
- * - Gültige Start-/Endewerte werden unverändert übernommen.
- *
- * Die Reihenfolge der übergebenen Belegungen beeinflusst das Ergebnis nicht.
- * Fehler werden als typisierte LoopPlanError geworfen.
+ * Erzeugt aus geprüften CX-024-Belegungen einen deterministischen Schleifen-
+ * plan. Ungültige Belegungen werden als LoopPlanBuildError mit den
+ * strukturierten CX-024-Fehlern abgewiesen; es entsteht kein Teilresultat.
  */
-export function buildLoopPlan(input: LoopPlanInput): LoopPlan {
+function buildFromBookings(input: unknown): LoopPlan {
+  const result = validateBookings(input);
+
+  if (!result.valid) {
+    throw new LoopPlanBuildError(result.errors);
+  }
+
+  const entries: LoopPlanEntry[] = result.value.bookings.map((booking) =>
+    toEntry(
+      booking.position,
+      booking.campaign.id,
+      booking.media.id,
+      booking.media.sha256,
+      booking.media.sizeBytes,
+      booking.media.durationMs,
+      booking.campaign.startAt,
+      booking.campaign.endAt,
+    ),
+  );
+
+  return {
+    taxiId: result.value.taxiId,
+    slotCount: result.value.slotCount,
+    totalDurationMs: totalDurationOf(entries),
+    entries,
+  };
+}
+
+const BOOKING_ERROR_TO_LOOP_ERROR: Readonly<
+  Record<BookingValidationErrorCode, LoopPlanErrorCode>
+> = {
+  invalid_input: "invalid_taxi_id",
+  invalid_taxi_id: "invalid_taxi_id",
+  invalid_group_ids: "invalid_group_ids",
+  invalid_slot_count: "invalid_slot_count",
+  invalid_bookings: "invalid_position",
+  invalid_booking: "invalid_position",
+  invalid_position: "invalid_position",
+  duplicate_position: "duplicate_position",
+  missing_position: "missing_position",
+  invalid_campaign: "invalid_campaign",
+  campaign_not_active: "campaign_not_active",
+  not_assigned: "not_assigned",
+  invalid_media: "invalid_media",
+  invalid_spot_duration: "invalid_spot_duration",
+  invalid_runtime_window: "invalid_runtime_window",
+};
+
+/**
+ * Übersetzt den ersten CX-024-Fehler in den bestehenden LoopPlanError, damit
+ * CX-007 unverändert auf strukturierte Fehler prüfen kann.
+ */
+function toLegacyError(errors: readonly BookingValidationError[]): LoopPlanError {
+  const first = errors[0];
+  if (first === undefined) {
+    return new LoopPlanError(
+      "invalid_campaign",
+      "Die Platzbelegungen konnten nicht geprüft werden.",
+    );
+  }
+
+  return new LoopPlanError(BOOKING_ERROR_TO_LOOP_ERROR[first.code], first.message, {
+    field: first.field,
+  });
+}
+
+/**
+ * Übersetzt die frühere, explizite Eingabeform (campaigns/placements) in
+ * CX-024-Belegungen. Dadurch existiert nur eine Kampagnen- und Medienprüfung
+ * im Modul; die eigentliche Validierung bleibt ausschließlich in CX-024.
+ */
+function buildLegacyPlan(input: unknown): LegacyLoopPlan {
   if (!isRecord(input)) {
-    fail("invalid_taxi_id", "Die Eingabe muss als Objekt vorliegen.", {
-      field: "input",
-    });
-  }
-
-  if (!isNonEmptyText(input.taxiId)) {
-    fail("invalid_taxi_id", "Die Taxi-ID muss ein nicht leerer Text sein.", {
-      field: "taxiId",
-    });
-  }
-
-  if (!isStringArray(input.groupIds)) {
-    fail("invalid_group_ids", "groupIds muss eine Liste nicht leerer Texte sein.", {
-      field: "groupIds",
-    });
-  }
-
-  if (
-    typeof input.slotCount !== "number" ||
-    !Number.isSafeInteger(input.slotCount) ||
-    input.slotCount < MIN_SLOT_COUNT ||
-    input.slotCount > MAX_SLOT_COUNT
-  ) {
-    fail(
-      "invalid_slot_count",
-      `slotCount muss eine ganze Zahl zwischen ${MIN_SLOT_COUNT} und ${MAX_SLOT_COUNT} sein.`,
-      { field: "slotCount" },
+    throw new LoopPlanError(
+      "invalid_taxi_id",
+      "Die Eingabe muss als Objekt vorliegen.",
+      { field: "input" },
     );
   }
 
   if (!Array.isArray(input.campaigns)) {
-    fail("invalid_campaign", "campaigns muss eine Liste sein.", { field: "campaigns" });
-  }
-
-  if (!Array.isArray(input.placements)) {
-    fail("invalid_position", "placements muss eine Liste sein.", { field: "placements" });
-  }
-
-  const campaigns = new Map<string, LoopPlanCampaign>();
-  input.campaigns.forEach((candidate, index) => {
-    const campaign = validateCampaign(candidate, index);
-    if (campaigns.has(campaign.campaignId)) {
-      fail(
-        "invalid_campaign",
-        `Die Kampagne "${campaign.campaignId}" ist mehrfach definiert.`,
-        { field: "campaignId", campaignId: campaign.campaignId },
-      );
-    }
-    campaigns.set(campaign.campaignId, campaign);
-  });
-
-  validatePositions(input.placements, input.slotCount);
-
-  const groupIds = new Set(input.groupIds);
-  const spots: LoopPlanSpot[] = [];
-
-  // Sortierung nach Position macht das Ergebnis unabhängig von der
-  // Eingabereihenfolge.
-  const orderedPlacements = [...input.placements].sort(
-    (left, right) => left.position - right.position,
-  );
-
-  for (const placement of orderedPlacements) {
-    const position = placement.position;
-
-    if (!isNonEmptyText(placement.campaignId)) {
-      fail(
-        "invalid_campaign",
-        `Die Platzbelegung ${position} benötigt eine campaignId.`,
-        { field: "campaignId", position },
-      );
-    }
-
-    const campaign = campaigns.get(placement.campaignId);
-    if (campaign === undefined) {
-      fail(
-        "unknown_campaign",
-        `Die Kampagne "${placement.campaignId}" wurde nicht explizit übergeben.`,
-        { field: "campaignId", position, campaignId: placement.campaignId },
-      );
-    }
-
-    if (campaign.status !== "active") {
-      fail(
-        "campaign_not_active",
-        `Die Kampagne "${campaign.campaignId}" ist nicht aktiv (Zustand: ${campaign.status}).`,
-        { field: "status", position, campaignId: campaign.campaignId },
-      );
-    }
-
-    if (!campaignIsAssigned(campaign, input.taxiId, groupIds)) {
-      fail(
-        "not_assigned",
-        `Die Kampagne "${campaign.campaignId}" ist dem Taxi weder direkt noch über eine Gruppe zugeordnet.`,
-        { field: "targets", position, campaignId: campaign.campaignId },
-      );
-    }
-
-    const media = validateMedia(placement.media, position);
-    if (media.durationMs !== SPOT_DURATION_MS) {
-      fail(
-        "invalid_spot_duration",
-        `Der Spot an Position ${position} muss exakt ${SPOT_DURATION_MS} ms dauern.`,
-        { field: "media.durationMs", position },
-      );
-    }
-
-    spots.push({
-      position,
-      campaignId: campaign.campaignId,
-      mediaId: media.mediaId,
-      sha256: media.sha256,
-      sizeBytes: media.sizeBytes,
-      durationMs: media.durationMs,
-      startAt: campaign.startAt,
-      endAt: campaign.endAt,
+    throw new LoopPlanError("invalid_campaign", "campaigns muss eine Liste sein.", {
+      field: "campaigns",
     });
   }
 
-  return {
+  if (!Array.isArray(input.placements)) {
+    throw new LoopPlanError(
+      "invalid_position",
+      "placements muss eine Liste sein.",
+      { field: "placements" },
+    );
+  }
+
+  const campaigns = new Map<string, LoopPlanCampaign>();
+  for (const candidate of input.campaigns) {
+    if (!isRecord(candidate) || !isNonEmptyText(candidate.campaignId)) {
+      throw new LoopPlanError(
+        "invalid_campaign",
+        "Jede Kampagne benötigt eine nicht leere campaignId.",
+        { field: "campaignId" },
+      );
+    }
+
+    if (campaigns.has(candidate.campaignId)) {
+      throw new LoopPlanError(
+        "invalid_campaign",
+        `Die Kampagne "${candidate.campaignId}" ist mehrfach definiert.`,
+        { field: "campaignId", campaignId: candidate.campaignId },
+      );
+    }
+
+    campaigns.set(candidate.campaignId, candidate as unknown as LoopPlanCampaign);
+  }
+
+  const bookings = input.placements.map((candidate) => {
+    if (!isRecord(candidate)) {
+      return { position: candidate, campaign: null, media: null };
+    }
+
+    const campaignId = candidate.campaignId;
+    if (!isNonEmptyText(campaignId)) {
+      return {
+        position: candidate.position,
+        campaign: null,
+        media: candidate.media,
+      };
+    }
+
+    const campaign = campaigns.get(campaignId);
+    if (campaign === undefined) {
+      throw new LoopPlanError(
+        "unknown_campaign",
+        `Die Kampagne "${campaignId}" wurde nicht explizit übergeben.`,
+        {
+          field: "campaignId",
+          position:
+            typeof candidate.position === "number" ? candidate.position : undefined,
+          campaignId,
+        },
+      );
+    }
+
+    const media = candidate.media;
+    return {
+      position: candidate.position,
+      campaign: {
+        id: campaign.campaignId,
+        status: campaign.status,
+        startAt: campaign.startAt,
+        endAt: campaign.endAt,
+        taxiIds: campaign.targetTaxiIds,
+        groupIds: campaign.targetGroupIds,
+      },
+      media: isRecord(media)
+        ? {
+            id: media.mediaId,
+            sha256: media.sha256,
+            sizeBytes: media.sizeBytes,
+            durationMs: media.durationMs,
+          }
+        : media,
+    };
+  });
+
+  const result = validateBookings({
     taxiId: input.taxiId,
+    groupIds: input.groupIds,
     slotCount: input.slotCount,
-    loopDurationMs: input.slotCount * SPOT_DURATION_MS,
+    bookings,
+  });
+
+  if (!result.valid) {
+    throw toLegacyError(result.errors);
+  }
+
+  const spots: LoopPlanSpot[] = result.value.bookings.map((booking) => ({
+    position: booking.position,
+    campaignId: booking.campaign.id,
+    mediaId: booking.media.id,
+    sha256: booking.media.sha256,
+    sizeBytes: booking.media.sizeBytes,
+    durationMs: booking.media.durationMs,
+    startAt: booking.campaign.startAt,
+    endAt: booking.campaign.endAt,
+  }));
+
+  return {
+    taxiId: result.value.taxiId,
+    slotCount: result.value.slotCount,
+    loopDurationMs: result.value.slotCount * SPOT_DURATION_MS,
     spots,
   };
+}
+
+function usesLegacyShape(input: unknown): boolean {
+  return (
+    isRecord(input) &&
+    !Array.isArray(input.bookings) &&
+    (Array.isArray(input.campaigns) || Array.isArray(input.placements))
+  );
+}
+
+/**
+ * Erzeugt aus geprüften Belegungen einen unveränderlich kopierten Taxi-
+ * Schleifenplan in Positionsreihenfolge.
+ *
+ * Die frühere explizite Eingabeform bleibt für bestehende Aufrufer (CX-007)
+ * verfügbar und wird ebenfalls über CX-024 geprüft. Neue Aufrufer übergeben
+ * die CX-024-Eingabe mit `bookings`.
+ */
+export function buildLoopPlan(input: LoopPlanInput): LegacyLoopPlan;
+export function buildLoopPlan(input: unknown): LoopPlan;
+export function buildLoopPlan(input: unknown): LoopPlan | LegacyLoopPlan {
+  if (usesLegacyShape(input)) {
+    return buildLegacyPlan(input);
+  }
+
+  return buildFromBookings(input);
+}
+
+interface ValidationCollector {
+  errors: LoopPlanValidationError[];
+  add(
+    code: LoopPlanValidationCode,
+    field: string,
+    message: string,
+    position?: number,
+  ): void;
+}
+
+function createCollector(): ValidationCollector {
+  const errors: LoopPlanValidationError[] = [];
+  return {
+    errors,
+    add(code, field, message, position) {
+      errors.push({
+        code,
+        field,
+        ...(position === undefined ? {} : { position }),
+        message,
+      });
+    },
+  };
+}
+
+/**
+ * Prüft ausschließlich die serialisierbare Planstruktur: 12–16 Plätze,
+ * lückenlose eindeutige Positionen, 15000 ms je Spot, korrekte Gesamtdauer,
+ * nichtleere IDs, gültige SHA-256-/Bytewerte und gültige Laufzeitfenster über
+ * CX-004. Taxi-/Gruppenzuweisungen sind absichtlich nicht Teil des Plans.
+ */
+export function validateLoopPlan(input: unknown): LoopPlanValidationResult {
+  const collector = createCollector();
+
+  if (!isRecord(input)) {
+    collector.add("invalid_plan", "plan", "Der Plan muss als Objekt vorliegen.");
+    return { valid: false, errors: collector.errors };
+  }
+
+  if (!isNonEmptyText(input.taxiId)) {
+    collector.add(
+      "invalid_taxi_id",
+      "taxiId",
+      "Der Plan benötigt eine nicht leere Taxi-ID.",
+    );
+  }
+
+  const slotCount = input.slotCount;
+  const slotCountValid =
+    typeof slotCount === "number" &&
+    Number.isSafeInteger(slotCount) &&
+    slotCount >= MIN_SLOT_COUNT &&
+    slotCount <= MAX_SLOT_COUNT;
+
+  if (!slotCountValid) {
+    collector.add(
+      "invalid_slot_count",
+      "slotCount",
+      `slotCount muss eine ganze Zahl zwischen ${MIN_SLOT_COUNT} und ${MAX_SLOT_COUNT} sein.`,
+    );
+  }
+
+  const rawEntries = input.entries;
+  if (!Array.isArray(rawEntries)) {
+    collector.add(
+      "invalid_entries",
+      "entries",
+      "Der Plan benötigt eine Eintragsliste.",
+    );
+    return { valid: false, errors: collector.errors };
+  }
+
+  if (slotCountValid && rawEntries.length !== slotCount) {
+    collector.add(
+      "invalid_entries",
+      "entries",
+      `Der Plan muss genau ${slotCount} Einträge enthalten.`,
+    );
+  }
+
+  const seenPositions = new Set<number>();
+  const entries: LoopPlanEntry[] = [];
+  let durationSum = 0;
+  let durationSumValid = true;
+
+  rawEntries.forEach((candidate, index) => {
+    const expectedPosition = index + 1;
+
+    if (!isRecord(candidate)) {
+      collector.add(
+        "invalid_entries",
+        `entries[${index}]`,
+        `Der Eintrag an Index ${index} muss als Objekt vorliegen.`,
+      );
+      durationSumValid = false;
+      return;
+    }
+
+    const position = candidate.position;
+    const maxPosition = slotCountValid ? slotCount : MAX_SLOT_COUNT;
+    const positionValid =
+      typeof position === "number" &&
+      Number.isSafeInteger(position) &&
+      position >= 1 &&
+      position <= maxPosition;
+
+    if (!positionValid) {
+      collector.add(
+        "invalid_position",
+        `entries[${index}].position`,
+        `Die Position muss eine ganze Zahl zwischen 1 und ${maxPosition} sein.`,
+        typeof position === "number" ? position : undefined,
+      );
+    } else {
+      if (seenPositions.has(position)) {
+        collector.add(
+          "duplicate_position",
+          `entries[${index}].position`,
+          `Die Position ${position} ist mehrfach belegt.`,
+          position,
+        );
+      } else {
+        seenPositions.add(position);
+      }
+
+      if (position !== expectedPosition) {
+        collector.add(
+          "invalid_position",
+          `entries[${index}].position`,
+          `Der Eintrag an Index ${index} muss Position ${expectedPosition} tragen.`,
+          position,
+        );
+      }
+    }
+
+    if (!isNonEmptyText(candidate.campaignId)) {
+      collector.add(
+        "invalid_campaign_id",
+        `entries[${index}].campaignId`,
+        `Der Eintrag an Position ${expectedPosition} benötigt eine nicht leere campaignId.`,
+        expectedPosition,
+      );
+    }
+
+    if (!isNonEmptyText(candidate.mediaId)) {
+      collector.add(
+        "invalid_media_id",
+        `entries[${index}].mediaId`,
+        `Der Eintrag an Position ${expectedPosition} benötigt eine nicht leere mediaId.`,
+        expectedPosition,
+      );
+    }
+
+    if (
+      typeof candidate.sha256 !== "string" ||
+      !SHA256_PATTERN.test(candidate.sha256)
+    ) {
+      collector.add(
+        "invalid_media",
+        `entries[${index}].sha256`,
+        `Der Eintrag an Position ${expectedPosition} benötigt einen SHA-256 aus genau 64 kleingeschriebenen Hexzeichen.`,
+        expectedPosition,
+      );
+    }
+
+    if (
+      typeof candidate.sizeBytes !== "number" ||
+      !Number.isSafeInteger(candidate.sizeBytes) ||
+      candidate.sizeBytes <= 0 ||
+      candidate.sizeBytes > MAX_MEDIA_SIZE_BYTES
+    ) {
+      collector.add(
+        "invalid_media",
+        `entries[${index}].sizeBytes`,
+        `Der Eintrag an Position ${expectedPosition} benötigt eine positive ganzzahlige Byteanzahl bis ${MAX_MEDIA_SIZE_BYTES}.`,
+        expectedPosition,
+      );
+    }
+
+    const durationMs = candidate.durationMs;
+    if (typeof durationMs !== "number" || durationMs !== SPOT_DURATION_MS) {
+      collector.add(
+        "invalid_spot_duration",
+        `entries[${index}].durationMs`,
+        `Der Spot an Position ${expectedPosition} muss exakt ${SPOT_DURATION_MS} ms dauern.`,
+        expectedPosition,
+      );
+      durationSumValid = false;
+    } else {
+      durationSum += durationMs;
+    }
+
+    const runtime = validateCampaignRuntime(candidate.startAt, candidate.endAt);
+    if (!runtime.ok) {
+      for (const runtimeError of runtime.errors) {
+        collector.add(
+          "invalid_runtime_window",
+          `entries[${index}].${runtimeError.field}`,
+          runtimeError.message,
+          expectedPosition,
+        );
+      }
+      return;
+    }
+
+    entries.push(
+      toEntry(
+        expectedPosition,
+        candidate.campaignId as string,
+        candidate.mediaId as string,
+        candidate.sha256 as string,
+        candidate.sizeBytes as number,
+        SPOT_DURATION_MS,
+        runtime.value.startAt,
+        runtime.value.endAt,
+      ),
+    );
+  });
+
+  if (slotCountValid) {
+    for (let position = 1; position <= slotCount; position += 1) {
+      if (!seenPositions.has(position)) {
+        collector.add(
+          "missing_position",
+          `entries[${position - 1}].position`,
+          `Die Position ${position} ist nicht belegt.`,
+          position,
+        );
+      }
+    }
+  }
+
+  if (
+    typeof input.totalDurationMs !== "number" ||
+    !isNonNegativeSafeInteger(input.totalDurationMs)
+  ) {
+    collector.add(
+      "invalid_total_duration",
+      "totalDurationMs",
+      "totalDurationMs muss eine nicht negative ganze Zahl sein.",
+    );
+  } else if (slotCountValid && input.totalDurationMs !== slotCount * SPOT_DURATION_MS) {
+    collector.add(
+      "invalid_total_duration",
+      "totalDurationMs",
+      `totalDurationMs muss ${slotCount * SPOT_DURATION_MS} ms betragen.`,
+    );
+  }
+
+  if (
+    durationSumValid &&
+    slotCountValid &&
+    durationSum !== slotCount * SPOT_DURATION_MS
+  ) {
+    collector.add(
+      "invalid_total_duration",
+      "entries",
+      "Die Summe der Eintragsdauern entspricht nicht der erwarteten Gesamtdauer.",
+    );
+  }
+
+  if (collector.errors.length > 0 || !slotCountValid) {
+    return { valid: false, errors: collector.errors };
+  }
+
+  const plan: LoopPlan = {
+    taxiId: input.taxiId as string,
+    slotCount: slotCount as number,
+    totalDurationMs: input.totalDurationMs as number,
+    entries: entries.map((entry) => ({ ...entry })),
+  };
+
+  return { valid: true, value: plan };
 }

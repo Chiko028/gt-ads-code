@@ -1,125 +1,171 @@
 import { describe, expect, it } from "vitest";
-import { buildLoopPlan, SPOT_DURATION_MS } from "../../../src/modules/playout/planner.js";
 import {
-  LoopPlanError,
+  buildLoopPlan,
+  LoopPlanBuildError,
+  SPOT_DURATION_MS,
+  validateLoopPlan,
   type LoopPlan,
-  type LoopPlanCampaign,
-  type LoopPlanErrorCode,
-  type LoopPlanInput,
-  type LoopPlanMedia,
-  type LoopPlanPlacement,
-} from "../../../src/modules/playout/types.js";
+  type LoopPlanValidationError,
+} from "../../../src/modules/playout/planner.js";
+import {
+  validateBookings,
+  type BookingValidationError,
+} from "../../../src/modules/playout/validateBookings.js";
 
-const TAXI_ID = "taxi-001";
-const GROUP_A = "group-a";
-const GROUP_B = "group-b";
+const TAXI_ID = "taxi-cx025";
+const GROUP_A = "group-cx025-a";
+const GROUP_B = "group-cx025-b";
 const VALID_START = "2099-03-01T10:00:00.000Z";
 const VALID_END = "2099-03-02T10:00:00.000Z";
+
+interface PlanInputCampaign {
+  id: string;
+  status: string;
+  startAt: string;
+  endAt: string;
+  taxiIds: string[];
+  groupIds: string[];
+}
+
+interface PlanInputBooking {
+  position: number;
+  campaign: PlanInputCampaign;
+  media: {
+    id: string;
+    sha256: string;
+    sizeBytes: number;
+    durationMs: number;
+  };
+}
+
+interface PlanInput {
+  taxiId: string;
+  groupIds: string[];
+  slotCount: number;
+  bookings: PlanInputBooking[];
+}
 
 function sha256For(seed: number): string {
   return seed.toString(16).padStart(64, "0");
 }
 
-function makeMedia(seed: number, durationMs: number = SPOT_DURATION_MS): LoopPlanMedia {
-  return {
-    mediaId: `media-${seed}`,
-    sha256: sha256For(seed),
-    sizeBytes: 1_000_000 + seed,
-    durationMs,
-  };
-}
-
-function makeCampaign(
+function makeBooking(
   seed: number,
-  overrides: Partial<LoopPlanCampaign> = {},
-): LoopPlanCampaign {
+  overrides: Partial<PlanInputBooking> = {},
+  campaignOverrides: Partial<PlanInputCampaign> = {},
+): PlanInputBooking {
   return {
-    campaignId: `campaign-${seed}`,
-    status: "active",
-    startAt: VALID_START,
-    endAt: VALID_END,
-    targetTaxiIds: [TAXI_ID],
-    targetGroupIds: [],
+    position: seed,
+    campaign: {
+      id: `campaign-${seed}`,
+      status: "active",
+      startAt: VALID_START,
+      endAt: VALID_END,
+      taxiIds: [TAXI_ID],
+      groupIds: [],
+      ...campaignOverrides,
+    },
+    media: {
+      id: `media-${seed}`,
+      sha256: sha256For(seed),
+      sizeBytes: 1_000_000 + seed,
+      durationMs: SPOT_DURATION_MS,
+    },
     ...overrides,
   };
 }
 
-type MutableLoopPlanInput = Omit<LoopPlanInput, "campaigns" | "placements"> & {
-  campaigns: LoopPlanCampaign[];
-  placements: LoopPlanPlacement[];
-};
-
-function makeInput(
-  slotCount: number = 12,
-  overrides: Partial<MutableLoopPlanInput> = {},
-): MutableLoopPlanInput {
-  const campaigns = Array.from({ length: slotCount }, (_, index) =>
-    makeCampaign(index + 1),
-  );
-  const placements = campaigns.map((campaign, index) => ({
-    position: index + 1,
-    campaignId: campaign.campaignId,
-    media: makeMedia(index + 1),
-  }));
-
+function makeInput(slotCount: number = 12): PlanInput {
   return {
     taxiId: TAXI_ID,
     groupIds: [GROUP_A, GROUP_B],
     slotCount,
-    campaigns,
-    placements,
-    ...overrides,
+    bookings: Array.from({ length: slotCount }, (_, index) =>
+      makeBooking(index + 1),
+    ),
   };
 }
 
-function expectError(
-  action: () => unknown,
-  code: LoopPlanErrorCode,
-): LoopPlanError {
-  try {
-    action();
-  } catch (error) {
-    expect(error).toBeInstanceOf(LoopPlanError);
-    const typed = error as LoopPlanError;
-    expect(typed.code).toBe(code);
-    expect(typed.message.length).toBeGreaterThan(10);
-    return typed;
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function expectValidPlan(value: unknown): LoopPlan {
+  const result = validateLoopPlan(value);
+  expect(result.valid).toBe(true);
+  if (!result.valid) {
+    throw new Error("Erwartet wurde ein gültiger Schleifenplan.");
   }
-  throw new Error(`Erwartet wurde ein LoopPlanError mit Code ${code}.`);
+  return result.value;
 }
 
-function positionsOf(plan: LoopPlan): number[] {
-  return plan.spots.map((spot) => spot.position);
+function expectInvalidPlan(value: unknown): LoopPlanValidationError[] {
+  const result = validateLoopPlan(value);
+  expect(result.valid).toBe(false);
+  if (result.valid) {
+    throw new Error("Erwartet wurde ein ungültiger Schleifenplan.");
+  }
+  expect(result.errors.length).toBeGreaterThan(0);
+  return result.errors;
 }
 
-describe("CX-006 fixed_slot: gültige Schleifenpläne", () => {
-  it("erzeugt aus 12 expliziten Plätzen 180 Sekunden in Positionsreihenfolge", () => {
+function expectRejectedByCx024(input: unknown): BookingValidationError[] {
+  const cx024 = validateBookings(input);
+  expect(cx024.valid).toBe(false);
+  if (cx024.valid) {
+    throw new Error("Erwartet wurde eine ungültige CX-024-Belegung.");
+  }
+
+  let plan: LoopPlan | undefined;
+  try {
+    plan = buildLoopPlan(input);
+  } catch (error) {
+    expect(error).toBeInstanceOf(LoopPlanBuildError);
+    const typed = error as LoopPlanBuildError;
+    expect(typed.code).toBe("invalid_bookings");
+    expect(typed.message.length).toBeGreaterThan(10);
+    expect(typed.errors).toEqual(cx024.errors);
+    expect(plan).toBeUndefined();
+    return cx024.errors;
+  }
+
+  throw new Error("Erwartet wurde ein LoopPlanBuildError ohne Teilresultat.");
+}
+
+describe("CX-025: gültige Schleifenpläne aus geprüften Belegungen", () => {
+  it("erzeugt aus 12 Plätzen exakt 180000 ms und vollständige Einträge in Positionsreihenfolge", () => {
     const plan = buildLoopPlan(makeInput(12));
 
     expect(plan.taxiId).toBe(TAXI_ID);
     expect(plan.slotCount).toBe(12);
-    expect(plan.loopDurationMs).toBe(180_000);
-    expect(positionsOf(plan)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-    expect(plan.spots).toHaveLength(12);
-    expect(plan.spots.every((spot) => spot.durationMs === 15_000)).toBe(true);
+    expect(plan.totalDurationMs).toBe(180_000);
+    expect(plan.entries).toHaveLength(12);
+    expect(plan.entries.map((entry) => entry.position)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    ]);
+    expect(plan.entries.every((entry) => entry.durationMs === 15_000)).toBe(true);
+    expect(
+      plan.totalDurationMs,
+    ).toBe(plan.entries.reduce((sum, entry) => sum + entry.durationMs, 0));
   });
 
-  it("erzeugt aus 16 expliziten Plätzen 240 Sekunden in Positionsreihenfolge", () => {
+  it("erzeugt aus 16 Plätzen exakt 240000 ms", () => {
     const plan = buildLoopPlan(makeInput(16));
 
     expect(plan.slotCount).toBe(16);
-    expect(plan.loopDurationMs).toBe(240_000);
-    expect(positionsOf(plan)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-    ]);
-    expect(plan.spots).toHaveLength(16);
+    expect(plan.totalDurationMs).toBe(240_000);
+    expect(plan.entries).toHaveLength(16);
+    expect(plan.entries[15].position).toBe(16);
+    expect(
+      plan.totalDurationMs,
+    ).toBe(plan.entries.reduce((sum, entry) => sum + entry.durationMs, 0));
   });
 
-  it("übernimmt Kampagnen-ID, Medien-ID, SHA-256, Byteanzahl und Dauer je Spot", () => {
-    const plan = buildLoopPlan(makeInput(12));
-    const first = plan.spots[0];
+  it("übernimmt Kampagnen-, Medien- und Zeitfensterdaten vollständig", () => {
+    const input = makeInput(12);
+    const plan = buildLoopPlan(input);
 
-    expect(first).toEqual({
+    expect(plan.entries[0]).toEqual({
       position: 1,
       campaignId: "campaign-1",
       mediaId: "media-1",
@@ -129,208 +175,197 @@ describe("CX-006 fixed_slot: gültige Schleifenpläne", () => {
       startAt: VALID_START,
       endAt: VALID_END,
     });
-  });
+    expect(plan.entries[11]).toEqual({
+      position: 12,
+      campaignId: "campaign-12",
+      mediaId: "media-12",
+      sha256: sha256For(12),
+      sizeBytes: 1_000_012,
+      durationMs: 15_000,
+      startAt: VALID_START,
+      endAt: VALID_END,
+    });
 
-  it("liefert bei anderer Eingabereihenfolge dasselbe Ergebnis", () => {
-    const input = makeInput(12);
-    const shuffled: LoopPlanInput = {
-      ...input,
-      campaigns: [...input.campaigns].reverse(),
-      placements: [...input.placements].reverse(),
-    };
-
-    expect(buildLoopPlan(shuffled)).toEqual(buildLoopPlan(input));
-  });
-
-  it("erlaubt dieselbe Medienreferenz nur über mehrere ausdrückliche Platzbelegungen", () => {
-    const input = makeInput(12);
-    input.placements[1] = {
-      ...input.placements[1],
-      campaignId: input.placements[0].campaignId,
-      media: input.placements[0].media,
-    };
-
-    const plan = buildLoopPlan(input);
-    const reused = plan.spots.filter((spot) => spot.mediaId === "media-1");
-
-    expect(reused).toHaveLength(2);
-    expect(reused.map((spot) => spot.position)).toEqual([1, 2]);
-  });
-
-  it("übernimmt Start und Ende verlustfrei als UTC-Laufzeitfenster", () => {
-    const pastStart = "2020-02-29T23:59:59.999Z";
-    const pastEnd = "2020-03-01T00:00:00.001Z";
-    const input = makeInput(12);
-    input.campaigns = input.campaigns.map((campaign) => ({
-      ...campaign,
-      startAt: pastStart,
-      endAt: pastEnd,
-    }));
-
-    const plan = buildLoopPlan(input);
-
-    expect(plan.spots).toHaveLength(12);
-    for (const spot of plan.spots) {
-      expect(spot.startAt).toBe(pastStart);
-      expect(spot.endAt).toBe(pastEnd);
-    }
+    const grouped = makeBooking(
+      13,
+      { position: 1 },
+      { taxiIds: [], groupIds: [GROUP_B] },
+    );
+    const groupedInput = makeInput(12);
+    groupedInput.bookings[0] = grouped;
+    const groupedPlan = buildLoopPlan(groupedInput);
+    expect(groupedPlan.entries[0].campaignId).toBe("campaign-13");
+    expect(groupedPlan.entries[0].startAt).toBe(VALID_START);
   });
 });
 
-describe("CX-006 fixed_slot: Platzanzahl und Positionen", () => {
-  it("weist 11 Plätze mit typisiertem Fehler ab", () => {
-    expectError(() => buildLoopPlan(makeInput(11)), "invalid_slot_count");
+describe("CX-025: Determinismus und Unveränderlichkeit", () => {
+  it("erzeugt bei verschiedener Eingabereihenfolge identische Pläne", () => {
+    const input = makeInput(12);
+    const reversed = clone(input);
+    reversed.bookings.reverse();
+    reversed.groupIds.reverse();
+
+    expect(buildLoopPlan(reversed)).toEqual(buildLoopPlan(input));
   });
 
-  it("weist 17 Plätze mit typisiertem Fehler ab", () => {
-    expectError(() => buildLoopPlan(makeInput(17)), "invalid_slot_count");
+  it("verändert bei Änderungen am Rückgabeplan die ursprünglichen Belegungen nicht", () => {
+    const input = makeInput(12);
+    const snapshot = clone(input);
+    const plan = buildLoopPlan(input);
+
+    plan.taxiId = "taxi-manipulated";
+    plan.totalDurationMs = 1;
+    plan.entries[0].campaignId = "campaign-manipulated";
+    plan.entries[0].mediaId = "media-manipulated";
+    plan.entries[0].sha256 = "f".repeat(64);
+    plan.entries[0].sizeBytes = 42;
+    plan.entries[0].durationMs = 1;
+    plan.entries[0].startAt = "2000-01-01T00:00:00.000Z";
+    plan.entries[0].endAt = "2000-01-02T00:00:00.000Z";
+    plan.entries.pop();
+    plan.entries.reverse();
+
+    expect(input).toEqual(snapshot);
+    expect(input.bookings[0].campaign.id).toBe("campaign-1");
+    expect(input.bookings[0].media.id).toBe("media-1");
+    expect(input.bookings[0].media.sha256).toBe(sha256For(1));
+    expect(input.bookings).toHaveLength(12);
+  });
+});
+
+describe("CX-025: ungültige Belegungen werden durch CX-024 abgewiesen", () => {
+  it("weist fehlende Plätze ab und füllt keine Standardplätze auf", () => {
+    const input = makeInput(12);
+    input.bookings.pop();
+
+    const errors = expectRejectedByCx024(input);
+    expect(errors.some((error) => error.code === "missing_position")).toBe(true);
+    expect(errors.every((error) => error.field !== "media")).toBe(true);
   });
 
-  it("weist nicht ganzzahlige Platzanzahl ab", () => {
-    expectError(() => buildLoopPlan(makeInput(12.5)), "invalid_slot_count");
+  it("weist 12 Belegungen bei slotCount 16 ohne automatische Auffüllung ab", () => {
+    const input = makeInput(12);
+    input.slotCount = 16;
+
+    const errors = expectRejectedByCx024(input);
+    expect(errors.filter((error) => error.code === "missing_position")).toHaveLength(4);
+    expect(errors.map((error) => error.message).join(" ")).toMatch(/13|14|15|16/);
   });
 
   it("weist doppelte Positionen ab", () => {
     const input = makeInput(12);
-    input.placements[1] = { ...input.placements[1], position: 1 };
+    input.bookings[1] = { ...input.bookings[1], position: 1 };
 
-    const error = expectError(() => buildLoopPlan(input), "duplicate_position");
-    expect(error.details.position).toBe(1);
+    const errors = expectRejectedByCx024(input);
+    expect(errors.some((error) => error.code === "duplicate_position")).toBe(true);
   });
 
-  it("weist fehlende Positionen ab", () => {
-    const input = makeInput(12);
-    input.placements.pop();
+  it("weist nicht aktive, fremde und medienseitig ungültige Belegungen ab", () => {
+    const paused = makeInput(12);
+    paused.bookings[0].campaign.status = "paused";
+    expect(
+      expectRejectedByCx024(paused).some((error) => error.code === "campaign_not_active"),
+    ).toBe(true);
 
-    const error = expectError(() => buildLoopPlan(input), "missing_position");
-    expect(error.details.missingPositions).toEqual([12]);
-  });
+    const foreign = makeInput(12);
+    foreign.bookings[0].campaign.taxiIds = ["other-taxi"];
+    foreign.bookings[0].campaign.groupIds = ["other-group"];
+    expect(
+      expectRejectedByCx024(foreign).some((error) => error.code === "not_assigned"),
+    ).toBe(true);
 
-  it("weist Positionen außerhalb von 1 bis slotCount ab", () => {
-    const input = makeInput(12);
-    input.placements[0] = { ...input.placements[0], position: 0 };
-
-    expectError(() => buildLoopPlan(input), "invalid_position");
-  });
-});
-
-describe("CX-006 fixed_slot: Spotdauer", () => {
-  it("weist 14999 ms ab", () => {
-    const input = makeInput(12);
-    input.placements[3] = {
-      ...input.placements[3],
-      media: makeMedia(4, 14_999),
-    };
-
-    const error = expectError(() => buildLoopPlan(input), "invalid_spot_duration");
-    expect(error.details.position).toBe(4);
-  });
-
-  it("weist 15001 ms ab", () => {
-    const input = makeInput(12);
-    input.placements[3] = {
-      ...input.placements[3],
-      media: makeMedia(4, 15_001),
-    };
-
-    expectError(() => buildLoopPlan(input), "invalid_spot_duration");
+    const badMedia = makeInput(12);
+    badMedia.bookings[3].media.durationMs = 14_999;
+    badMedia.bookings[3].media.sha256 = "not-a-hash";
+    const mediaErrors = expectRejectedByCx024(badMedia);
+    expect(mediaErrors.some((error) => error.code === "invalid_spot_duration")).toBe(
+      true,
+    );
+    expect(mediaErrors.some((error) => error.code === "invalid_media")).toBe(true);
   });
 });
 
-describe("CX-006 fixed_slot: Kampagnen und Zuordnung", () => {
-  it("erzeugt bei direkter Taxi- und Gruppenzuordnung derselben Kampagne keine zusätzliche Belegung", () => {
-    const both = makeCampaign(99, {
-      targetTaxiIds: [TAXI_ID],
-      targetGroupIds: [GROUP_A, GROUP_B],
-    });
-    const input = makeInput(12);
-    input.campaigns.push(both);
-    input.placements[0] = {
-      position: 1,
-      campaignId: both.campaignId,
-      media: makeMedia(99),
-    };
+describe("CX-025: Strukturprüfung des serialisierbaren Plans", () => {
+  it("akzeptiert einen erzeugten und JSON-rundgereisten Plan ohne Zielzuordnungsdaten", () => {
+    const plan = buildLoopPlan(makeInput(12));
+    const roundTripped = clone(plan);
 
-    const plan = buildLoopPlan(input);
+    const serialized = JSON.stringify(plan);
+    expect(serialized).not.toContain("targetTaxiIds");
+    expect(serialized).not.toContain("targetGroupIds");
+    expect(serialized).not.toContain("groupIds");
 
-    expect(plan.spots).toHaveLength(12);
-    expect(plan.spots.filter((spot) => spot.campaignId === both.campaignId)).toHaveLength(1);
+    const fromObject = expectValidPlan(plan);
+    const fromJson = expectValidPlan(roundTripped);
+    expect(fromObject).toEqual(plan);
+    expect(fromJson).toEqual(plan);
+    expect(fromJson).not.toBe(roundTripped);
   });
 
-  it("akzeptiert eine Kampagne, die nur über eine übergebene Gruppe zugeordnet ist", () => {
-    const grouped = makeCampaign(42, {
-      targetTaxiIds: [],
-      targetGroupIds: [GROUP_B],
-    });
-    const input = makeInput(12);
-    input.campaigns.push(grouped);
-    input.placements[0] = {
-      position: 1,
-      campaignId: grouped.campaignId,
-      media: makeMedia(42),
-    };
+  it("weist manipulierte Positionen ab", () => {
+    const plan = buildLoopPlan(makeInput(12));
+    const swapped = clone(plan);
+    swapped.entries[0].position = 2;
+    swapped.entries[1].position = 1;
 
-    const plan = buildLoopPlan(input);
-    expect(plan.spots[0].campaignId).toBe(grouped.campaignId);
+    const errors = expectInvalidPlan(swapped);
+    expect(errors.some((error) => error.code === "invalid_position")).toBe(true);
+
+    const duplicate = clone(plan);
+    duplicate.entries[1].position = 1;
+    duplicate.entries[11].position = 1;
+    const duplicateErrors = expectInvalidPlan(duplicate);
+    expect(
+      duplicateErrors.some(
+        (error) => error.code === "duplicate_position" || error.code === "invalid_position",
+      ),
+    ).toBe(true);
   });
 
-  it("weist fremde Kampagnen ab", () => {
-    const input = makeInput(12);
-    input.placements[0] = {
-      ...input.placements[0],
-      campaignId: "foreign-campaign",
-    };
+  it("weist manipulierte Summendauer und Eintragsdauer ab", () => {
+    const plan = buildLoopPlan(makeInput(12));
 
-    const error = expectError(() => buildLoopPlan(input), "unknown_campaign");
-    expect(error.details.campaignId).toBe("foreign-campaign");
+    const total = clone(plan);
+    total.totalDurationMs = 179_000;
+    expect(
+      expectInvalidPlan(total).some(
+        (error) => error.code === "invalid_total_duration",
+      ),
+    ).toBe(true);
+
+    const duration = clone(plan);
+    duration.entries[5].durationMs = 15_001;
+    expect(
+      expectInvalidPlan(duration).some(
+        (error) => error.code === "invalid_spot_duration",
+      ),
+    ).toBe(true);
   });
 
-  it("weist archivierte Kampagnen ab", () => {
-    const input = makeInput(12);
-    input.campaigns[0] = makeCampaign(1, { status: "archived" });
+  it("weist manipulierte Medienwerte und Laufzeitfenster ab", () => {
+    const plan = buildLoopPlan(makeInput(12));
 
-    expectError(() => buildLoopPlan(input), "campaign_not_active");
-  });
+    const media = clone(plan);
+    media.entries[0].sha256 = "F".repeat(64);
+    media.entries[0].sizeBytes = 0;
+    const mediaErrors = expectInvalidPlan(media);
+    expect(mediaErrors.some((error) => error.code === "invalid_media")).toBe(true);
 
-  it("weist pausierte Kampagnen ab", () => {
-    const input = makeInput(12);
-    input.campaigns[0] = makeCampaign(1, { status: "paused" });
+    const runtime = clone(plan);
+    runtime.entries[0].endAt = VALID_START;
+    expect(
+      expectInvalidPlan(runtime).some(
+        (error) => error.code === "invalid_runtime_window",
+      ),
+    ).toBe(true);
 
-    expectError(() => buildLoopPlan(input), "campaign_not_active");
-  });
-
-  it("weist Kampagnen ab, die weder dem Taxi noch einer Gruppe zugeordnet sind", () => {
-    const input = makeInput(12);
-    input.campaigns[0] = makeCampaign(1, {
-      targetTaxiIds: ["other-taxi"],
-      targetGroupIds: ["other-group"],
-    });
-
-    expectError(() => buildLoopPlan(input), "not_assigned");
-  });
-});
-
-describe("CX-006 fixed_slot: Laufzeitfenster über CX-004", () => {
-  it("weist Ende vor Start über die CX-004-Validierung ab", () => {
-    const input = makeInput(12);
-    input.campaigns[0] = makeCampaign(1, {
-      startAt: "2026-03-02T10:00:00.000Z",
-      endAt: "2026-03-01T10:00:00.000Z",
-    });
-
-    const error = expectError(() => buildLoopPlan(input), "invalid_runtime_window");
-    expect(error.details.runtimeErrors?.[0]?.code).toBe("invalid_interval");
-  });
-
-  it("weist ungültige Kalenderzeitpunkte über die CX-004-Validierung ab", () => {
-    const input = makeInput(12);
-    input.campaigns[0] = makeCampaign(1, {
-      startAt: "2026-02-30T10:00:00.000Z",
-      endAt: "2026-03-01T10:00:00.000Z",
-    });
-
-    const error = expectError(() => buildLoopPlan(input), "invalid_runtime_window");
-    expect(error.details.runtimeErrors?.[0]?.code).toBe("invalid_timestamp");
-    expect(error.details.runtimeErrors?.[0]?.field).toBe("startAt");
+    const invalidDate = clone(plan);
+    invalidDate.entries[7].startAt = "2099-02-30T10:00:00.000Z";
+    expect(
+      expectInvalidPlan(invalidDate).some(
+        (error) => error.code === "invalid_runtime_window",
+      ),
+    ).toBe(true);
   });
 });
