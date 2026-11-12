@@ -127,7 +127,6 @@ export class DeviceAuthService {
    * Token in derselben Transaktion geschrieben.
    */
   async issueToken(input: IssueTokenInput): Promise<TokenResult> {
-    const now = this.now();
     if (!isValidOpaqueToken(input.nonce)) {
       throw challengeInvalid();
     }
@@ -150,6 +149,11 @@ export class DeviceAuthService {
       if (!signatureValid) {
         throw challengeInvalid();
       }
+
+      // Massgebliche Serverzeit erst nach Erwerb der Geraetesperre bestimmen:
+      // Eine waehrend des Wartens auf die Sperre abgelaufene Challenge darf
+      // kein Token mehr erhalten.
+      const now = this.now();
 
       const consumed = await consumeChallenge(client, {
         deviceId: device.id,

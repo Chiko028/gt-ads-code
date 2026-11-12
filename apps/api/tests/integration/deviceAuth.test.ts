@@ -205,6 +205,34 @@ function probe(app: FastifyInstance, accessToken?: string) {
   });
 }
 
+async function waitForLockWaiters(minimum: number): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const result = await maintenancePool.query<{ count: string }>(
+      [
+        "select count(*)::text as count",
+        "  from pg_stat_activity",
+        " where datname = $1",
+        "   and wait_event_type = 'Lock'",
+      ].join("\n"),
+      [databaseName],
+    );
+    if (Number(result.rows[0]?.count ?? "0") >= minimum) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Geraeteauthentifizierung wartet nicht auf die Geraetesperre");
+}
+
+async function countAccessTokens(deviceId: string): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    "select count(*)::text as count from device_access_tokens where device_id = $1",
+    [deviceId],
+  );
+  return Number(result.rows[0]?.count ?? "0");
+}
+
 function signNonce(
   privateKey: KeyObject,
   deviceId: string,
@@ -348,6 +376,108 @@ describe("U4 Geraeteauthentifizierung (I-13 bis I-15)", () => {
     expect(errorBody(expiredResponse).code).toBe("challenge_invalid");
   });
 
+  it("I-14a wartende Token-Ausstellung prueft Challenge-Ablauf mit frischer Serverzeit", async () => {
+    const app = await buildApp();
+    const device = await registerDevice(app);
+
+    const challengeResponse = await challenge(app, device.deviceId);
+    expect(challengeResponse.statusCode).toBe(200);
+    const nonce = challengeResponse.json().nonce as string;
+    const signature = signNonce(device.privateKey, device.deviceId, nonce);
+
+    const blocker = await pool.connect();
+    let committed = false;
+    try {
+      await blocker.query("begin");
+      await blocker.query(
+        "select id from devices where id = $1 for update",
+        [device.deviceId],
+      );
+
+      const pending = requestToken(app, device.deviceId, nonce, signature);
+      await waitForLockWaiters(1);
+
+      // Die Challenge laeuft ab, waehrend die Token-Ausstellung auf die
+      // Geraetesperre wartet; die Ablehnung muss die frische Serverzeit nutzen.
+      nowMs += (config.challengeTtlSeconds + 1) * 1000;
+
+      await blocker.query("commit");
+      committed = true;
+
+      const response = await pending;
+      expect(response.statusCode).toBe(401);
+      expect(errorBody(response).code).toBe("challenge_invalid");
+    } finally {
+      if (!committed) {
+        try {
+          await blocker.query("rollback");
+        } catch {
+          // Die Sperre wird ohnehin mit der Verbindung freigegeben.
+        }
+      }
+      blocker.release();
+    }
+
+    expect(await countAccessTokens(device.deviceId)).toBe(0);
+    const challengeRow = await pool.query<{ used_at: Date | null }>(
+      "select used_at from device_auth_challenges where device_id = $1",
+      [device.deviceId],
+    );
+    expect(challengeRow.rows[0]?.used_at).toBeNull();
+  });
+
+  it("I-14b parallele Einloesung derselben Nonce erzeugt genau ein Token", async () => {
+    const app = await buildApp();
+    const device = await registerDevice(app);
+
+    const challengeResponse = await challenge(app, device.deviceId);
+    expect(challengeResponse.statusCode).toBe(200);
+    const nonce = challengeResponse.json().nonce as string;
+    const signature = signNonce(device.privateKey, device.deviceId, nonce);
+
+    const blocker = await pool.connect();
+    let committed = false;
+    try {
+      await blocker.query("begin");
+      await blocker.query(
+        "select id from devices where id = $1 for update",
+        [device.deviceId],
+      );
+
+      // Beide Anfragen warten gleichzeitig auf die Geraetesperre; dadurch
+      // laufen sie anschliessend mit getrennten Verbindungen um dieselbe Nonce.
+      const pending = [
+        requestToken(app, device.deviceId, nonce, signature),
+        requestToken(app, device.deviceId, nonce, signature),
+      ];
+      await waitForLockWaiters(2);
+
+      await blocker.query("commit");
+      committed = true;
+
+      const responses = await Promise.all(pending);
+      const statuses = responses.map((response) => response.statusCode);
+      expect(statuses.filter((status) => status === 200)).toHaveLength(1);
+      expect(statuses.filter((status) => status === 401)).toHaveLength(1);
+      for (const response of responses) {
+        if (response.statusCode === 401) {
+          expect(errorBody(response).code).toBe("challenge_invalid");
+        }
+      }
+    } finally {
+      if (!committed) {
+        try {
+          await blocker.query("rollback");
+        } catch {
+          // Die Sperre wird ohnehin mit der Verbindung freigegeben.
+        }
+      }
+      blocker.release();
+    }
+
+    expect(await countAccessTokens(device.deviceId)).toBe(1);
+  });
+
   it("I-15 abgelaufenes, fehlendes und zufaelliges Token ergeben 401 unauthorized", async () => {
     const app = await buildApp();
     const device = await registerDevice(app);
@@ -418,6 +548,58 @@ describe("U4 Geraeteauthentifizierung (I-13 bis I-15)", () => {
     const revokedChallenge = await challenge(app, device.deviceId);
     expect(revokedChallenge.statusCode).toBe(403);
     expect(errorBody(revokedChallenge).code).toBe("device_revoked");
+  });
+
+  it("AC-08 (Teil): Widerruf waehrend wartender Token-Ausstellung wird nach Commit beachtet", async () => {
+    const app = await buildApp();
+    const device = await registerDevice(app);
+
+    const challengeResponse = await challenge(app, device.deviceId);
+    expect(challengeResponse.statusCode).toBe(200);
+    const nonce = challengeResponse.json().nonce as string;
+    const signature = signNonce(device.privateKey, device.deviceId, nonce);
+
+    const blocker = await pool.connect();
+    let committed = false;
+    try {
+      await blocker.query("begin");
+      await blocker.query(
+        "select id from devices where id = $1 for update",
+        [device.deviceId],
+      );
+
+      const pending = requestToken(app, device.deviceId, nonce, signature);
+      await waitForLockWaiters(1);
+
+      // Der Widerruf wird commitet, waehrend die Token-Ausstellung noch auf
+      // die Geraetesperre wartet; danach muss sie die gesperrte Zeile sehen.
+      await blocker.query(
+        "update devices set state = 'revoked', revoked_at = $2, revoked_by = 'SYN-Admin' where id = $1",
+        [device.deviceId, clock()],
+      );
+      await blocker.query("commit");
+      committed = true;
+
+      const response = await pending;
+      expect(response.statusCode).toBe(403);
+      expect(errorBody(response).code).toBe("device_revoked");
+    } finally {
+      if (!committed) {
+        try {
+          await blocker.query("rollback");
+        } catch {
+          // Die Sperre wird ohnehin mit der Verbindung freigegeben.
+        }
+      }
+      blocker.release();
+    }
+
+    expect(await countAccessTokens(device.deviceId)).toBe(0);
+    const challengeRow = await pool.query<{ used_at: Date | null }>(
+      "select used_at from device_auth_challenges where device_id = $1",
+      [device.deviceId],
+    );
+    expect(challengeRow.rows[0]?.used_at).toBeNull();
   });
 
   it("unbekanntes Geraet bei der Challenge ergibt 401 unauthorized", async () => {
