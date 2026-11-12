@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import type { FileHandle } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, open, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Client, type ClientConfig } from "pg";
 import type { DumpArtifact } from "./createDump.js";
@@ -261,32 +262,141 @@ async function validateArtifact(value: unknown): Promise<ValidatedArtifact> {
   return { artifactPath, sha256, sizeBytes };
 }
 
-/**
- * Prueft SHA-256 und Byteanzahl vollstaendig, bevor irgendein
- * Datenbankclient erzeugt oder eine Datenbank angelegt wird.
- */
-async function verifyArtifactIntegrity(artifact: ValidatedArtifact): Promise<void> {
+interface ArtifactSnapshot {
+  /** Privates Verzeichnis, das im Cleanup vollstaendig entfernt wird. */
+  directory: string;
+  /** Ausschliesslich diese Datei wird an pg_restore uebergeben. */
+  path: string;
+}
+
+const SNAPSHOT_CHUNK_BYTES = 64 * 1024;
+
+/** Liest eine Datei vollstaendig und liefert SHA-256 und Byteanzahl. */
+async function hashFile(
+  path: string,
+): Promise<{ sha256: string; sizeBytes: number }> {
+  const handle = await open(path, "r");
   const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(SNAPSHOT_CHUNK_BYTES);
   let sizeBytes = 0;
-  const stream = createReadStream(artifact.artifactPath);
 
   try {
-    for await (const chunk of stream) {
-      const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-      hash.update(buffer);
-      sizeBytes += buffer.length;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      hash.update(buffer.subarray(0, bytesRead));
+      sizeBytes += bytesRead;
     }
-  } catch {
-    fail("artifact_integrity_failed", "Das Dumpartefakt konnte nicht gelesen werden");
   } finally {
-    stream.destroy();
+    await handle.close().catch(() => {
+      // Kein weiterer Handlungsbedarf.
+    });
   }
 
-  if (sizeBytes !== artifact.sizeBytes || hash.digest("hex") !== artifact.sha256) {
-    fail(
+  return { sha256: hash.digest("hex"), sizeBytes };
+}
+
+/**
+ * Erstellt eine private, unveraenderliche Momentaufnahme des Artefakts.
+ *
+ * Geprueft werden ausschliesslich die Bytes der Momentaufnahme; restauriert
+ * wird spaeter genau diese Datei. Ein zwischenzeitlicher Austausch oder eine
+ * Aenderung des Originalpfads kann damit nicht dazu fuehren, dass andere
+ * Bytes restauriert werden als die geprueften.
+ */
+async function createArtifactSnapshot(
+  artifact: ValidatedArtifact,
+): Promise<ArtifactSnapshot> {
+  let directory: string | undefined;
+  let source: FileHandle | undefined;
+  let target: FileHandle | undefined;
+
+  try {
+    const privateDirectory = await mkdtemp(join(tmpdir(), "gtads-restore-artifact-"));
+    directory = privateDirectory;
+    await chmod(privateDirectory, 0o700);
+    const snapshotPath = join(privateDirectory, "artifact.dump");
+
+    source = await open(artifact.artifactPath, "r");
+    const sourceStats = await source.stat();
+    if (!sourceStats.isFile()) {
+      fail("artifact_integrity_failed", "Das Dumpartefakt ist keine regulaere Datei");
+    }
+
+    // "wx" verhindert das Ueberschreiben einer bereits vorhandenen Datei.
+    target = await open(snapshotPath, "wx", 0o600);
+
+    const buffer = Buffer.allocUnsafe(SNAPSHOT_CHUNK_BYTES);
+
+    for (;;) {
+      const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) {
+        break;
+      }
+
+      const chunk = buffer.subarray(0, bytesRead);
+      let written = 0;
+      while (written < bytesRead) {
+        const { bytesWritten } = await target.write(
+          chunk,
+          written,
+          bytesRead - written,
+          null,
+        );
+        if (bytesWritten <= 0) {
+          fail(
+            "artifact_integrity_failed",
+            "Das Dumpartefakt konnte nicht gelesen werden",
+          );
+        }
+        written += bytesWritten;
+      }
+    }
+
+    // Die Momentaufnahme wird geschlossen und anschliessend vollstaendig
+    // erneut gelesen. Geprueft werden damit genau die Bytes, die spaeter an
+    // pg_restore uebergeben werden.
+    await target.close();
+    target = undefined;
+    const verified = await hashFile(snapshotPath);
+
+    if (
+      verified.sizeBytes !== artifact.sizeBytes ||
+      verified.sha256 !== artifact.sha256
+    ) {
+      fail(
+        "artifact_integrity_failed",
+        "Pruefsumme oder Byteanzahl des Dumpartefakts stimmen nicht",
+      );
+    }
+
+    return { directory: privateDirectory, path: snapshotPath };
+  } catch (error) {
+    if (directory !== undefined) {
+      await rm(directory, { recursive: true, force: true }).catch(() => {
+        // Best effort; der urspruengliche Fehler bleibt massgeblich.
+      });
+    }
+    if (error instanceof RestoreFailure) {
+      throw error;
+    }
+    throw new RestoreFailure(
       "artifact_integrity_failed",
-      "Pruefsumme oder Byteanzahl des Dumpartefakts stimmen nicht",
+      "Das Dumpartefakt konnte nicht gelesen werden",
     );
+  } finally {
+    if (source !== undefined) {
+      await source.close().catch(() => {
+        // Kein weiterer Handlungsbedarf.
+      });
+    }
+    if (target !== undefined) {
+      await target.close().catch(() => {
+        // Kein weiterer Handlungsbedarf.
+      });
+    }
   }
 }
 
@@ -339,6 +449,50 @@ function clientConfig(connection: LocalRestoreConnection): ClientConfig {
     user: connection.user,
     ...(connection.password === undefined ? {} : { password: connection.password }),
   };
+}
+
+interface GuardedClient {
+  client: Client;
+  connectionLost: boolean;
+}
+
+/**
+ * Erzeugt einen Client und registriert sofort einen error-Handler.
+ *
+ * node-postgres emittiert bei einem Verbindungsabbruch ohne laufende Query
+ * ein "error"-Ereignis. Ohne Listener wuerde Node den Prozess beenden; der
+ * Fehler wird hier nur vermerkt und im kontrollierten Ablauf ausgewertet.
+ */
+function createGuardedClient(connection: LocalRestoreConnection): GuardedClient {
+  const client = new Client(clientConfig(connection));
+  const guarded: GuardedClient = { client, connectionLost: false };
+  client.on("error", () => {
+    guarded.connectionLost = true;
+  });
+  return guarded;
+}
+
+/**
+ * Entfernt die Zieldatenbank ueber eine neue, explizite lokale Verbindung.
+ * Wird verwendet, wenn die Wartungsverbindung nicht mehr zur Verfuegung steht.
+ */
+async function dropTargetDatabaseWithFreshClient(
+  connection: LocalRestoreConnection,
+  databaseName: string,
+): Promise<void> {
+  const cleanup = createGuardedClient(connection);
+  try {
+    await cleanup.client.connect();
+    await cleanup.client.query(
+      "drop database if exists " + quoteIdentifier(databaseName),
+    );
+  } finally {
+    try {
+      await cleanup.client.end();
+    } catch {
+      // Aufraeumen ist best effort; das Drop-Ergebnis zaehlt.
+    }
+  }
 }
 
 function buildChildEnvironment(connection: LocalRestoreConnection): NodeJS.ProcessEnv {
@@ -611,8 +765,10 @@ export async function verifyRestore(
     return result;
   }
 
-  let maintenanceClient: Client | undefined;
-  let verificationClient: Client | undefined;
+  let maintenance: GuardedClient | undefined;
+  let verification: GuardedClient | undefined;
+  let snapshot: ArtifactSnapshot | undefined;
+  let connection: LocalRestoreConnection | undefined;
   let targetCreated = false;
   let targetDatabaseName: string | undefined;
   let primaryError: RestoreError | undefined;
@@ -638,7 +794,7 @@ export async function verifyRestore(
     const artifact = await validateArtifact(options.artifact);
     result.artifactSha256 = artifact.sha256;
 
-    const connection = await validateConnection(options.connection);
+    connection = await validateConnection(options.connection);
     const verifier = resolveVerifier(options.verifyContent);
     const timeoutMs = resolveTimeout(options.timeoutMs);
     const pgRestoreBinary = resolveBinary(options.pgRestoreBinary);
@@ -647,12 +803,13 @@ export async function verifyRestore(
       fail("aborted", "Der Restore wurde abgebrochen");
     }
 
-    // Integritaetskontrolle vollstaendig vor jeder Datenbankoperation.
-    await verifyArtifactIntegrity(artifact);
+    // Private Momentaufnahme erstellen und deren Bytes pruefen. Nur diese
+    // Datei wird restauriert; der Originalpfad wird danach nicht mehr gelesen.
+    snapshot = await createArtifactSnapshot(artifact);
 
-    maintenanceClient = new Client(clientConfig(connection));
+    maintenance = createGuardedClient(connection);
     try {
-      await maintenanceClient.connect();
+      await maintenance.client.connect();
     } catch {
       fail(
         "source_connection_failed",
@@ -661,7 +818,7 @@ export async function verifyRestore(
     }
 
     targetDatabaseName = await createTargetDatabase(
-      maintenanceClient,
+      maintenance.client,
       connection.database,
     );
     targetCreated = true;
@@ -677,7 +834,7 @@ export async function verifyRestore(
       await runPgRestore({
         binary: pgRestoreBinary,
         databaseName: targetDatabaseName,
-        artifactPath: artifact.artifactPath,
+        artifactPath: snapshot.path,
         env: buildChildEnvironment(targetConnection),
         timeoutMs,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -689,10 +846,19 @@ export async function verifyRestore(
       );
     }
 
+    // Eine waehrend des Restores abgebrochene Wartungsverbindung wird als
+    // kontrollierter Fehler behandelt; der Cleanup nutzt eine neue Verbindung.
+    if (maintenance.connectionLost) {
+      fail(
+        "source_connection_failed",
+        "Die Verbindung zur lokalen Quelldatenbank ist waehrend des Restores abgebrochen",
+      );
+    }
+
     // Inhaltspruefung gegen einen separaten Zielclient.
-    verificationClient = new Client(clientConfig(targetConnection));
+    verification = createGuardedClient(targetConnection);
     try {
-      await verificationClient.connect();
+      await verification.client.connect();
     } catch {
       fail(
         "target_connection_failed",
@@ -703,11 +869,18 @@ export async function verifyRestore(
     let verified = false;
     try {
       verified = await verifier({
-        client: verificationClient,
+        client: verification.client,
         targetDatabase: targetDatabaseName,
         connection: targetConnection,
       });
     } catch {
+      fail(
+        "verification_failed",
+        "Die Inhaltspruefung des Restores ist fehlgeschlagen",
+      );
+    }
+
+    if (verification.connectionLost) {
       fail(
         "verification_failed",
         "Die Inhaltspruefung des Restores ist fehlgeschlagen",
@@ -724,37 +897,60 @@ export async function verifyRestore(
   } catch (error) {
     primaryError = toRestoreError(error);
   } finally {
-    if (verificationClient !== undefined) {
+    if (verification !== undefined) {
       try {
-        await verificationClient.end();
+        await verification.client.end();
       } catch {
         // Client-Schliessen ist best effort; der Drop entscheidet ueber den
         // Aufraeumerfolg.
       }
-      verificationClient = undefined;
+      verification = undefined;
     }
 
     if (targetCreated && targetDatabaseName !== undefined) {
-      if (maintenanceClient === undefined) {
-        cleanupFailed = true;
-      } else {
+      const targetName = targetDatabaseName;
+      let dropped = false;
+
+      // Eine abgebrochene Wartungsverbindung darf den Cleanup nicht
+      // verhindern; in diesem Fall wird eine neue lokale Verbindung genutzt.
+      if (maintenance !== undefined && !maintenance.connectionLost) {
         try {
-          await maintenanceClient.query(
-            "drop database if exists " + quoteIdentifier(targetDatabaseName),
+          await maintenance.client.query(
+            "drop database if exists " + quoteIdentifier(targetName),
           );
+          dropped = true;
         } catch {
+          // Gegebenenfalls ist die Wartungsverbindung inzwischen abgebrochen.
+        }
+      }
+
+      if (!dropped) {
+        if (connection === undefined) {
           cleanupFailed = true;
+        } else {
+          try {
+            await dropTargetDatabaseWithFreshClient(connection, targetName);
+          } catch {
+            cleanupFailed = true;
+          }
         }
       }
     }
 
-    if (maintenanceClient !== undefined) {
+    if (maintenance !== undefined) {
       try {
-        await maintenanceClient.end();
+        await maintenance.client.end();
       } catch {
         // Kein weiterer Handlungsbedarf; der Drop-Status ist bereits erfasst.
       }
-      maintenanceClient = undefined;
+      maintenance = undefined;
+    }
+
+    if (snapshot !== undefined) {
+      await rm(snapshot.directory, { recursive: true, force: true }).catch(() => {
+        // Best effort; die Momentaufnahme ist nur eine temporaere Kopie.
+      });
+      snapshot = undefined;
     }
   }
 

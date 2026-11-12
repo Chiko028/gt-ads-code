@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client, Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -91,6 +91,19 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function waitForPath(path: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await pathExists(path)) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 25);
+    });
+  }
+  throw new Error("Markerdatei wurde nicht erstellt: " + path);
 }
 
 async function listRestoreDatabases(): Promise<string[]> {
@@ -309,6 +322,61 @@ describe("CX-023 verifyRestore", () => {
         artifact.sha256,
       );
       expect(bytes.byteLength).toBe(artifact.sizeBytes);
+    },
+    60_000,
+  );
+
+  it(
+    "restauriert ausschliesslich die geprueften Bytes einer privaten Momentaufnahme",
+    async () => {
+      const before = await listRestoreDatabases();
+      const sourceBefore = await readSourceState();
+      const scriptDirectory = await makeScratchDirectory("snapshot");
+      const originalPath = join(scriptDirectory, "original.dump");
+      const observationPath = join(scriptDirectory, "observed.json");
+      await copyFile(artifact.artifactPath, originalPath);
+
+      // Der Fake tauscht den Originalpfad nach der Integritaetspruefung aus
+      // und liest danach den Pfad, der tatsaechlich restauriert werden soll.
+      const fake = await writeFakePgRestore(
+        scriptDirectory,
+        "snapshot",
+        [
+          'const fs = require("node:fs");',
+          'const crypto = require("node:crypto");',
+          "const dumpPath = process.argv[process.argv.length - 1];",
+          "fs.writeFileSync(" + JSON.stringify(originalPath) + ', "manipuliert");',
+          "const bytes = fs.readFileSync(dumpPath);",
+          "fs.writeFileSync(" +
+            JSON.stringify(observationPath) +
+            ", JSON.stringify({ path: dumpPath, sha256: crypto.createHash(\"sha256\").update(bytes).digest(\"hex\"), sizeBytes: bytes.byteLength }));",
+          "process.exit(0);",
+        ].join("\n"),
+      );
+
+      const result = await verifyRestore({
+        environment: "test",
+        artifact: { ...artifact, artifactPath: originalPath },
+        connection,
+        pgRestoreBinary: fake,
+        verifyContent: async () => true,
+      });
+
+      expect(result.success).toBe(true);
+      const observed = JSON.parse(await readFile(observationPath, "utf8")) as {
+        path: string;
+        sha256: string;
+        sizeBytes: number;
+      };
+      expect(observed.path).not.toBe(originalPath);
+      expect(observed.sha256).toBe(artifact.sha256);
+      expect(observed.sizeBytes).toBe(artifact.sizeBytes);
+
+      // Die Momentaufnahme wurde im Cleanup entfernt.
+      expect(await pathExists(dirname(observed.path))).toBe(false);
+      expect(await pathExists(originalPath)).toBe(true);
+      expect(await listRestoreDatabases()).toEqual(before);
+      expect(await readSourceState()).toEqual(sourceBefore);
     },
     60_000,
   );
@@ -560,4 +628,86 @@ describe("CX-023 verifyRestore", () => {
     },
     60_000,
   );
+
+  it(
+    "behandelt einen Verbindungsabbruch der Wartungsverbindung waehrend des Restores kontrolliert",
+    async () => {
+      const before = await listRestoreDatabases();
+      const sourceBefore = await readSourceState();
+      const scriptDirectory = await makeScratchDirectory("restore-disconnect");
+      const startedMarker = join(scriptDirectory, "started.marker");
+      const releaseMarker = join(scriptDirectory, "release.marker");
+
+      // Der Fake signalisiert den Start und wartet, bis der Test die
+      // Wartungsverbindung getrennt hat.
+      const fake = await writeFakePgRestore(
+        scriptDirectory,
+        "disconnect",
+        [
+          "(async () => {",
+          '  const fs = require("node:fs");',
+          '  const { setTimeout: delay } = require("node:timers/promises");',
+          "  fs.writeFileSync(" + JSON.stringify(startedMarker) + ', "started");',
+          "  for (let attempt = 0; attempt < 600; attempt += 1) {",
+          "    if (fs.existsSync(" + JSON.stringify(releaseMarker) + ")) {",
+          "      break;",
+          "    }",
+          "    await delay(25);",
+          "  }",
+          "  await delay(500);",
+          "  process.exit(0);",
+          "})().catch(() => {",
+          "  process.exit(2);",
+          "});",
+        ].join("\n"),
+      );
+
+      // Bestehende Pool-Verbindungen merken, damit ausschliesslich die
+      // Wartungsverbindung des Aufrufs getrennt wird.
+      await syntheticPool.query("select 1");
+      const existing = await maintenancePool.query<{ pid: number }>(
+        "select pid from pg_stat_activity where datname = $1",
+        [syntheticDatabase],
+      );
+      const existingPids = existing.rows.map((row) => row.pid);
+
+      let verifyCalls = 0;
+      const pending = verifyRestore({
+        environment: "test",
+        artifact,
+        connection,
+        pgRestoreBinary: fake,
+        verifyContent: async () => {
+          verifyCalls += 1;
+          return true;
+        },
+      });
+
+      await waitForPath(startedMarker, 15_000);
+      const terminated = await maintenancePool.query(
+        [
+          "select pg_terminate_backend(pid)",
+          "from pg_stat_activity",
+          "where datname = $1 and not (pid = any($2::int[]))",
+        ].join(" "),
+        [syntheticDatabase, existingPids],
+      );
+      expect(terminated.rowCount).toBeGreaterThan(0);
+      await writeFile(releaseMarker, "release");
+
+      const result = await pending;
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe("source_connection_failed");
+      expect(result.verificationPassed).toBe(false);
+      expect(result.cleanupSucceeded).toBe(true);
+      expect(verifyCalls).toBe(0);
+      expect(result.targetDatabaseName).toMatch(/^gtads_restore_[0-9a-f]{16}$/);
+      expect(await databaseExists(result.targetDatabaseName as string)).toBe(false);
+      expect(await listRestoreDatabases()).toEqual(before);
+      expect(await readSourceState()).toEqual(sourceBefore);
+    },
+    60_000,
+  );
+
 });
