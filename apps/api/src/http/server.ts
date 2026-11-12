@@ -7,6 +7,8 @@ import type { AppConfig } from "../config.js";
 import { createDatabasePool } from "../db/client.js";
 import { RegistrationService } from "../modules/registration/service.js";
 import { registerRegistrationRoutes } from "../modules/registration/routes.js";
+import { DeviceAuthService } from "../modules/deviceAuth/service.js";
+import { registerDeviceAuthRoutes } from "../modules/deviceAuth/routes.js";
 import { registerErrorHandler } from "./errors.js";
 import { REDACTED, redactUrl } from "./logging.js";
 import {
@@ -99,6 +101,11 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
 
   const service = new RegistrationService({ pool, config, now });
   registerRegistrationRoutes(app, { service, limiter, config });
+
+  // Geraeteauthentifizierung (U4); die Middleware nutzt denselben Service.
+  const deviceAuthService = new DeviceAuthService({ pool, config, now });
+  registerDeviceAuthRoutes(app, { service: deviceAuthService });
+  app.decorate("deviceAuthService", deviceAuthService);
 
   app.get("/health", async () => ({
     status: "ok",
