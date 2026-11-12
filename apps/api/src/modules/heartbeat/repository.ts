@@ -31,7 +31,10 @@ export async function findDeviceState(
 
 /**
  * Aktualisiert `last_seen_at` ausschliesslich auf die uebergebene Serverzeit
- * (AC-09) und schreibt den Clock-Offset. `last_seq` waechst nur
+ * (AC-09) und schreibt den Clock-Offset. `last_seen_at` waechst nur
+ * (`greatest`): Ein frueher gestarteter Heartbeat, dessen Update erst nach
+ * einem spaeter gestarteten ausgefuehrt wird, darf den neueren
+ * Kontaktzeitpunkt nicht zuruecksetzen. `last_seq` waechst ebenfalls nur
  * (`greatest`), damit ein kleineres oder gleiches `seq` nichts zurueckdreht
  * (API-VERTRAG.md Abschnitt 4, I-17).
  *
@@ -45,7 +48,7 @@ export async function recordHeartbeat(
   const result = await executor.query<RecordHeartbeatResult>(
     [
       "update devices",
-      "   set last_seen_at = $2,",
+      "   set last_seen_at = greatest(last_seen_at, $2),",
       "       last_seq = greatest(last_seq, $3::bigint),",
       "       last_clock_offset_ms = $4::bigint",
       " where id = $1",

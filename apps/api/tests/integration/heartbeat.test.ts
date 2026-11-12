@@ -20,6 +20,8 @@ import { buildSignatureMessage } from "../../src/crypto/deviceSignature.js";
 import { migrateUp } from "../../src/db/migrate.js";
 import { createServer } from "../../src/http/server.js";
 import { RegistrationService } from "../../src/modules/registration/service.js";
+import type { SqlQueryable } from "../../src/modules/audit/repository.js";
+import { recordHeartbeat } from "../../src/modules/heartbeat/repository.js";
 
 const BASE_TIME = Date.parse("2026-01-01T12:00:00.000Z");
 const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
@@ -328,6 +330,60 @@ describe("U5 Heartbeat (I-16, I-17)", () => {
     row = await deviceRow(device.deviceId);
     expect(row.last_seq).toBe("7");
     expect(new Date(row.last_seen_at).getTime()).toBe(nowMs);
+  });
+
+  it("Nebenlaeufigkeit: ein frueher gestarteter Heartbeat setzt last_seen_at nicht zurueck", async () => {
+    const app = await buildApp();
+    const device = await registerDevice(app);
+
+    const olderSeenAt = new Date(BASE_TIME + 1_000);
+    const newerSeenAt = new Date(BASE_TIME + 2_000);
+
+    // Der aeltere Aufruf startet zuerst, wird aber vor dem Datenbankzugriff
+    // angehalten. Der neuere Aufruf laeuft zuerst durch; erst danach wird der
+    // aeltere freigegeben. Damit ist die Ausfuehrungsreihenfolge der UPDATEs
+    // umgekehrt zur Startreihenfolge.
+    let releaseOlder!: () => void;
+    const olderMayRun = new Promise<void>((resolve) => {
+      releaseOlder = resolve;
+    });
+    let queryCount = 0;
+    const delayedExecutor = {
+      query: async (text: string, values?: unknown[]) => {
+        queryCount += 1;
+        if (queryCount === 1) {
+          await olderMayRun;
+        }
+        return pool.query(text, values as unknown[]);
+      },
+    } as unknown as SqlQueryable;
+
+    const olderUpdate = recordHeartbeat(delayedExecutor, {
+      deviceId: device.deviceId,
+      seenAt: olderSeenAt,
+      seq: 1,
+      clockOffsetMs: 0n,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(queryCount).toBe(1);
+
+    const newerUpdate = await recordHeartbeat(pool, {
+      deviceId: device.deviceId,
+      seenAt: newerSeenAt,
+      seq: 2,
+      clockOffsetMs: 0n,
+    });
+    expect(newerUpdate).not.toBeNull();
+    expect(new Date((await deviceRow(device.deviceId)).last_seen_at).getTime()).toBe(
+      newerSeenAt.getTime(),
+    );
+
+    releaseOlder();
+    expect(await olderUpdate).not.toBeNull();
+
+    const row = await deviceRow(device.deviceId);
+    expect(new Date(row.last_seen_at).getTime()).toBe(newerSeenAt.getTime());
+    expect(row.last_seq).toBe("2");
   });
 
   it("ungueltiges oder gesperrtes Token wird abgewiesen (AC-08)", async () => {
