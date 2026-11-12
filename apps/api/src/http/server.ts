@@ -24,6 +24,13 @@ import { registerDeviceAuthRoutes } from "../modules/deviceAuth/routes.js";
 import { HeartbeatService } from "../modules/heartbeat/service.js";
 import { registerHeartbeatRoutes } from "../modules/heartbeat/routes.js";
 import { registerErrorHandler } from "./errors.js";
+import { createOperationsMetrics } from "../modules/operations/metrics.js";
+import { createPostgresReadinessProbe } from "../modules/operations/readiness.js";
+import {
+  isOperationsUrl,
+  registerOperationsRoutes,
+  type OperationsOverrides,
+} from "../modules/operations/routes.js";
 import { REDACTED, redactUrl } from "./logging.js";
 import {
   createRegistrationRateLimiter,
@@ -42,6 +49,8 @@ export interface ApiServerOptions {
   /** Fastify-Loggeroptionen; im Test z. B. ein mitschreibender Stream. */
   logger?: FastifyServerOptions["logger"];
   registrationRateLimiter?: RegistrationRateLimiter;
+  /** Testbare Betriebsschnittstellen; ohne Angabe gelten die Produktionsadapter. */
+  operations?: OperationsOverrides;
 }
 
 function defaultLogger(config: AppConfig): FastifyServerOptions["logger"] {
@@ -109,6 +118,9 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   const pool = options.pool ?? createDatabasePool(config.databaseUrl);
   const limiter =
     options.registrationRateLimiter ?? createRegistrationRateLimiter(config);
+  const metrics = options.operations?.metrics ?? createOperationsMetrics();
+  const readiness =
+    options.operations?.readiness ?? createPostgresReadinessProbe(pool);
 
   const app = Fastify({
     logger: options.logger ?? defaultLogger(config),
@@ -157,6 +169,19 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     );
   });
 
+  app.addHook("onResponse", async (request, reply) => {
+    const route = request.routeOptions.url;
+    if (isOperationsUrl(request.url, route)) {
+      return;
+    }
+    metrics.observeRequest({
+      method: request.method,
+      route: route ?? null,
+      statusCode: reply.statusCode,
+      durationSeconds: reply.elapsedTime / 1000,
+    });
+  });
+
   registerErrorHandler(app);
 
   const service = new RegistrationService({ pool, config, now });
@@ -195,6 +220,13 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     env: config.env,
     version: API_VERSION,
   }));
+
+  registerOperationsRoutes(app, {
+    readiness,
+    metrics,
+    readinessTimeoutMs: options.operations?.readinessTimeoutMs,
+    scheduler: options.operations?.scheduler,
+  });
 
   return app;
 }
