@@ -121,4 +121,61 @@ describe("U-09 Rate-Limiter", () => {
     expect(limiter.peek("source").remaining).toBe(0);
   });
 
+  it("behaelt laufende Reservierungen ueber den Fensterwechsel", () => {
+    let now = 0;
+    const limiter = new RateLimiter({ max: 3, windowMs: 1000, now: () => now });
+    const tickets: Array<{ commitFailure(): void; release(): void }> = [];
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const reservation = limiter.reserve("source");
+      expect(reservation.allowed, "Reservierung " + attempt).toBe(true);
+      if (!reservation.allowed) {
+        throw new Error("Reservierung erwartet");
+      }
+      tickets.push(reservation.ticket);
+    }
+
+    // Das alte Fenster ist abgelaufen, die drei Versuche laufen aber noch.
+    now = 1001;
+    const blockedByInFlight = limiter.reserve("source");
+    expect(blockedByInFlight.allowed).toBe(false);
+    expect(blockedByInFlight.remaining).toBe(0);
+
+    // Zwei alte Versuche schlagen erst im neuen Fenster fehl und zaehlen dort.
+    tickets[0].commitFailure();
+    tickets[1].commitFailure();
+    const blockedByFailures = limiter.reserve("source");
+    expect(blockedByFailures.allowed).toBe(false);
+    expect(blockedByFailures.remaining).toBe(0);
+
+    // Erst nach Freigabe des letzten alten Versuchs ist wieder Platz.
+    tickets[2].release();
+    expect(limiter.peek("source").remaining).toBe(1);
+    const allowedAgain = limiter.reserve("source");
+    expect(allowedAgain.allowed).toBe(true);
+    expect(allowedAgain.remaining).toBe(0);
+    if (!allowedAgain.allowed) {
+      throw new Error("Reservierung erwartet");
+    }
+    allowedAgain.ticket.release();
+
+    // Die beiden bestaetigten Fehlversuche bleiben im neuen Fenster gezaehlt.
+    const third = limiter.reserve("source");
+    expect(third.allowed).toBe(true);
+    expect(third.remaining).toBe(0);
+    if (!third.allowed) {
+      throw new Error("Reservierung erwartet");
+    }
+    third.ticket.release();
+
+    // Im naechsten Fenster beginnt der Zaehler wieder bei null.
+    now = 2002;
+    const nextWindow = limiter.reserve("source");
+    expect(nextWindow.allowed).toBe(true);
+    expect(nextWindow.remaining).toBe(2);
+    if (!nextWindow.allowed) {
+      throw new Error("Reservierung erwartet");
+    }
+    nextWindow.ticket.release();
+  });
+
 });

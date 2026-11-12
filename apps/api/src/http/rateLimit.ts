@@ -34,6 +34,10 @@ export type RateLimitReservation =
   | (RateLimitResult & { allowed: true; ticket: RateLimitTicket })
   | (RateLimitResult & { allowed: false; ticket: null });
 
+/**
+ * Zaehler eines Schluessels. Das Objekt bleibt ueber Fensterwechsel hinweg
+ * identisch, damit offene Tickets weiterhin denselben Zustand treffen.
+ */
 interface Bucket {
   windowStartMs: number;
   count: number;
@@ -61,10 +65,18 @@ export class RateLimiter {
 
   private currentBucket(key: string, nowMs: number): Bucket {
     const existing = this.buckets.get(key);
-    if (existing === undefined || nowMs >= existing.windowStartMs + this.windowMs) {
+    if (existing === undefined) {
       const fresh: Bucket = { windowStartMs: nowMs, count: 0, inFlight: 0 };
       this.buckets.set(key, fresh);
       return fresh;
+    }
+    if (nowMs >= existing.windowStartMs + this.windowMs) {
+      // Fensterwechsel: nur der Zaehler abgeschlossener Fehlversuche beginnt
+      // neu. Laufende Reservierungen bleiben bestehen und begrenzen auch das
+      // neue Fenster, bis sie abgeschlossen oder freigegeben sind. Weil das
+      // Objekt unveraendert bleibt, wirken offene Tickets weiterhin hierauf.
+      existing.windowStartMs = nowMs;
+      existing.count = 0;
     }
     return existing;
   }
@@ -102,6 +114,12 @@ export class RateLimiter {
    * Reserviert atomar einen Versuch. Der Platz zaehlt sofort als belegt
    * (inFlight), bis der Aufrufer commitFailure() oder release() aufruft.
    * Dadurch koennen parallele Aufrufe die Grenze nicht ueberschreiten.
+   *
+   * Zeitliche Zuordnung: Eine Reservierung ueberdauert den Fensterwechsel,
+   * bis sie entschieden ist. Ein per commitFailure() bestaetigter
+   * Fehlversuch zaehlt in dem Fenster, in dem er bestaetigt wird; ein
+   * vor dem Fensterwechsel reservierter, danach bestaetigter Fehlversuch
+   * belastet also das dann aktuelle Fenster.
    */
   reserve(key = "global"): RateLimitReservation {
     const nowMs = this.now();
