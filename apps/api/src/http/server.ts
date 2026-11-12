@@ -2,11 +2,23 @@ import Fastify, {
   type FastifyInstance,
   type FastifyServerOptions,
 } from "fastify";
+import cookie from "@fastify/cookie";
 import type { Pool } from "pg";
 import type { AppConfig } from "../config.js";
+import { startExpiredAuthCleanup } from "../db/cleanup.js";
 import { createDatabasePool } from "../db/client.js";
+import { AdminAuthService } from "../modules/adminAuth/service.js";
+import {
+  createAdminLoginRateLimiter,
+  registerAdminAuthRoutes,
+} from "../modules/adminAuth/routes.js";
+import { DevicesService } from "../modules/devices/service.js";
+import { registerAdminDeviceRoutes } from "../modules/devices/routes.js";
 import { RegistrationService } from "../modules/registration/service.js";
-import { registerRegistrationRoutes } from "../modules/registration/routes.js";
+import {
+  registerAdminRegistrationCodeRoutes,
+  registerRegistrationRoutes,
+} from "../modules/registration/routes.js";
 import { DeviceAuthService } from "../modules/deviceAuth/service.js";
 import { registerDeviceAuthRoutes } from "../modules/deviceAuth/routes.js";
 import { HeartbeatService } from "../modules/heartbeat/service.js";
@@ -58,6 +70,34 @@ function isFullOptions(input: AppConfig | ApiServerOptions): input is ApiServerO
 }
 
 /**
+ * Erlaubt leere JSON-Bodies (z. B. Logout oder DELETE ohne Inhalt), ohne den
+ * Vertrag zu verletzen: der Content-Type bleibt Pflicht. Ungueltiges JSON
+ * ergibt weiterhin 400 invalid_request.
+ */
+function registerJsonBodyParser(app: FastifyInstance): void {
+  app.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (_request, body, done) => {
+      const text = typeof body === "string" ? body : body.toString("utf8");
+      if (text.trim() === "") {
+        done(null, {});
+        return;
+      }
+      try {
+        done(null, JSON.parse(text));
+      } catch {
+        const error = new Error("Ungueltiges JSON") as Error & {
+          statusCode?: number;
+        };
+        error.statusCode = 400;
+        done(error);
+      }
+    },
+  );
+}
+
+/**
  * Baut die API. Es werden bewusst keine Request-Bodies oder Header
  * protokolliert; die URL wird vor dem Loggen redigiert (AC-05, I-24).
  */
@@ -77,11 +117,29 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     bodyLimit: 64 * 1024,
   });
 
+  registerJsonBodyParser(app);
+
+  // Cookie-Sitzung des Dashboards (API-VERTRAG.md Abschnitt 5).
+  void app.register(cookie);
+
+  // Abgelaufene Challenges/Tokens/Sitzungen: beim Start und stuendlich
+  // bereinigen (ARCHITEKTUR.md Abschnitt 3).
+  const stopCleanup = startExpiredAuthCleanup({
+    executor: pool,
+    now,
+    onError: (error: unknown) => {
+      app.log.warn({ errName: error instanceof Error ? error.name : "Unknown" }, "Bereinigung fehlgeschlagen");
+    },
+  });
+
   if (ownsPool) {
     app.addHook("onClose", async () => {
       await pool.end();
     });
   }
+  app.addHook("onClose", async () => {
+    stopCleanup();
+  });
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("X-Request-Id", request.id);
@@ -103,6 +161,25 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
 
   const service = new RegistrationService({ pool, config, now });
   registerRegistrationRoutes(app, { service, limiter, config });
+
+  // Admin-Sitzung und Dashboard-Routen (U6).
+  const adminAuthService = new AdminAuthService({ pool, config, now });
+  registerAdminAuthRoutes(app, {
+    service: adminAuthService,
+    loginLimiter: createAdminLoginRateLimiter(config, () => now().getTime()),
+    config,
+  });
+  registerAdminRegistrationCodeRoutes(app, {
+    service,
+    adminAuth: adminAuthService,
+  });
+  const devicesService = new DevicesService({ pool, config, now });
+  registerAdminDeviceRoutes(app, {
+    service: devicesService,
+    adminAuth: adminAuthService,
+  });
+  app.decorate("adminAuthService", adminAuthService);
+  app.decorate("devicesService", devicesService);
 
   // Geraeteauthentifizierung (U4); die Middleware nutzt denselben Service.
   const deviceAuthService = new DeviceAuthService({ pool, config, now });
