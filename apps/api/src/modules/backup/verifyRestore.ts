@@ -102,6 +102,12 @@ export interface VerifyRestoreOptions {
    * dies ungesetzt, dann wird "pg_restore" aus dem PATH verwendet.
    */
   pgRestoreBinary?: string;
+  /**
+   * Testnaht fuer gezielte Fehler beim Entfernen der privaten
+   * Momentaufnahme. Im Normalbetrieb bleibt dies ungesetzt, dann wird die
+   * Momentaufnahme direkt geloescht.
+   */
+  removeSnapshotDirectory?: (directory: string) => Promise<void>;
 }
 
 /**
@@ -435,6 +441,21 @@ function resolveBinary(value: unknown): string {
     fail("pg_restore_missing", "pg_restore wurde nicht gefunden");
   }
   return value;
+}
+
+function resolveSnapshotRemover(
+  value: unknown,
+): (directory: string) => Promise<void> {
+  if (value === undefined) {
+    return (directory) => rm(directory, { recursive: true, force: true });
+  }
+  if (typeof value !== "function") {
+    fail(
+      "invalid_options",
+      "Die Testnaht fuer das Entfernen der Momentaufnahme ist ungueltig",
+    );
+  }
+  return value as (directory: string) => Promise<void>;
 }
 
 function quoteIdentifier(identifier: string): string {
@@ -773,6 +794,11 @@ export async function verifyRestore(
   let targetDatabaseName: string | undefined;
   let primaryError: RestoreError | undefined;
   let cleanupFailed = false;
+  let targetCleanupFailed = false;
+  let snapshotCleanupFailed = false;
+  let removeSnapshotDirectory: (directory: string) => Promise<void> = (
+    directory,
+  ) => rm(directory, { recursive: true, force: true });
 
   try {
     if (options.environment !== "test") {
@@ -798,6 +824,9 @@ export async function verifyRestore(
     const verifier = resolveVerifier(options.verifyContent);
     const timeoutMs = resolveTimeout(options.timeoutMs);
     const pgRestoreBinary = resolveBinary(options.pgRestoreBinary);
+    removeSnapshotDirectory = resolveSnapshotRemover(
+      options.removeSnapshotDirectory,
+    );
 
     if (options.signal?.aborted === true) {
       fail("aborted", "Der Restore wurde abgebrochen");
@@ -927,11 +956,13 @@ export async function verifyRestore(
       if (!dropped) {
         if (connection === undefined) {
           cleanupFailed = true;
+          targetCleanupFailed = true;
         } else {
           try {
             await dropTargetDatabaseWithFreshClient(connection, targetName);
           } catch {
             cleanupFailed = true;
+            targetCleanupFailed = true;
           }
         }
       }
@@ -947,10 +978,16 @@ export async function verifyRestore(
     }
 
     if (snapshot !== undefined) {
-      await rm(snapshot.directory, { recursive: true, force: true }).catch(() => {
-        // Best effort; die Momentaufnahme ist nur eine temporaere Kopie.
-      });
+      const snapshotDirectory = snapshot.directory;
       snapshot = undefined;
+      try {
+        await removeSnapshotDirectory(snapshotDirectory);
+      } catch {
+        // Eine zurueckgebliebene vollstaendige Dump-Kopie ist ein
+        // Cleanup-Fehler und darf nicht als Erfolg gemeldet werden.
+        cleanupFailed = true;
+        snapshotCleanupFailed = true;
+      }
     }
   }
 
@@ -959,9 +996,18 @@ export async function verifyRestore(
   if (primaryError !== undefined) {
     result.error = primaryError;
   } else if (cleanupFailed) {
+    const reasons: string[] = [];
+    if (targetCleanupFailed) {
+      reasons.push("Die selbst erzeugte Zieldatenbank konnte nicht entfernt werden");
+    }
+    if (snapshotCleanupFailed) {
+      reasons.push(
+        "Die temporaere Momentaufnahme des Dumpartefakts konnte nicht entfernt werden",
+      );
+    }
     result.error = {
       code: "cleanup_failed",
-      message: "Die selbst erzeugte Zieldatenbank konnte nicht entfernt werden",
+      message: reasons.join("; "),
     };
   }
 

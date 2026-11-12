@@ -382,6 +382,54 @@ describe("CX-023 verifyRestore", () => {
   );
 
   it(
+    "meldet eine nicht entfernte Momentaufnahme als Cleanup-Fehler",
+    async () => {
+      const before = await listRestoreDatabases();
+      const sourceBefore = await readSourceState();
+      const scriptDirectory = await makeScratchDirectory("snapshot-cleanup-fail");
+      const fake = await writeFakePgRestore(
+        scriptDirectory,
+        "snapshot-cleanup-fail",
+        "process.exit(0);",
+      );
+
+      const snapshotDirectories: string[] = [];
+      const result = await verifyRestore({
+        environment: "test",
+        artifact,
+        connection,
+        pgRestoreBinary: fake,
+        removeSnapshotDirectory: async (directory) => {
+          snapshotDirectories.push(directory);
+          throw new Error("Momentaufnahme ist gesperrt");
+        },
+        verifyContent: async () => true,
+      });
+
+      expect(snapshotDirectories).toHaveLength(1);
+      const remainingSnapshot = snapshotDirectories[0] as string;
+      // Der Test raeumt die absichtlich zurueckgebliebene Kopie selbst auf.
+      scratchDirectories.push(remainingSnapshot);
+      expect(await pathExists(remainingSnapshot)).toBe(true);
+      await rm(remainingSnapshot, { recursive: true, force: true });
+
+      expect(result.success).toBe(false);
+      expect(result.verificationPassed).toBe(true);
+      expect(result.cleanupSucceeded).toBe(false);
+      expect(result.error?.code).toBe("cleanup_failed");
+      expect(result.error?.message).toContain("Momentaufnahme");
+
+      // Die Zieldatenbank wurde trotzdem entfernt; nur die Momentaufnahme
+      // blieb zurueck und wird als Cleanup-Fehler gemeldet.
+      expect(result.targetDatabaseName).toMatch(/^gtads_restore_[0-9a-f]{16}$/);
+      expect(await databaseExists(result.targetDatabaseName as string)).toBe(false);
+      expect(await listRestoreDatabases()).toEqual(before);
+      expect(await readSourceState()).toEqual(sourceBefore);
+    },
+    60_000,
+  );
+
+  it(
     "weist manipulierte Bytes und eine falsche Byteanzahl vor jeder Datenbankanlage ab",
     async () => {
       const before = await listRestoreDatabases();
