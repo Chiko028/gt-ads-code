@@ -9,6 +9,8 @@ import { RegistrationService } from "../modules/registration/service.js";
 import { registerRegistrationRoutes } from "../modules/registration/routes.js";
 import { DeviceAuthService } from "../modules/deviceAuth/service.js";
 import { registerDeviceAuthRoutes } from "../modules/deviceAuth/routes.js";
+import { HeartbeatService } from "../modules/heartbeat/service.js";
+import { registerHeartbeatRoutes } from "../modules/heartbeat/routes.js";
 import { registerErrorHandler } from "./errors.js";
 import { REDACTED, redactUrl } from "./logging.js";
 import {
@@ -106,6 +108,10 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   const deviceAuthService = new DeviceAuthService({ pool, config, now });
   registerDeviceAuthRoutes(app, { service: deviceAuthService });
   app.decorate("deviceAuthService", deviceAuthService);
+
+  // Heartbeat (U5): nutzt dieselbe Geraeteauthentifizierung wie U4.
+  const heartbeatService = new HeartbeatService({ pool, config, now });
+  registerHeartbeatRoutes(app, { service: heartbeatService, deviceAuth: deviceAuthService });
 
   app.get("/health", async () => ({
     status: "ok",

@@ -1,0 +1,63 @@
+import type { SqlQueryable } from "../audit/repository.js";
+
+export interface DeviceStateRow {
+  id: string;
+  state: "active" | "revoked";
+}
+
+export interface RecordHeartbeatInput {
+  deviceId: string;
+  /** Serverzeit (nicht Geraetezeit). */
+  seenAt: Date;
+  seq: number;
+  /** server_time - device_time in Millisekunden. */
+  clockOffsetMs: bigint;
+}
+
+export interface RecordHeartbeatResult {
+  last_seq: string;
+}
+
+export async function findDeviceState(
+  executor: SqlQueryable,
+  deviceId: string,
+): Promise<DeviceStateRow | null> {
+  const result = await executor.query<DeviceStateRow>(
+    "select id::text as id, state from devices where id = $1",
+    [deviceId],
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * Aktualisiert `last_seen_at` ausschliesslich auf die uebergebene Serverzeit
+ * (AC-09) und schreibt den Clock-Offset. `last_seq` waechst nur
+ * (`greatest`), damit ein kleineres oder gleiches `seq` nichts zurueckdreht
+ * (API-VERTRAG.md Abschnitt 4, I-17).
+ *
+ * Die Bedingung `state = 'active'` macht die Sperre auch bei einem
+ * gleichzeitigen Revoke wirksam (AC-08): dann wird keine Zeile geliefert.
+ */
+export async function recordHeartbeat(
+  executor: SqlQueryable,
+  input: RecordHeartbeatInput,
+): Promise<RecordHeartbeatResult | null> {
+  const result = await executor.query<RecordHeartbeatResult>(
+    [
+      "update devices",
+      "   set last_seen_at = $2,",
+      "       last_seq = greatest(last_seq, $3::bigint),",
+      "       last_clock_offset_ms = $4::bigint",
+      " where id = $1",
+      "   and state = 'active'",
+      " returning last_seq::text as last_seq",
+    ].join("\n"),
+    [
+      input.deviceId,
+      input.seenAt,
+      String(input.seq),
+      input.clockOffsetMs.toString(),
+    ],
+  );
+  return result.rows[0] ?? null;
+}
