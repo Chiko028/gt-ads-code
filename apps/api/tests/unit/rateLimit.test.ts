@@ -68,4 +68,57 @@ describe("U-09 Rate-Limiter", () => {
     expect(() => new RateLimiter({ max: 1, windowMs: 0 })).toThrow(RangeError);
     expect(() => new RateLimiter({ max: 1.5, windowMs: 1000 })).toThrow(RangeError);
   });
+
+  it("reserviert Versuche atomar bis zur Grenze", () => {
+    const limiter = new RateLimiter({ max: 2, windowMs: 60_000, now: () => 0 });
+    const first = limiter.reserve("source");
+    const second = limiter.reserve("source");
+    expect(first.allowed).toBe(true);
+    expect(second.allowed).toBe(true);
+
+    const blocked = limiter.reserve("source");
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.retryAfterSeconds).toBe(60);
+
+    if (!first.allowed) {
+      throw new Error("Reservierung erwartet");
+    }
+    first.ticket.release();
+    // Mehrfaches Freigeben darf das Kontingent nicht erhoehen.
+    first.ticket.release();
+
+    const afterRelease = limiter.reserve("source");
+    expect(afterRelease.allowed).toBe(true);
+    if (!afterRelease.allowed) {
+      throw new Error("Reservierung erwartet");
+    }
+    afterRelease.ticket.release();
+  });
+
+  it("bestaetigte Fehlversuche bleiben nach Reservierung gezaehlt", () => {
+    const limiter = new RateLimiter({ max: 2, windowMs: 60_000, now: () => 0 });
+    const first = limiter.reserve("source");
+    if (!first.allowed) {
+      throw new Error("Reservierung erwartet");
+    }
+    first.ticket.commitFailure();
+
+    const second = limiter.reserve("source");
+    expect(second.allowed).toBe(true);
+    if (!second.allowed) {
+      throw new Error("Reservierung erwartet");
+    }
+    second.ticket.release();
+
+    const third = limiter.reserve("source");
+    expect(third.allowed).toBe(true);
+    if (!third.allowed) {
+      throw new Error("Reservierung erwartet");
+    }
+    third.ticket.commitFailure();
+
+    expect(limiter.reserve("source").allowed).toBe(false);
+    expect(limiter.peek("source").remaining).toBe(0);
+  });
+
 });

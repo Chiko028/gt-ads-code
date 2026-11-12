@@ -11,7 +11,10 @@ import type {
   RegistrationCodeListItem,
   RegistrationService,
 } from "./service.js";
-import { parseRegistrationRequest } from "./validation.js";
+import {
+  parseRegistrationRequest,
+  type ParsedRegistrationRequest,
+} from "./validation.js";
 
 export interface RegistrationRoutesDeps {
   service: RegistrationService;
@@ -87,25 +90,38 @@ export function registerRegistrationRoutes(
     requireApiVersion(request);
 
     const sourceKey = request.ip;
-    const gate = deps.limiter.check(sourceKey);
+    const gate = deps.limiter.begin(sourceKey);
     if (!gate.allowed) {
       throw ApiError.rateLimited(gate.retryAfterSeconds);
     }
+    // Der reservierte Platz zaehlt sofort mit; er wird je nach Ausgang als
+    // Fehlversuch bestaetigt oder wieder freigegeben.
+    const ticket = gate.ticket;
 
-    const input = parseRegistrationRequest(
-      request.body,
-      deps.config.registrationCodeLength,
-    );
+    let input: ParsedRegistrationRequest;
+    try {
+      input = parseRegistrationRequest(
+        request.body,
+        deps.config.registrationCodeLength,
+      );
+    } catch (error) {
+      // Formatfehler sind keine fachlichen Codefehler.
+      ticket.release();
+      throw error;
+    }
 
     let result;
     try {
       result = await deps.service.register(input);
     } catch (error) {
       if (isCountedFailure(error)) {
-        deps.limiter.recordFailure(sourceKey);
+        ticket.commitFailure();
+      } else {
+        ticket.release();
       }
       throw error;
     }
+    ticket.release();
 
     reply.code(201).send({
       device_id: result.deviceId,

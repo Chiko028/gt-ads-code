@@ -21,9 +21,24 @@ export interface RateLimitResult {
   resetAtMs: number;
 }
 
+/** Reservierter Versuch; genau einmal commitFailure() oder release() rufen. */
+export interface RateLimitTicket {
+  /** Zaehlt den reservierten Versuch dauerhaft als Fehlversuch. */
+  commitFailure(): void;
+  /** Gibt den reservierten Platz ohne Fehlversuch wieder frei. */
+  release(): void;
+}
+
+/** Ergebnis einer atomaren Reservierung. */
+export type RateLimitReservation =
+  | (RateLimitResult & { allowed: true; ticket: RateLimitTicket })
+  | (RateLimitResult & { allowed: false; ticket: null });
+
 interface Bucket {
   windowStartMs: number;
   count: number;
+  /** Noch nicht entschiedene, aber bereits reservierte Versuche. */
+  inFlight: number;
 }
 
 export class RateLimiter {
@@ -47,7 +62,7 @@ export class RateLimiter {
   private currentBucket(key: string, nowMs: number): Bucket {
     const existing = this.buckets.get(key);
     if (existing === undefined || nowMs >= existing.windowStartMs + this.windowMs) {
-      const fresh: Bucket = { windowStartMs: nowMs, count: 0 };
+      const fresh: Bucket = { windowStartMs: nowMs, count: 0, inFlight: 0 };
       this.buckets.set(key, fresh);
       return fresh;
     }
@@ -83,12 +98,57 @@ export class RateLimiter {
     };
   }
 
+  /**
+   * Reserviert atomar einen Versuch. Der Platz zaehlt sofort als belegt
+   * (inFlight), bis der Aufrufer commitFailure() oder release() aufruft.
+   * Dadurch koennen parallele Aufrufe die Grenze nicht ueberschreiten.
+   */
+  reserve(key = "global"): RateLimitReservation {
+    const nowMs = this.now();
+    const bucket = this.currentBucket(key, nowMs);
+    const windowEndMs = bucket.windowStartMs + this.windowMs;
+
+    if (bucket.count + bucket.inFlight >= this.max) {
+      return {
+        allowed: false,
+        remaining: 0,
+        retryAfterSeconds: RateLimiter.retryAfterSeconds(windowEndMs, nowMs),
+        resetAtMs: windowEndMs,
+        ticket: null,
+      };
+    }
+
+    bucket.inFlight += 1;
+    let settled = false;
+    const settle = (counted: boolean): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      bucket.inFlight = Math.max(0, bucket.inFlight - 1);
+      if (counted) {
+        bucket.count += 1;
+      }
+    };
+
+    return {
+      allowed: true,
+      remaining: Math.max(0, this.max - bucket.count - bucket.inFlight),
+      retryAfterSeconds: 0,
+      resetAtMs: windowEndMs,
+      ticket: {
+        commitFailure: () => settle(true),
+        release: () => settle(false),
+      },
+    };
+  }
+
   /** Liest den Zustand, ohne zu zaehlen. */
   peek(key = "global"): RateLimitResult {
     const nowMs = this.now();
     const bucket = this.currentBucket(key, nowMs);
     const windowEndMs = bucket.windowStartMs + this.windowMs;
-    const remaining = Math.max(0, this.max - bucket.count);
+    const remaining = Math.max(0, this.max - bucket.count - bucket.inFlight);
     return {
       allowed: remaining > 0,
       remaining,
@@ -110,7 +170,11 @@ export class RateLimiter {
 /**
  * Begrenzung von Registrierungsfehlversuchen je Quelle und global
  * (SPEZIFIKATION.md Abschnitt 7, ARCHITEKTUR.md Abschnitt 4).
- * Geprueft wird vor der Verarbeitung, gezaehlt wird nur ein Fehlversuch.
+ *
+ * Ein Versuch wird mit begin() atomar reserviert. Der reservierte Platz
+ * zaehlt sofort mit, bis der Versuch als Fehlversuch bestaetigt oder wieder
+ * freigegeben wird. Dadurch koennen parallele Anfragen die Grenze nicht
+ * umgehen, und erfolgreiche Anfragen verbrauchen kein Kontingent.
  */
 export interface RegistrationRateLimitOptions {
   perSourceMax: number;
@@ -140,36 +204,49 @@ export class RegistrationRateLimiter {
   }
 
   /**
-   * Prueft beide Grenzen, ohne zu zaehlen. Ist eine Grenze erreicht, wird
-   * die laengste verbleibende Wartezeit als Retry-After geliefert.
+   * Reserviert atomar einen Versuch bei Quelle und global. Ist eine Grenze
+   * erreicht, wird die laengste verbleibende Wartezeit als Retry-After
+   * geliefert; eine bereits erfolgte Quellenreservierung wird dann wieder
+   * freigegeben.
    */
-  check(sourceKey: string): RateLimitResult {
-    const source = this.perSource.peek(sourceKey);
-    const global = this.global.peek(GLOBAL_KEY);
-    if (source.allowed && global.allowed) {
-      return {
-        allowed: true,
-        remaining: Math.min(source.remaining, global.remaining),
-        retryAfterSeconds: 0,
-        resetAtMs: Math.max(source.resetAtMs, global.resetAtMs),
-      };
+  begin(sourceKey: string): RateLimitReservation {
+    const source = this.perSource.reserve(sourceKey);
+    if (!source.allowed) {
+      return source;
+    }
+    const global = this.global.reserve(GLOBAL_KEY);
+    if (!global.allowed) {
+      source.ticket.release();
+      return global;
     }
 
-    const blocking = [source, global].filter((result) => !result.allowed);
+    const sourceTicket = source.ticket;
+    const globalTicket = global.ticket;
+    let settled = false;
     return {
-      allowed: false,
-      remaining: 0,
-      retryAfterSeconds: Math.max(
-        ...blocking.map((result) => result.retryAfterSeconds),
-      ),
-      resetAtMs: Math.max(...blocking.map((result) => result.resetAtMs)),
+      allowed: true,
+      remaining: Math.min(source.remaining, global.remaining),
+      retryAfterSeconds: 0,
+      resetAtMs: Math.max(source.resetAtMs, global.resetAtMs),
+      ticket: {
+        commitFailure: () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          sourceTicket.commitFailure();
+          globalTicket.commitFailure();
+        },
+        release: () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          sourceTicket.release();
+          globalTicket.release();
+        },
+      },
     };
-  }
-
-  /** Zaehlt einen Fehlversuch bei Quelle und global. */
-  recordFailure(sourceKey: string): void {
-    this.perSource.hit(sourceKey);
-    this.global.hit(GLOBAL_KEY);
   }
 
   /** Nur fuer Tests: alle Zaehler verwerfen. */

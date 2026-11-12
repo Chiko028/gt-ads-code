@@ -20,6 +20,7 @@ import { migrateUp } from "../../src/db/migrate.js";
 import { isSensitiveFieldName } from "../../src/http/logging.js";
 import { createServer, type ApiServerOptions } from "../../src/http/server.js";
 import { AUDIT_ACTIONS } from "../../src/modules/audit/repository.js";
+import { DevicesService } from "../../src/modules/devices/service.js";
 import { RegistrationService } from "../../src/modules/registration/service.js";
 
 const BASE_TIME = Date.parse("2026-01-01T12:00:00.000Z");
@@ -180,6 +181,26 @@ async function countDevicesForCode(codeId: string): Promise<number> {
   return Number(result.rows[0]?.count ?? "0");
 }
 
+async function waitForLockWait(): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const result = await maintenancePool.query<{ count: string }>(
+      [
+        "select count(*)::text as count",
+        "  from pg_stat_activity",
+        " where datname = $1",
+        "   and wait_event_type = 'Lock'",
+      ].join("\n"),
+      [databaseName],
+    );
+    if (Number(result.rows[0]?.count ?? "0") > 0) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Registrierung wartet nicht auf die Codesperre");
+}
+
 describe("U3 Registrierung (I-03 bis I-12)", () => {
   it("I-03 speichert den Code nur als HMAC-Hash", async () => {
     const created = await service.createRegistrationCode({ label: "SYN-Label" });
@@ -288,9 +309,15 @@ describe("U3 Registrierung (I-03 bis I-12)", () => {
     const created = await service.createRegistrationCode();
     const keys = Array.from({ length: 10 }, () => makeDeviceKey());
 
+    // Je Quelle nur ein Versuch, damit hier ausschliesslich das Rennen um
+    // den Code geprueft wird und nicht die Quellengrenze greift.
     const responses = await Promise.all(
-      keys.map((key) =>
-        register(app, registrationBody(created.code, key.spki), "192.0.2.20"),
+      keys.map((key, index) =>
+        register(
+          app,
+          registrationBody(created.code, key.spki),
+          "192.0.2." + (100 + index),
+        ),
       ),
     );
 
@@ -304,6 +331,81 @@ describe("U3 Registrierung (I-03 bis I-12)", () => {
     }
     expect(await countDevicesForCode(created.id)).toBe(1);
   });
+
+  it("I-06a Rate-Limit parallel je Quelle: nur fuenf gleichzeitige Versuche passieren", async () => {
+    const app = await buildApp();
+    const source = "203.0.113.70";
+
+    const responses = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        register(
+          app,
+          registrationBody(generateRegistrationCode(12), makeDeviceKey().spki),
+          source,
+        ),
+      ),
+    );
+
+    const statuses = responses.map((response) => response.statusCode);
+    expect(statuses.filter((status) => status === 400)).toHaveLength(5);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(5);
+    for (const response of responses) {
+      if (response.statusCode === 400) {
+        expect(errorBody(response).code).toBe("invalid_registration_code");
+      } else {
+        expect(errorBody(response).code).toBe("rate_limited");
+      }
+    }
+  });
+
+  it("I-06b Rate-Limit parallel global: nur dreissig gleichzeitige Versuche passieren", async () => {
+    const app = await buildApp();
+
+    const responses = await Promise.all(
+      Array.from({ length: 40 }, (_unused, index) =>
+        register(
+          app,
+          registrationBody(generateRegistrationCode(12), makeDeviceKey().spki),
+          "198.18.0." + (index + 1),
+        ),
+      ),
+    );
+
+    const statuses = responses.map((response) => response.statusCode);
+    expect(statuses.filter((status) => status === 400)).toHaveLength(30);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(10);
+    for (const response of responses) {
+      if (response.statusCode === 400) {
+        expect(errorBody(response).code).toBe("invalid_registration_code");
+      } else {
+        expect(errorBody(response).code).toBe("rate_limited");
+      }
+    }
+  });
+
+  it("I-06c erfolgreiche Registrierungen verbrauchen kein Fehlversuchskontingent", async () => {
+    const app = await buildApp();
+    const source = "203.0.113.71";
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const created = await service.createRegistrationCode();
+      const response = await register(
+        app,
+        registrationBody(created.code, makeDeviceKey().spki),
+        source,
+      );
+      expect(response.statusCode).toBe(201);
+    }
+
+    const failure = await register(
+      app,
+      registrationBody(generateRegistrationCode(12), makeDeviceKey().spki),
+      source,
+    );
+    expect(failure.statusCode).toBe(400);
+    expect(errorBody(failure).code).toBe("invalid_registration_code");
+  });
+
 
   it("I-07 Idempotenz: gleiche Anfrage liefert dasselbe Geraet", async () => {
     const app = await buildApp();
@@ -324,6 +426,25 @@ describe("U3 Registrierung (I-03 bis I-12)", () => {
     );
     expect(Number(registered.rows[0]?.count)).toBe(1);
   });
+
+  it("I-07b idempotente Wiederholung nach Sperre ergibt device_revoked", async () => {
+    const app = await buildApp();
+    const created = await service.createRegistrationCode();
+    const key = makeDeviceKey();
+    const payload = registrationBody(created.code, key.spki);
+
+    const first = await register(app, payload, "192.0.2.90");
+    expect(first.statusCode).toBe(201);
+
+    const devices = new DevicesService({ pool, config, now: clock });
+    await devices.revokeDevice(first.json().device_id);
+
+    const repeat = await register(app, payload, "192.0.2.91");
+    expect(repeat.statusCode).toBe(403);
+    expect(errorBody(repeat).code).toBe("device_revoked");
+    expect(await countDevicesForCode(created.id)).toBe(1);
+  });
+
 
   it("I-08 abgelaufen/widerrufen/unbekannt/benutzt sind bytegleich (ausser request_id)", async () => {
     const app = await buildApp();
@@ -370,6 +491,53 @@ describe("U3 Registrierung (I-03 bis I-12)", () => {
     }
     expect(new Set(responses.map(normalizedErrorBody)).size).toBe(1);
   });
+
+  it("I-13 wartende Registrierung prueft Ablauf mit frischer Serverzeit", async () => {
+    const app = await buildApp();
+    const created = await service.createRegistrationCode();
+    const payload = registrationBody(created.code, makeDeviceKey().spki);
+
+    const blocker = await pool.connect();
+    let committed = false;
+    try {
+      await blocker.query("begin");
+      await blocker.query(
+        "select id from registration_codes where id = $1 for update",
+        [created.id],
+      );
+
+      const pending = register(app, payload, "192.0.2.80");
+      await waitForLockWait();
+
+      // Der Code laeuft ab, waehrend die Registrierung auf die Zeilensperre
+      // wartet; die Ablaufpruefung muss die neue Serverzeit verwenden.
+      nowMs += (config.registrationCodeTtlSeconds + 1) * 1000;
+
+      await blocker.query("commit");
+      committed = true;
+
+      const response = await pending;
+      expect(response.statusCode).toBe(400);
+      expect(errorBody(response).code).toBe("invalid_registration_code");
+    } finally {
+      if (!committed) {
+        try {
+          await blocker.query("rollback");
+        } catch {
+          // Die Sperre wird ohnehin mit der Verbindung freigegeben.
+        }
+      }
+      blocker.release();
+    }
+
+    const code = await pool.query<{ used_at: Date | null }>(
+      "select used_at from registration_codes where id = $1",
+      [created.id],
+    );
+    expect(code.rows[0]?.used_at).toBeNull();
+    expect(await countDevicesForCode(created.id)).toBe(0);
+  });
+
 
   it("I-09 app_env ungleich Server-Umgebung verbraucht keinen Code", async () => {
     const app = await buildApp();

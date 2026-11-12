@@ -220,7 +220,6 @@ export class RegistrationService {
       throw ApiError.environmentMismatch();
     }
 
-    const now = this.now();
     const key = parsePublicKeySpki(input.publicKeySpki);
     const spkiDer = key.export({ format: "der", type: "spki" }) as Buffer;
     const fingerprint = publicKeyFingerprint(input.publicKeySpki);
@@ -236,12 +235,21 @@ export class RegistrationService {
           throw ApiError.invalidRegistrationCode();
         }
 
+        // Serverzeit erst nach Erwerb der Codezeilensperre bestimmen: eine
+        // Wartezeit auf Pool oder Zeilensperre darf einen inzwischen
+        // abgelaufenen Code nicht gueltig machen.
+        const now = this.now();
+
         const existing = await findDeviceByRegistrationCodeId(client, codeRow.id);
         if (existing !== null) {
           if (
             existing.registration_request_id === input.clientRequestId &&
             existing.public_key_fingerprint === fingerprint
           ) {
+            // Eine idempotente Wiederholung darf die Sperre nicht umgehen.
+            if (existing.state === "revoked") {
+              throw ApiError.deviceRevoked();
+            }
             return {
               deviceId: existing.id,
               serverTime: now,
