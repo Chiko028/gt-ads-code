@@ -80,7 +80,10 @@ export interface AdminShellProps {
   /** Injizierbares fetch fuer Client und Tests. */
   fetchImpl?: FetchLike;
   /** Alternative Client-Fabrik; erhaelt die zentrale 401-Behandlung. */
-  apiFactory?: (options: { onUnauthorized: () => void }) => AdminApi;
+  apiFactory?: (options: {
+    onUnauthorized: () => void;
+    getSessionGeneration: () => number;
+  }) => AdminApi;
 }
 
 /**
@@ -117,9 +120,11 @@ export function AdminShell({
   const generationRef = useRef(0);
   const authenticatedRef = useRef(false);
   const loginBusyRef = useRef(false);
-  const listInFlightRef = useRef(false);
-  const createBusyRef = useRef(false);
-  const revokeBusyRef = useRef(false);
+  const listSeqRef = useRef(0);
+  /** Generation, die die laufende Erstellung besitzt. */
+  const createBusyRef = useRef<number | null>(null);
+  /** Generation, die den laufenden Widerruf besitzt. */
+  const revokeBusyRef = useRef<number | null>(null);
 
   const handleUnauthorized = useCallback(() => {
     const wasAuthenticated = authenticatedRef.current;
@@ -133,35 +138,51 @@ export function AdminShell({
     setListError(null);
     setListLoading(false);
     setRevokeError(null);
+    setCreating(false);
+    setRevokeBusy(false);
+    setLoggingOut(false);
+    createBusyRef.current = null;
+    revokeBusyRef.current = null;
     setPassword("");
     setPhase("login");
     setAuthMessage(wasAuthenticated ? SESSION_EXPIRED_MESSAGE : null);
   }, []);
 
+  const getSessionGeneration = useCallback(() => generationRef.current, []);
+
   const api = useMemo(() => {
     if (apiFactory !== undefined) {
-      return apiFactory({ onUnauthorized: handleUnauthorized });
+      return apiFactory({
+        onUnauthorized: handleUnauthorized,
+        getSessionGeneration,
+      });
     }
-    return createAdminApi({ fetchImpl, onUnauthorized: handleUnauthorized });
-  }, [apiFactory, fetchImpl, handleUnauthorized]);
+    return createAdminApi({
+      fetchImpl,
+      onUnauthorized: handleUnauthorized,
+      getSessionGeneration,
+    });
+  }, [apiFactory, fetchImpl, handleUnauthorized, getSessionGeneration]);
 
   const loadCodes = useCallback(
     async (generation: number): Promise<boolean> => {
-      if (listInFlightRef.current) {
+      if (generation !== generationRef.current) {
         return false;
       }
-      listInFlightRef.current = true;
+      // Jede Abfrage traegt eine laufende Nummer. Eine neuere Abfrage
+      // ersetzt eine noch laufende aeltere, statt verworfen zu werden.
+      const seq = ++listSeqRef.current;
       setListLoading(true);
       setListError(null);
       try {
         const items = await api.listRegistrationCodes();
-        if (generation !== generationRef.current) {
+        if (generation !== generationRef.current || seq !== listSeqRef.current) {
           return false;
         }
         setCodes(items);
         return true;
       } catch (error) {
-        if (generation !== generationRef.current) {
+        if (generation !== generationRef.current || seq !== listSeqRef.current) {
           return false;
         }
         if (!isUnauthorizedError(error)) {
@@ -169,8 +190,10 @@ export function AdminShell({
         }
         return false;
       } finally {
-        listInFlightRef.current = false;
-        if (generation === generationRef.current) {
+        if (
+          generation === generationRef.current &&
+          seq === listSeqRef.current
+        ) {
           setListLoading(false);
         }
       }
@@ -247,6 +270,11 @@ export function AdminShell({
     setCreateError(null);
     setCreateUnknown(false);
     setRevokeError(null);
+    setCreating(false);
+    setRevokeBusy(false);
+    setListLoading(false);
+    createBusyRef.current = null;
+    revokeBusyRef.current = null;
     await loadCodes(generation);
   }
 
@@ -263,6 +291,10 @@ export function AdminShell({
     setListError(null);
     setListLoading(false);
     setRevokeError(null);
+    setCreating(false);
+    setRevokeBusy(false);
+    createBusyRef.current = null;
+    revokeBusyRef.current = null;
     setAuthMessage(null);
     setLogoutWarning(null);
     setLoggingOut(true);
@@ -284,15 +316,15 @@ export function AdminShell({
 
   async function handleCreateSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (createBusyRef.current) {
+    const generation = generationRef.current;
+    if (createBusyRef.current === generation) {
       return;
     }
-    createBusyRef.current = true;
+    createBusyRef.current = generation;
     setCreating(true);
     setCreateError(null);
     setCreateUnknown(false);
     setCreatedCode(null);
-    const generation = generationRef.current;
     const trimmed = label.trim().slice(0, 64);
     try {
       const created = await api.createRegistrationCode(
@@ -318,9 +350,11 @@ export function AdminShell({
         setCreateError(messageFor(error));
       }
     } finally {
-      createBusyRef.current = false;
-      if (generation === generationRef.current) {
-        setCreating(false);
+      if (createBusyRef.current === generation) {
+        createBusyRef.current = null;
+        if (generation === generationRef.current) {
+          setCreating(false);
+        }
       }
     }
   }
@@ -335,13 +369,13 @@ export function AdminShell({
   }
 
   async function handleConfirmRevoke(id: string) {
-    if (revokeBusyRef.current) {
+    const generation = generationRef.current;
+    if (revokeBusyRef.current === generation) {
       return;
     }
-    revokeBusyRef.current = true;
+    revokeBusyRef.current = generation;
     setRevokeBusy(true);
     setRevokeError(null);
-    const generation = generationRef.current;
     try {
       await api.revokeRegistrationCode(id);
       if (generation !== generationRef.current) {
@@ -357,9 +391,11 @@ export function AdminShell({
         setRevokeError(messageFor(error));
       }
     } finally {
-      revokeBusyRef.current = false;
-      if (generation === generationRef.current) {
-        setRevokeBusy(false);
+      if (revokeBusyRef.current === generation) {
+        revokeBusyRef.current = null;
+        if (generation === generationRef.current) {
+          setRevokeBusy(false);
+        }
       }
     }
   }

@@ -98,6 +98,28 @@ function deferredResponse() {
   return { promise, resolve };
 }
 
+function brokenBodyResponse(status = 201): Response {
+  return {
+    status,
+    ok: true,
+    headers: new Headers({ "Content-Type": "application/json" }),
+    text: () => Promise.reject(new TypeError("Verbindung unterbrochen")),
+  } as unknown as Response;
+}
+
+async function loginWithPassword(
+  net: ReturnType<typeof createFetchDouble>,
+  user: ReturnType<typeof userEvent.setup>,
+  items: unknown[] = [],
+  password = "geheim",
+) {
+  net.enqueue(async () => emptyResponse(204));
+  net.enqueue(async () => jsonResponse(200, { items }));
+  await user.type(screen.getByLabelText("Passwort"), password);
+  await user.click(screen.getByRole("button", { name: "Anmelden" }));
+  await screen.findByRole("heading", { name: "Registrierungscodes" });
+}
+
 const CODE_EXPIRES = "2026-11-12T22:00:00.000Z";
 
 function codeItem(
@@ -475,6 +497,262 @@ describe("CX-026 AdminShell", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(net.posts("/admin/logout")).toHaveLength(logoutCallsBefore + 1);
+  });
+  it("ignoriert eine verspaetete 401 einer alten Sitzung nach erneuter Anmeldung", async () => {
+    const net = createFetchDouble();
+    const user = userEvent.setup();
+    net.enqueue(async () => jsonResponse(200, { items: [] }));
+    renderShell(net);
+    await screen.findByText("Keine Registrierungscodes vorhanden.");
+
+    const pendingRefresh = deferredResponse();
+    net.enqueue(() => pendingRefresh.promise);
+    await user.click(screen.getByRole("button", { name: "Aktualisieren" }));
+    await screen.findByText("Liste wird geladen …");
+
+    net.enqueue(async () => emptyResponse(204));
+    await user.click(screen.getByRole("button", { name: "Abmelden" }));
+    await screen.findByRole("heading", { name: "Anmeldung" });
+    await loginWithPassword(net, user);
+    await screen.findByText("Keine Registrierungscodes vorhanden.");
+
+    await act(async () => {
+      pendingRefresh.resolve(jsonResponse(401, apiError()));
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("Liste wird geladen …")).toBeNull();
+    });
+    expect(screen.getByText("Geschützter Inhalt (authenticated)")).toBeTruthy();
+    expect(
+      screen.queryByText("Die Sitzung ist abgelaufen. Bitte erneut anmelden."),
+    ).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Anmeldung" })).toBeNull();
+  });
+
+  it("gibt das Anmeldeformular nach einer 401 der Logout-Anfrage wieder frei", async () => {
+    const net = createFetchDouble();
+    const user = userEvent.setup();
+    net.enqueue(async () => jsonResponse(200, { items: [] }));
+    renderShell(net);
+    await screen.findByText("Keine Registrierungscodes vorhanden.");
+
+    net.enqueue(async () => jsonResponse(401, apiError()));
+    await user.click(screen.getByRole("button", { name: "Abmelden" }));
+    await screen.findByRole("heading", { name: "Anmeldung" });
+
+    const passwordField = screen.getByLabelText("Passwort") as HTMLInputElement;
+    await waitFor(() => {
+      expect(passwordField.disabled).toBe(false);
+    });
+    expect(
+      screen.getByRole("button", { name: "Anmelden" }),
+    ).toHaveProperty("disabled", false);
+
+    await loginWithPassword(net, user);
+    await screen.findByText("Keine Registrierungscodes vorhanden.");
+  });
+
+  it("gibt die Codeerzeugung nach Logout waehrend laufender Erstellung frei", async () => {
+    const net = createFetchDouble();
+    const user = userEvent.setup();
+    net.enqueue(async () => jsonResponse(200, { items: [] }));
+    renderShell(net);
+    await screen.findByText("Keine Registrierungscodes vorhanden.");
+
+    await user.type(screen.getByLabelText("Bezeichnung (optional)"), "Spät");
+    const pendingCreate = deferredResponse();
+    net.enqueue(() => pendingCreate.promise);
+    await user.click(screen.getByRole("button", { name: "Code erzeugen" }));
+    await waitFor(() => {
+      expect(net.posts("/admin/registration-codes")).toHaveLength(1);
+    });
+
+    net.enqueue(async () => emptyResponse(204));
+    await user.click(screen.getByRole("button", { name: "Abmelden" }));
+    await screen.findByRole("heading", { name: "Anmeldung" });
+    await loginWithPassword(net, user);
+    await screen.findByText("Keine Registrierungscodes vorhanden.");
+
+    await act(async () => {
+      pendingCreate.resolve(
+        jsonResponse(201, {
+          id: "late-create",
+          code: "SECRET-LATE-0002",
+          label: "Spät",
+          expires_at: "2026-11-12T23:00:00.000Z",
+        }),
+      );
+    });
+
+    const labelInput = screen.getByLabelText(
+      "Bezeichnung (optional)",
+    ) as HTMLInputElement;
+    expect(labelInput.disabled).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "Code erzeugen" }),
+    ).toHaveProperty("disabled", false);
+    expect(screen.queryByText("SECRET-LATE-0002")).toBeNull();
+
+    net.enqueue(async () =>
+      jsonResponse(201, {
+        id: "neu",
+        code: "SECRET-NEU-0001",
+        label: null,
+        expires_at: "2026-11-12T23:10:00.000Z",
+      }),
+    );
+    net.enqueue(async () => jsonResponse(200, { items: [] }));
+    await user.click(screen.getByRole("button", { name: "Code erzeugen" }));
+    expect(await screen.findByText("SECRET-NEU-0001")).toBeTruthy();
+  });
+
+  it("gibt den Widerruf nach einer 401 waehrend des Widerrufs nach erneuter Anmeldung frei", async () => {
+    const net = createFetchDouble();
+    const user = userEvent.setup();
+    net.enqueue(async () =>
+      jsonResponse(200, {
+        items: [codeItem("c1", "Handy A", "pending")],
+      }),
+    );
+    renderShell(net);
+    await screen.findByText("Handy A");
+
+    await user.click(screen.getByRole("button", { name: "Widerrufen" }));
+    net.enqueue(async () => jsonResponse(401, apiError()));
+    await user.click(screen.getByRole("button", { name: "Bestätigen" }));
+
+    await screen.findByRole("heading", { name: "Anmeldung" });
+    await loginWithPassword(net, user, [
+      codeItem("c1", "Handy A", "pending"),
+    ]);
+    await screen.findByText("Handy A");
+
+    await user.click(screen.getByRole("button", { name: "Widerrufen" }));
+    const confirmButton = screen.getByRole("button", { name: "Bestätigen" });
+    expect(confirmButton).toHaveProperty("disabled", false);
+
+    net.enqueue(async () => emptyResponse(204));
+    net.enqueue(async () => jsonResponse(200, { items: [] }));
+    await user.click(confirmButton);
+    await waitFor(() => {
+      expect(screen.queryByText("Handy A")).toBeNull();
+    });
+    expect(
+      screen.getByRole("button", { name: "Code erzeugen" }),
+    ).toHaveProperty("disabled", false);
+  });
+
+  it("laedt nach einem Widerruf trotz laufender Listenabfrage neu", async () => {
+    const net = createFetchDouble();
+    const user = userEvent.setup();
+    net.enqueue(async () =>
+      jsonResponse(200, {
+        items: [codeItem("c1", "Handy A", "pending")],
+      }),
+    );
+    renderShell(net);
+    await screen.findByText("Handy A");
+
+    const pendingRefresh = deferredResponse();
+    net.enqueue(() => pendingRefresh.promise);
+    await user.click(screen.getByRole("button", { name: "Aktualisieren" }));
+    await screen.findByText("Liste wird geladen …");
+
+    await user.click(screen.getByRole("button", { name: "Widerrufen" }));
+    net.enqueue(async () => emptyResponse(204));
+    net.enqueue(async () => jsonResponse(200, { items: [] }));
+    await user.click(screen.getByRole("button", { name: "Bestätigen" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Handy A")).toBeNull();
+    });
+    expect(screen.queryByText("Liste wird geladen …")).toBeNull();
+
+    await act(async () => {
+      pendingRefresh.resolve(
+        jsonResponse(200, {
+          items: [codeItem("c1", "Handy A", "pending")],
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Handy A")).toBeNull();
+    });
+  });
+
+  it("startet die Liste nach erneuter Anmeldung trotz ausstehender alter Abfrage", async () => {
+    const net = createFetchDouble();
+    const user = userEvent.setup();
+    net.enqueue(async () => jsonResponse(200, { items: [] }));
+    renderShell(net);
+    await screen.findByText("Keine Registrierungscodes vorhanden.");
+
+    const pendingOldList = deferredResponse();
+    net.enqueue(() => pendingOldList.promise);
+    await user.click(screen.getByRole("button", { name: "Aktualisieren" }));
+    await screen.findByText("Liste wird geladen …");
+
+    net.enqueue(async () => emptyResponse(204));
+    await user.click(screen.getByRole("button", { name: "Abmelden" }));
+    await screen.findByRole("heading", { name: "Anmeldung" });
+
+    const listCallsBefore = net.gets("/admin/registration-codes").length;
+    await loginWithPassword(net, user, [
+      codeItem("neu", "Neu aus Sitzung 2", "pending"),
+    ]);
+    await screen.findByText("Neu aus Sitzung 2");
+    expect(net.gets("/admin/registration-codes").length).toBe(
+      listCallsBefore + 1,
+    );
+
+    await act(async () => {
+      pendingOldList.resolve(
+        jsonResponse(200, {
+          items: [codeItem("alt", "Alt aus Sitzung 1", "pending")],
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Alt aus Sitzung 1")).toBeNull();
+    });
+    expect(screen.getByText("Neu aus Sitzung 2")).toBeTruthy();
+  });
+
+  it("bietet bei einem Abbruch beim Lesen des Erstellungsbodys nur das Nachladen an", async () => {
+    const net = createFetchDouble();
+    const user = userEvent.setup();
+    net.enqueue(async () => jsonResponse(200, { items: [] }));
+    renderShell(net);
+    await screen.findByText("Keine Registrierungscodes vorhanden.");
+
+    net.enqueue(async () => brokenBodyResponse());
+    await user.click(screen.getByRole("button", { name: "Code erzeugen" }));
+
+    expect(
+      await screen.findByText(
+        "Der Ausgang der Erzeugung ist unklar. Der Code wurde möglicherweise erstellt. Bitte die Liste neu laden.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Code erzeugen" }),
+    ).toBeNull();
+    expect(
+      screen.queryByText("Ein unerwarteter Fehler ist aufgetreten."),
+    ).toBeNull();
+
+    net.enqueue(async () => jsonResponse(200, { items: [] }));
+    await user.click(screen.getByRole("button", { name: "Liste neu laden" }));
+    await waitFor(() => {
+      expect(
+        screen.queryByText(
+          "Der Ausgang der Erzeugung ist unklar. Der Code wurde möglicherweise erstellt. Bitte die Liste neu laden.",
+        ),
+      ).toBeNull();
+    });
+    expect(
+      screen.getByRole("button", { name: "Code erzeugen" }),
+    ).toHaveProperty("disabled", false);
   });
 });
 

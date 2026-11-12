@@ -111,6 +111,12 @@ export interface CreateAdminApiOptions {
   baseUrl?: string;
   /** Wird nur bei 401 geschuetzter Operationen aufgerufen, nie beim Login. */
   onUnauthorized?: () => void;
+  /**
+   * Liefert die aktuelle Sitzungsgeneration. Sie wird beim Start eines
+   * Requests erfasst; die zentrale 401-Behandlung laeuft nur, wenn dieselbe
+   * Generation noch aktuell ist. Ohne Angabe wird jede 401 gemeldet.
+   */
+  getSessionGeneration?: () => number;
 }
 
 const NETWORK_MESSAGE =
@@ -174,7 +180,12 @@ async function readJson(response: Response): Promise<unknown> {
   if (response.status === 204) {
     return undefined;
   }
-  const text = await response.text();
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    throw new AdminApiError("network", NETWORK_MESSAGE);
+  }
   if (text.trim() === "") {
     throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE, {
       status: response.status,
@@ -362,6 +373,7 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
     });
   const baseUrl = options.baseUrl ?? "/v1";
   const onUnauthorized = options.onUnauthorized;
+  const getSessionGeneration = options.getSessionGeneration;
 
   async function request(
     path: string,
@@ -369,6 +381,9 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
     body: unknown,
     protectedOperation: boolean,
   ): Promise<Response> {
+    // Bereits beim Requeststart erfassen: eine spaete 401 einer alten
+    // Sitzung darf eine inzwischen neu angemeldete Sitzung nicht beenden.
+    const sessionGeneration = getSessionGeneration?.();
     const headers: Record<string, string> = {
       Accept: "application/json",
     };
@@ -393,7 +408,13 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
 
     if (!response.ok) {
       if (response.status === 401 && protectedOperation) {
-        onUnauthorized?.();
+        const isCurrentSession =
+          getSessionGeneration === undefined ||
+          sessionGeneration === undefined ||
+          getSessionGeneration() === sessionGeneration;
+        if (isCurrentSession) {
+          onUnauthorized?.();
+        }
       }
       throw errorFromResponse(response);
     }
