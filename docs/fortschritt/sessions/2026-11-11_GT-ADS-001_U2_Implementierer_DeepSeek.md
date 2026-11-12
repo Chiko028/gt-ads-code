@@ -91,3 +91,59 @@ U-06 (Statusableitung) gehoert zu U5 und ist hier nicht enthalten.
   config liest sie optional mit Standard false. Soll .env.example in einer
   spaeteren Unteraufgabe ergaenzt werden?
 - Keine weiteren offenen Fragen; keine Secrets im Diff.
+
+## Nachpruefung 2026-11-12
+
+Anlass: erneuter U2-Lauf im Runner. Der Stand aus 1afedf6 wurde geprueft und
+um zwei Luecken ergaenzt; bestehende Tests wurden nicht geaendert oder
+abgeschwaecht.
+
+- apps/api/src/http/logging.ts: isSensitiveFieldName erkennt jetzt auch
+  camelCase-/kebab-case-Schreibweisen (normalisierte Vergleichsform ohne
+  Trennzeichen), z. B. registrationCode, publicKey, accessToken, sessionToken,
+  codeHash, setCookie, adminPasswordHash. Damit werden diese Felder auch dann
+  redigiert, wenn sie nicht in snake_case im Logobjekt stehen.
+- apps/api/tests/unit/logging.test.ts: zusaetzlicher Test fuer camelCase- und
+  kebab-case-Felder sowie die Header-Variante SetCookie.
+- apps/api/tests/unit/tokens.test.ts (neu): Token-/Nonce-Erzeugung (32 Byte,
+  Base64url ohne Padding, 200 eindeutige Werte), Laengengrenzen, SHA-256-Hash,
+  kanonische Base64url-Dekodierung, Laengenpruefung und zeitkonstanter
+  Vergleich.
+
+### Tests (echte Ausgabe)
+
+Befehl: with-postgres sh -c "npm run -s typecheck && npm test -s"
+
+    RUN  v5.1.0 /workspace/apps/api
+
+     ✓ tests/db/migrate.test.ts (3 tests) 311ms
+     ✓ tests/unit/registrationCode.test.ts (13 tests) 397ms
+     ✓ tests/unit/config.test.ts (11 tests) 119ms
+     ✓ tests/unit/tokens.test.ts (7 tests) 98ms
+     ✓ tests/unit/deviceSignature.test.ts (9 tests) 60ms
+     ✓ tests/static/u0-scaffold.test.ts (10 tests) 67ms
+     ✓ tests/unit/password.test.ts (6 tests) 1206ms
+     ✓ tests/unit/logging.test.ts (10 tests) 15ms
+     ✓ tests/unit/rateLimit.test.ts (5 tests) 11ms
+     ✓ tests/db/createDump.test.ts (4 tests) 2196ms
+     ✓ tests/db/verifyRestore.test.ts (4 tests) 6532ms
+
+     Test Files  11 passed (11)
+          Tests  82 passed (82)
+
+    RUN  v5.1.0 /workspace/apps/dashboard
+
+     ✓ src/tests/app.test.tsx (1 test) 130ms
+
+     Test Files  1 passed (1)
+          Tests  1 passed (1)
+
+Ergebnis: Exit-Code 0, Typecheck ohne Fehler, 83 Tests bestanden, keine
+uebersprungenen Tests. Abgedeckt bleiben U-01, U-02, U-03, U-04, U-05, U-07,
+U-08, U-09, U-10; U-06 gehoert zu U5.
+
+### Offene Punkte
+
+- Q-U2-01 bleibt offen: .env.example liegt ausserhalb des erlaubten
+  Dateiumfangs dieser Unteraufgabe und enthaelt kein GT_ADS_COOKIE_SECURE;
+  config liest die Variable optional mit Standard false.

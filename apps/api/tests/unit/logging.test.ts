@@ -119,6 +119,35 @@ describe("U-10 Log-Redaktion", () => {
     expect(serialized).toContain("POST");
   });
 
+  it("redigiert camelCase- und kebab-case-Schreibweisen", () => {
+    const serialized = serializeForLog({
+      registrationCode: CODE,
+      publicKey: "SYN-schluessel",
+      accessToken: "SYN-token",
+      sessionToken: "SYN-session",
+      codeHash: "SYN-code-hash",
+      setCookie: "SYN-cookie",
+      adminPasswordHash: "SYN-admin-hash",
+      label: "SYN-Testhandy",
+    });
+
+    for (const secret of [
+      CODE,
+      "SYN-schluessel",
+      "SYN-token",
+      "SYN-session",
+      "SYN-code-hash",
+      "SYN-cookie",
+      "SYN-admin-hash",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(serialized).toContain("SYN-Testhandy");
+
+    const headers = redactHeaders({ SetCookie: "gt_ads_session=SYN-session" });
+    expect(headers.setcookie).toBe(REDACTED);
+  });
+
   it("serialisiert undefined als null", () => {
     expect(serializeForLog(undefined)).toBe("null");
   });

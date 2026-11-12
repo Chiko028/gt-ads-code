@@ -57,12 +57,25 @@ function normalizeFieldName(name: string): string {
   return name.trim().toLowerCase().replace(/-/g, "_");
 }
 
-/** Prueft, ob ein Feldname als geheim gilt (fuer Tests und Aufrufer). */
+/** Entfernt Trennzeichen, damit auch camelCase-Schreibweisen erkannt werden. */
+function compactFieldName(name: string): string {
+  return normalizeFieldName(name).replace(/_/g, "");
+}
+
+const SENSITIVE_COMPACT_FIELD_NAMES: ReadonlySet<string> = new Set(
+  [...SENSITIVE_FIELD_NAMES].map((name) => compactFieldName(name)),
+);
+
+/**
+ * Prueft, ob ein Feldname als geheim gilt (fuer Tests und Aufrufer).
+ * Erkennt snake_case, kebab-case und camelCase, z. B. registration_code,
+ * registrationCode, sessionToken, codeHash und setCookie.
+ */
 export function isSensitiveFieldName(name: string): boolean {
   const normalized = normalizeFieldName(name);
   return (
     SENSITIVE_FIELD_NAMES.has(normalized) ||
-    SENSITIVE_FIELD_NAMES.has(normalized.replace(/_/g, ""))
+    SENSITIVE_COMPACT_FIELD_NAMES.has(compactFieldName(normalized))
   );
 }
 
