@@ -1,10 +1,16 @@
 import { AdminShell } from "./admin/AdminShell";
-import { DevicesPanel } from "./devices/DevicesPanel";
+import type { FetchLike } from "./admin/adminApi";
+import { NavigationFrame } from "./navigation/NavigationFrame";
 
-export function App() {
+export interface AppProps {
+  /** Injizierbares fetch fuer Shell, Client und Tests. */
+  readonly fetchImpl?: FetchLike;
+}
+
+export function App({ fetchImpl }: AppProps = {}) {
   return (
-    <AdminShell>
-      <DevicesPanel />
+    <AdminShell fetchImpl={fetchImpl}>
+      <NavigationFrame />
     </AdminShell>
   );
 }
