@@ -32,6 +32,8 @@ import {
   type OperationsOverrides,
 } from "../modules/operations/routes.js";
 import { REDACTED, redactUrl } from "./logging.js";
+import { installAccessControl } from "./authorization.js";
+import { createLegacyAdminPrincipalResolver } from "./principal.js";
 import {
   createRegistrationRateLimiter,
   type RegistrationRateLimiter,
@@ -134,6 +136,14 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   // Cookie-Sitzung des Dashboards (API-VERTRAG.md Abschnitt 5).
   void app.register(cookie);
 
+  // Zentraler Rechtekern (CX-015): Die Erfassung wird vor jeder
+  // Routenregistrierung installiert; Identitaeten stammen ausschliesslich aus
+  // der vorhandenen serverseitigen Sitzungspruefung.
+  const adminAuthService = new AdminAuthService({ pool, config, now });
+  installAccessControl(app, {
+    resolvePrincipal: createLegacyAdminPrincipalResolver(adminAuthService),
+  });
+
   // Abgelaufene Challenges/Tokens/Sitzungen: beim Start und stuendlich
   // bereinigen (ARCHITEKTUR.md Abschnitt 3).
   const stopCleanup = startExpiredAuthCleanup({
@@ -188,7 +198,6 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   registerRegistrationRoutes(app, { service, limiter, config });
 
   // Admin-Sitzung und Dashboard-Routen (U6).
-  const adminAuthService = new AdminAuthService({ pool, config, now });
   registerAdminAuthRoutes(app, {
     service: adminAuthService,
     loginLimiter: createAdminLoginRateLimiter(config, () => now().getTime()),

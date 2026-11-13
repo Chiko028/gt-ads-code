@@ -111,10 +111,12 @@ async function buildApp(): Promise<FastifyInstance> {
   const app = createServer({ config, pool, now: clock });
 
   // Platzhalter fuer eine geraeteauthentifizierte Folgeroute (Heartbeat in U5).
-  // Er nutzt dieselbe Middleware wie spaetere Produktionsrouten.
+  // Er nutzt dieselbe Middleware wie spaetere Produktionsrouten. Das
+  // Routentemplate ist im zentralen Rechtekern klassifiziert (CX-015);
+  // die Geraeteauthentifizierung dieses Platzhalters bleibt unveraendert.
   const authService = new DeviceAuthService({ pool, config, now: clock });
   app.get(
-    "/v1/device/auth/probe",
+    "/v1/device/downloads/:id",
     { preHandler: createDeviceAuthMiddleware(authService) },
     async (request) => ({ device_id: request.deviceAuth?.deviceId ?? null }),
   );
@@ -199,7 +201,7 @@ function probe(app: FastifyInstance, accessToken?: string) {
     accessToken === undefined ? {} : { authorization: "Bearer " + accessToken };
   return app.inject({
     method: "GET",
-    url: "/v1/device/auth/probe",
+    url: "/v1/device/downloads/probe",
     headers,
     remoteAddress: "192.0.2.82",
   });
@@ -511,7 +513,7 @@ describe("U4 Geraeteauthentifizierung (I-13 bis I-15)", () => {
 
     const malformedHeader = await app.inject({
       method: "GET",
-      url: "/v1/device/auth/probe",
+      url: "/v1/device/downloads/probe",
       headers: { authorization: "Token " + generateOpaqueToken() },
       remoteAddress: "192.0.2.83",
     });
