@@ -43,10 +43,8 @@ import {
   createMedia,
   type MediaServiceOptions,
 } from "../modules/media/index.js";
-import {
-  registerMediaUploadRoute,
-  type MediaUploadDeps,
-} from "./mediaUpload.js";
+import type { MediaUploadDeps } from "./mediaUpload.js";
+import { registerHttpComposition } from "./composition.js";
 import {
   createRegistrationRateLimiter,
   type RegistrationRateLimiter,
@@ -137,8 +135,12 @@ function registerJsonBodyParser(app: FastifyInstance): void {
       } catch {
         const error = new Error("Ungueltiges JSON") as Error & {
           statusCode?: number;
+          code?: string;
         };
         error.statusCode = 400;
+        // Bekannte Parsergrenze fuer den gekapselten Fehlerbaustein (CX-033);
+        // der globale U7-Handler wertet weiterhin nur den Status aus.
+        error.code = "FST_ERR_CTP_INVALID_JSON_BODY";
         done(error);
       }
     },
@@ -266,7 +268,13 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
       createMedia,
       serviceOptions: mediaServiceOptions,
     };
-  registerMediaUploadRoute(app, mediaUpload);
+  // CX-033: gemeinsamer Registrierungspunkt fuer die vorhandenen
+  // Upload- und Kundenplugins. Jede App-Instanz registriert genau einmal.
+  registerHttpComposition(app, {
+    pool,
+    adminAuth: adminAuthService,
+    mediaUpload,
+  });
   app.decorate("adminAuthService", adminAuthService);
   app.decorate("devicesService", devicesService);
 
