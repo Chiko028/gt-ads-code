@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import Fastify, {
   type FastifyInstance,
   type FastifyServerOptions,
@@ -39,6 +40,14 @@ import {
 } from "./principal.js";
 import { registerAuditReadRoutes } from "./auditRead.js";
 import {
+  createMedia,
+  type MediaServiceOptions,
+} from "../modules/media/index.js";
+import {
+  registerMediaUploadRoute,
+  type MediaUploadDeps,
+} from "./mediaUpload.js";
+import {
   createRegistrationRateLimiter,
   type RegistrationRateLimiter,
 } from "./rateLimit.js";
@@ -62,6 +71,11 @@ export interface ApiServerOptions {
    * Angabe gilt ausschliesslich die vorhandene Sitzungspruefung.
    */
   resolvePrincipal?: PrincipalResolver;
+  /**
+   * Injizierbare Upload-Servicegrenze (CX-031). Ohne Angabe wird der reale
+   * CX-030-Speicher verwendet; es gibt keinen Testschalter im Laufzeitpfad.
+   */
+  mediaUpload?: MediaUploadDeps;
 }
 
 function defaultLogger(config: AppConfig): FastifyServerOptions["logger"] {
@@ -83,6 +97,20 @@ function defaultLogger(config: AppConfig): FastifyServerOptions["logger"] {
       censor: REDACTED,
     },
   };
+}
+
+/**
+ * Reale Produktionsverdrahtung des vorhandenen CX-030-Speichers. Der
+ * Ablageort ist ueber GT_ADS_MEDIA_STORAGE_ROOT waehlbar; ohne Angabe wird
+ * ein relativer Standard verwendet. Die endgueltige Komposition folgt in
+ * CX-033 und kann diese Grenze ersetzen.
+ */
+function resolveMediaStorageRoot(): string {
+  const configured = process.env.GT_ADS_MEDIA_STORAGE_ROOT;
+  if (configured !== undefined && configured.trim() !== "") {
+    return configured.trim();
+  }
+  return join(process.cwd(), "media");
 }
 
 function isFullOptions(input: AppConfig | ApiServerOptions): input is ApiServerOptions {
@@ -225,6 +253,20 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   });
   // Geschuetzter Audit-Lesezugriff (CX-016 / R-603): nur Admin (audit.read).
   registerAuditReadRoutes(app, { pool });
+
+  // Medien-Upload (CX-031 / R-202). Der Adapter delegiert genau einmal an
+  // die vorhandene CX-030-Grenze createMedia(options, input); die
+  // allgemeine Modulkomposition bleibt CX-033 vorbehalten.
+  const mediaServiceOptions: MediaServiceOptions = {
+    pool,
+    storageRoot: resolveMediaStorageRoot(),
+  };
+  const mediaUpload: MediaUploadDeps =
+    options.mediaUpload ?? {
+      createMedia,
+      serviceOptions: mediaServiceOptions,
+    };
+  registerMediaUploadRoute(app, mediaUpload);
   app.decorate("adminAuthService", adminAuthService);
   app.decorate("devicesService", devicesService);
 

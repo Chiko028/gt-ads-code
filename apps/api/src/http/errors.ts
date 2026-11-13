@@ -157,6 +157,16 @@ export function registerErrorHandler(app: FastifyInstance): void {
     }
 
     const fastifyError = error as { statusCode?: number; name?: string };
+    // Transportfehler behalten ihren Status: eine zu grosse Nutzlast bleibt
+    // 413, ein nicht unterstuetzter Medientyp bleibt 415. Das vorhandene
+    // Fehlerformat (U7) gilt unveraendert.
+    if (fastifyError.statusCode === 413 || fastifyError.statusCode === 415) {
+      reply
+        .code(fastifyError.statusCode)
+        .type("application/json; charset=utf-8")
+        .send(buildErrorBody("invalid_request", requestId));
+      return;
+    }
     if (isFastifyClientError(fastifyError)) {
       reply
         .code(400)

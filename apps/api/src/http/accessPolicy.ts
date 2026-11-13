@@ -97,8 +97,9 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/admin/registration-codes": human("registrationCodes.manage"),
   "DELETE /v1/admin/registration-codes/:id": human("registrationCodes.manage"),
 
-  // Reserviert: Medien (CX-033), Kampagnen (CX-056), Pause/Fortsetzen.
+  // Medien (CX-031 Upload, CX-033 Liste), Kampagnen (CX-056), Pause/Fortsetzen.
   "GET /v1/admin/media": human("media.read"),
+  "POST /v1/admin/media": human("media.write"),
   "PATCH /v1/admin/media/:id": human("media.write"),
   "GET /v1/admin/campaigns": human("campaigns.read"),
   "PATCH /v1/admin/campaigns/:id": human("campaigns.write"),
