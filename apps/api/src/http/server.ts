@@ -46,12 +46,23 @@ import {
 import type { MediaUploadDeps } from "./mediaUpload.js";
 import { registerHttpComposition } from "./composition.js";
 import {
+  createOperationsAlarmAdapter,
+  type OperationsAlarmAdapterOptions,
+} from "./operationsAlarmAdapter.js";
+import {
   createRegistrationRateLimiter,
   type RegistrationRateLimiter,
 } from "./rateLimit.js";
 
 /** Version laut API-VERTRAG.md Abschnitt 6 (Antwort von /health). */
 export const API_VERSION = "0.1.0";
+
+/** CX-060: austauschbare Alarmgrenzen fuer Tests und R-702. */
+export interface OperationsAlarmOptions {
+  service?: OperationsAlarmAdapterOptions["alarmService"];
+  sender?: OperationsAlarmAdapterOptions["sender"];
+  reportTimeoutMs?: number;
+}
 
 export interface ApiServerOptions {
   config: AppConfig;
@@ -64,6 +75,8 @@ export interface ApiServerOptions {
   registrationRateLimiter?: RegistrationRateLimiter;
   /** Testbare Betriebsschnittstellen; ohne Angabe gelten die Produktionsadapter. */
   operations?: OperationsOverrides;
+  /** CX-060: Alarmverdrahtung fuer Readiness und Backup-Nachweise. */
+  operationsAlarm?: OperationsAlarmOptions;
   /**
    * Nur fuer Tests: injizierter serverseitiger Principal-Resolver. Ohne
    * Angabe gilt ausschliesslich die vorhandene Sitzungspruefung.
@@ -162,6 +175,19 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   const metrics = options.operations?.metrics ?? createOperationsMetrics();
   const readiness =
     options.operations?.readiness ?? createPostgresReadinessProbe(pool);
+
+  // CX-060 / R-701: Die bestehende Readiness-Ausfuehrung bleibt der einzige
+  // Ausloeser. Der Adapter meldet ihr Ergebnis an CX-028 und versendet neue
+  // Episoden ueber den CX-029-Port; Fehler der Alarmspur aendern das
+  // Pruefergebnis nicht.
+  const operationsAlarm = createOperationsAlarmAdapter({
+    pool,
+    readiness,
+    alarmService: options.operationsAlarm?.service,
+    sender: options.operationsAlarm?.sender ?? null,
+    now,
+    reportTimeoutMs: options.operationsAlarm?.reportTimeoutMs,
+  });
 
   const app = Fastify({
     logger: options.logger ?? defaultLogger(config),
@@ -294,7 +320,9 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   }));
 
   registerOperationsRoutes(app, {
-    readiness,
+    readiness: {
+      check: () => operationsAlarm.checkReadinessOrThrow(),
+    },
     metrics,
     readinessTimeoutMs: options.operations?.readinessTimeoutMs,
     scheduler: options.operations?.scheduler,
