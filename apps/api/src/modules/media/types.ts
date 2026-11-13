@@ -5,6 +5,7 @@ import type {
   SqlQueryable,
 } from "../audit/repository.js";
 import type { MediaProfileInput } from "./profile.js";
+import type { ManifestRefreshTrigger } from "../manifestRefresh/index.js";
 
 /** Stabiler Auditname laut R-201/CX-030. */
 export const MEDIA_CREATED_ACTION = "media.created";
@@ -92,6 +93,7 @@ export interface MediaServiceOptions {
    * verwendet; beide schreiben auf den Transaktionsclient.
    */
   auditWriter?: MediaAuditWriter;
+  manifestRefresh?: ManifestRefreshTrigger;
 }
 
 export interface MediaRecoveryResult {

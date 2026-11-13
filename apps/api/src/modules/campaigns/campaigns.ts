@@ -19,6 +19,10 @@ import type { SqlQueryable } from "../audit/repository.js";
 import { AuditService } from "../audit/service.js";
 import { validateCampaignRuntime } from "./runtimeWindow.js";
 import { ensureCampaignSchema } from "./schema.js";
+import {
+  markCampaignChange,
+  type ManifestRefreshTrigger,
+} from "../manifestRefresh/index.js";
 
 export const CAMPAIGN_LIST_PATH = "/v1/admin/campaigns";
 export const CAMPAIGN_DETAIL_PATH = "/v1/admin/campaigns/:id";
@@ -130,6 +134,7 @@ export interface CampaignServiceOptions {
   /** Nur fuer deterministische Tests; Standard ist die vorhandene UUID-Quelle. */
   idFactory?: () => string;
   now?: () => Date;
+  manifestRefresh?: ManifestRefreshTrigger;
 }
 
 interface TargetMapValue {
@@ -263,6 +268,7 @@ export class CampaignService {
   private readonly idFactory: () => string;
   private readonly now: () => Date;
   private readonly audit: AuditService;
+  private readonly manifestRefresh: ManifestRefreshTrigger | undefined;
   private schemaReady: Promise<void> | null = null;
 
   constructor(options: CampaignServiceOptions) {
@@ -270,6 +276,16 @@ export class CampaignService {
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.now = options.now ?? (() => new Date());
     this.audit = new AuditService({ executor: this.pool });
+    this.manifestRefresh = options.manifestRefresh;
+  }
+
+  private scheduleRefresh(): void {
+    if (this.manifestRefresh === undefined) {
+      return;
+    }
+    void this.manifestRefresh
+      .drainPending({ limit: 10 })
+      .catch(() => undefined);
   }
 
   /** Legt das minimale, additive Schema idempotent an (keine Migration). */
@@ -350,6 +366,9 @@ export class CampaignService {
         throw new Error("Kampagne wurde nicht angelegt");
       }
       await this.replaceTargets(client, row.id, taxiIds, groupIds);
+      if (status === "active") {
+        await markCampaignChange(client, null, { taxiIds, groupIds }, at);
+      }
       await this.audit.recordWith(
         client,
         {
@@ -373,6 +392,7 @@ export class CampaignService {
         row.updated_at,
       );
       await client.query("commit");
+      this.scheduleRefresh();
       return toCampaign(row, { taxi: taxiIds, group: groupIds });
     } catch (error) {
       await client.query("rollback");
@@ -577,6 +597,16 @@ export class CampaignService {
       if (patch.taxiIds !== undefined || patch.groupIds !== undefined) {
         await this.replaceTargets(client, campaignId, taxiIds, groupIds);
       }
+      if (current.status === "active" || nextStatus === "active") {
+        await markCampaignChange(
+          client,
+          current.status === "active"
+            ? { taxiIds: current.taxiIds, groupIds: current.groupIds }
+            : null,
+          nextStatus === "active" ? { taxiIds, groupIds } : null,
+          at,
+        );
+      }
       await this.audit.recordWith(
         client,
         {
@@ -590,6 +620,7 @@ export class CampaignService {
         at,
       );
       await client.query("commit");
+      this.scheduleRefresh();
       return toCampaign(row, { taxi: taxiIds, group: groupIds });
     } catch (error) {
       await client.query("rollback");

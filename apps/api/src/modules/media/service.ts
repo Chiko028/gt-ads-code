@@ -13,6 +13,10 @@ import { validateMediaProfile, type MediaProfileInput } from "./profile.js";
 import { MediaRepository, type MediaRow } from "./repository.js";
 import { LocalMediaStorage, isMediaId } from "./storage.js";
 import {
+  markMediaChange,
+  type ManifestRefreshTrigger,
+} from "../manifestRefresh/index.js";
+import {
   MEDIA_AUDIT_TARGET_TYPE,
   MEDIA_CREATED_ACTION,
   type CreateMediaInput,
@@ -177,6 +181,7 @@ export class MediaService {
   private readonly now: () => Date;
   private readonly idFactory: () => string;
   private readonly auditWriter: MediaAuditWriter | undefined;
+  private readonly manifestRefresh: ManifestRefreshTrigger | undefined;
 
   constructor(options: MediaServiceOptions) {
     this.pool = options.pool;
@@ -185,6 +190,16 @@ export class MediaService {
     this.now = options.now ?? (() => new Date());
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.auditWriter = options.auditWriter;
+    this.manifestRefresh = options.manifestRefresh;
+  }
+
+  private scheduleRefresh(): void {
+    if (this.manifestRefresh === undefined) {
+      return;
+    }
+    void this.manifestRefresh
+      .drainPending({ limit: 10 })
+      .catch(() => undefined);
   }
 
   async createMedia(input: CreateMediaInput): Promise<ReadyMedia> {
@@ -263,6 +278,7 @@ export class MediaService {
       const readyAt = this.now();
       const updated = await this.repository.markReady(client, id, readyAt);
       if (updated !== null) {
+        await markMediaChange(client, id, readyAt);
         await this.writeAudit(
           client,
           mediaCreatedEvent({
@@ -290,6 +306,7 @@ export class MediaService {
       );
     });
 
+    this.scheduleRefresh();
     return this.toReadyMedia(metadata);
   }
 
