@@ -43,6 +43,7 @@ export type AccessAction =
   | "taxi.pause"
   | "audit.read"
   | "security.manage"
+  | "config.read"
   | "config.write";
 
 export type RoutePolicy =
@@ -119,6 +120,8 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/admin/security/sessions/revoke": human("security.manage"),
   "PUT /v1/admin/taxis/:id/config": human("config.write"),
   "PATCH /v1/admin/taxis/:id/config": human("config.write"),
+  "GET /v1/admin/taxis/:taxiId/config": human("config.read"),
+  "PATCH /v1/admin/taxis/:taxiId/config": human("config.write"),
 });
 
 /**
@@ -140,6 +143,7 @@ const ALL_ACTIONS: readonly AccessAction[] = [
   "taxi.pause",
   "audit.read",
   "security.manage",
+  "config.read",
   "config.write",
 ];
 
@@ -153,6 +157,7 @@ const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.f
     "campaigns.read",
     "campaigns.write",
     "taxi.pause",
+    "config.read",
   ]),
 });
 

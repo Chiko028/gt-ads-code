@@ -18,6 +18,7 @@ import type { Pool } from "pg";
 import type { AdminAuthService } from "../modules/adminAuth/service.js";
 import { CustomerService } from "../modules/campaigns/customers.js";
 import { CampaignService } from "../modules/campaigns/campaigns.js";
+import { createControlConfigService } from "../modules/controlConfig/index.js";
 import { registerCampaignRoutes } from "../modules/campaigns/campaignRoutes.js";
 import { registerCustomerRoutes } from "../modules/campaigns/routes.js";
 import { installContractErrorHandling } from "./jsonContract.js";
@@ -25,6 +26,10 @@ import {
   registerMediaUploadRoute,
   type MediaUploadDeps,
 } from "./mediaUpload.js";
+import {
+  createSqlTaxiExists,
+  registerTaxiConfigRoutes,
+} from "./taxiConfigRoutes.js";
 
 export interface HttpCompositionDeps {
   pool: Pool;
@@ -57,6 +62,16 @@ export function registerHttpComposition(
     registerCampaignRoutes(scope, {
       service: campaignService,
       adminAuth: deps.adminAuth,
+    });
+
+    // CX-053: versionierte Taxi-Konfiguration. Der Adapter verwendet den
+    // vorhandenen CX-013-Service unveraendert; es gibt keine zweite
+    // Konfigurationstabelle und keine eigene Fachlogik.
+    const controlConfigService = createControlConfigService({ pool: deps.pool });
+    registerTaxiConfigRoutes(scope, {
+      service: controlConfigService,
+      adminAuth: deps.adminAuth,
+      taxiExists: createSqlTaxiExists(deps.pool),
     });
   });
 }
