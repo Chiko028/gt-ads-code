@@ -155,7 +155,6 @@ const NAV_LABELS = [
 
 const PLACEHOLDER_LABELS = [
   "Taxis",
-  "Medien",
   "Kampagnen",
   "Status",
   "Bedienung",
@@ -172,6 +171,9 @@ describe("CX-034 Dashboard-Navigation", () => {
     window.history.replaceState(null, "", "#/medien");
     render(<App fetchImpl={net.fetchImpl} />);
     await screen.findByRole("heading", { name: "Medien" });
+    const mediaRegion = screen.getByRole("region", { name: "Medien" });
+    expect(within(mediaRegion).getByLabelText("Datei")).toBeTruthy();
+    expect(within(mediaRegion).getByRole("button", { name: "Hochladen" })).toBeTruthy();
 
     for (const label of NAV_LABELS) {
       await user.click(screen.getByRole("link", { name: label }));

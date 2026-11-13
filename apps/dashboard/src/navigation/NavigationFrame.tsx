@@ -13,6 +13,11 @@ export interface NavigationFrameProps {
    * klar gekennzeichnete Platzhalter gerendert.
    */
   readonly taxiPage?: ReactNode;
+  /**
+   * Austauschbarer Seitenplatz fuer #/medien (CX-039). Ohne Angabe wird der
+   * klar gekennzeichnete Platzhalter gerendert.
+   */
+  readonly mediaPage?: ReactNode;
 }
 
 function NotFoundPage() {
@@ -27,7 +32,11 @@ function NotFoundPage() {
   );
 }
 
-function pageFor(match: RouteMatch, taxiPage: ReactNode | undefined) {
+function pageFor(
+  match: RouteMatch,
+  taxiPage: ReactNode | undefined,
+  mediaPage: ReactNode | undefined,
+) {
   if (match.kind === "not_found") {
     return <NotFoundPage />;
   }
@@ -36,6 +45,12 @@ function pageFor(match: RouteMatch, taxiPage: ReactNode | undefined) {
       return <DevicesPanel />;
     case "taxis":
       return taxiPage === undefined ? <TaxiPageSlot /> : taxiPage;
+    case "medien":
+      return mediaPage === undefined ? (
+        <UnavailablePage title="Medien" />
+      ) : (
+        mediaPage
+      );
     default:
       return <UnavailablePage title={match.route.label} />;
   }
@@ -47,7 +62,10 @@ function pageFor(match: RouteMatch, taxiPage: ReactNode | undefined) {
  * markiert. Der Rahmen liegt im main-Bereich der AdminShell und bringt je
  * Seite eine sichtbare Ueberschrift mit.
  */
-export function NavigationFrame({ taxiPage }: NavigationFrameProps = {}) {
+export function NavigationFrame({
+  taxiPage,
+  mediaPage,
+}: NavigationFrameProps = {}) {
   const match = useHashRoute();
   const activeRouteId = match.kind === "route" ? match.route.id : null;
 
@@ -70,7 +88,7 @@ export function NavigationFrame({ taxiPage }: NavigationFrameProps = {}) {
           })}
         </ul>
       </nav>
-      {pageFor(match, taxiPage)}
+      {pageFor(match, taxiPage, mediaPage)}
     </>
   );
 }
