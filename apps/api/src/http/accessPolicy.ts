@@ -106,6 +106,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/admin/taxis/:id/resume": human("taxi.pause"),
 
   // Reserviert: ausschliesslich Admin.
+  "GET /v1/admin/audit": human("audit.read"),
   "GET /v1/admin/audit-events": human("audit.read"),
   "POST /v1/admin/security/sessions/revoke": human("security.manage"),
   "PUT /v1/admin/taxis/:id/config": human("config.write"),

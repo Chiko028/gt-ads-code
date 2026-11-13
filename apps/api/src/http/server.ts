@@ -33,7 +33,11 @@ import {
 } from "../modules/operations/routes.js";
 import { REDACTED, redactUrl } from "./logging.js";
 import { installAccessControl } from "./authorization.js";
-import { createLegacyAdminPrincipalResolver } from "./principal.js";
+import {
+  createLegacyAdminPrincipalResolver,
+  type PrincipalResolver,
+} from "./principal.js";
+import { registerAuditReadRoutes } from "./auditRead.js";
 import {
   createRegistrationRateLimiter,
   type RegistrationRateLimiter,
@@ -53,6 +57,11 @@ export interface ApiServerOptions {
   registrationRateLimiter?: RegistrationRateLimiter;
   /** Testbare Betriebsschnittstellen; ohne Angabe gelten die Produktionsadapter. */
   operations?: OperationsOverrides;
+  /**
+   * Nur fuer Tests: injizierter serverseitiger Principal-Resolver. Ohne
+   * Angabe gilt ausschliesslich die vorhandene Sitzungspruefung.
+   */
+  resolvePrincipal?: PrincipalResolver;
 }
 
 function defaultLogger(config: AppConfig): FastifyServerOptions["logger"] {
@@ -141,7 +150,9 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   // der vorhandenen serverseitigen Sitzungspruefung.
   const adminAuthService = new AdminAuthService({ pool, config, now });
   installAccessControl(app, {
-    resolvePrincipal: createLegacyAdminPrincipalResolver(adminAuthService),
+    resolvePrincipal:
+      options.resolvePrincipal ??
+      createLegacyAdminPrincipalResolver(adminAuthService),
   });
 
   // Abgelaufene Challenges/Tokens/Sitzungen: beim Start und stuendlich
@@ -212,6 +223,8 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     service: devicesService,
     adminAuth: adminAuthService,
   });
+  // Geschuetzter Audit-Lesezugriff (CX-016 / R-603): nur Admin (audit.read).
+  registerAuditReadRoutes(app, { pool });
   app.decorate("adminAuthService", adminAuthService);
   app.decorate("devicesService", devicesService);
 
