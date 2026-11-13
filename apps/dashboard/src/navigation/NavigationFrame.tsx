@@ -18,6 +18,11 @@ export interface NavigationFrameProps {
    * klar gekennzeichnete Platzhalter gerendert.
    */
   readonly mediaPage?: ReactNode;
+  /**
+   * Austauschbarer Seitenplatz fuer #/kampagnen (CX-040). Ohne Angabe wird
+   * der klar gekennzeichnete Platzhalter gerendert.
+   */
+  readonly campaignPage?: ReactNode;
 }
 
 function NotFoundPage() {
@@ -36,6 +41,7 @@ function pageFor(
   match: RouteMatch,
   taxiPage: ReactNode | undefined,
   mediaPage: ReactNode | undefined,
+  campaignPage: ReactNode | undefined,
 ) {
   if (match.kind === "not_found") {
     return <NotFoundPage />;
@@ -51,6 +57,12 @@ function pageFor(
       ) : (
         mediaPage
       );
+    case "kampagnen":
+      return campaignPage === undefined ? (
+        <UnavailablePage title="Kampagnen" />
+      ) : (
+        campaignPage
+      );
     default:
       return <UnavailablePage title={match.route.label} />;
   }
@@ -65,6 +77,7 @@ function pageFor(
 export function NavigationFrame({
   taxiPage,
   mediaPage,
+  campaignPage,
 }: NavigationFrameProps = {}) {
   const match = useHashRoute();
   const activeRouteId = match.kind === "route" ? match.route.id : null;
@@ -88,7 +101,7 @@ export function NavigationFrame({
           })}
         </ul>
       </nav>
-      {pageFor(match, taxiPage, mediaPage)}
+      {pageFor(match, taxiPage, mediaPage, campaignPage)}
     </>
   );
 }

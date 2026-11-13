@@ -155,7 +155,6 @@ const NAV_LABELS = [
 
 const PLACEHOLDER_LABELS = [
   "Taxis",
-  "Kampagnen",
   "Status",
   "Bedienung",
   "Benutzer",

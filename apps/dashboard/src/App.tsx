@@ -1,5 +1,6 @@
 import { AdminShell } from "./admin/AdminShell";
 import type { FetchLike } from "./admin/adminApi";
+import { CampaignPage } from "./campaigns/CampaignPage";
 import { MediaPage } from "./media/MediaPage";
 import type { UploadTransport } from "./media/uploadTransport";
 import { NavigationFrame } from "./navigation/NavigationFrame";
@@ -24,6 +25,7 @@ export function App({ fetchImpl, uploadTransport }: AppProps = {}) {
             uploadTransport={uploadTransport}
           />
         }
+        campaignPage={<CampaignPage fetchImpl={fetchImpl} />}
       />
     </AdminShell>
   );
