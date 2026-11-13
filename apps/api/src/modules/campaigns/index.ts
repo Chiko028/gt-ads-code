@@ -18,3 +18,34 @@ export {
   registerCustomerRoutes,
   type CustomerRoutesDeps,
 } from "./routes.js";
+
+export {
+  CAMPAIGN_AUDIT_TARGET_TYPE,
+  CAMPAIGN_CREATED_ACTION,
+  CAMPAIGN_DETAIL_PATH,
+  CAMPAIGN_LIST_DEFAULT_LIMIT,
+  CAMPAIGN_LIST_MAX_LIMIT,
+  CAMPAIGN_LIST_PATH,
+  CAMPAIGN_RULE_TYPE,
+  CAMPAIGN_STATUSES,
+  CAMPAIGN_TARGET_MAX_ITEMS,
+  CAMPAIGN_TARGET_MAX_LENGTH,
+  CAMPAIGN_UPDATED_ACTION,
+  CampaignService,
+  assertCampaignTransition,
+  isCampaignStatus,
+  normalizeCampaignRuntime,
+  normalizeCampaignStatus,
+  normalizeCampaignTargets,
+  normalizeCampaignUuid,
+  type Campaign,
+  type CampaignServiceOptions,
+  type CampaignStatus,
+  type CreateCampaignInput,
+  type UpdateCampaignInput,
+} from "./campaigns.js";
+export {
+  registerCampaignRoutes,
+  type CampaignRoutesDeps,
+} from "./campaignRoutes.js";
+export { ensureCampaignSchema } from "./schema.js";

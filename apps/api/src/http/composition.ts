@@ -17,6 +17,8 @@ import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import type { AdminAuthService } from "../modules/adminAuth/service.js";
 import { CustomerService } from "../modules/campaigns/customers.js";
+import { CampaignService } from "../modules/campaigns/campaigns.js";
+import { registerCampaignRoutes } from "../modules/campaigns/campaignRoutes.js";
 import { registerCustomerRoutes } from "../modules/campaigns/routes.js";
 import { installContractErrorHandling } from "./jsonContract.js";
 import {
@@ -46,6 +48,14 @@ export function registerHttpComposition(
     const customerService = new CustomerService({ pool: deps.pool });
     registerCustomerRoutes(scope, {
       service: customerService,
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-038: Kampagnenrouten. Die einzige Kampagnenpersistenz stellt ihr
+    // additives Schema beim ersten Kampagnenzugriff idempotent bereit.
+    const campaignService = new CampaignService({ pool: deps.pool });
+    registerCampaignRoutes(scope, {
+      service: campaignService,
       adminAuth: deps.adminAuth,
     });
   });
