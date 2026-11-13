@@ -3,14 +3,28 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { App } from "../App";
 
-afterEach(cleanup);
+const originalFetch = globalThis.fetch;
 
-describe("U0 Dashboard-Geruest", () => {
-  it("zeigt den leeren Zustand ohne Demo-Daten", () => {
+afterEach(() => {
+  cleanup();
+  globalThis.fetch = originalFetch;
+});
+
+describe("Dashboard-Einstieg", () => {
+  it("rendert die AdminShell und zeigt ohne Sitzung keine Geräte", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { code: "unauthorized" } }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "GT-Ads Verwaltung" })).toBeTruthy();
-    expect(screen.getByText("Noch keine Geräte registriert.")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "GT-Ads Verwaltung" }),
+    ).toBeTruthy();
+    await screen.findByRole("heading", { name: "Anmeldung" });
+    expect(screen.queryByRole("heading", { name: "Geräte" })).toBeNull();
     expect(screen.queryByRole("table")).toBeNull();
   });
 });
