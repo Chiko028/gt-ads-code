@@ -45,7 +45,8 @@ export type AccessAction =
   | "security.manage"
   | "config.read"
   | "config.write"
-  | "groups.write";
+  | "groups.write"
+  | "groups.read";
 
 export type RoutePolicy =
   | { readonly category: "human"; readonly action: AccessAction }
@@ -107,6 +108,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "GET /v1/admin/campaigns": human("campaigns.read"),
   "PATCH /v1/admin/campaigns/:id": human("campaigns.write"),
   "POST /v1/admin/campaigns": human("campaigns.write"),
+  "GET /v1/admin/taxi-groups": human("groups.read"),
   "POST /v1/admin/taxi-groups": human("groups.write"),
   "GET /v1/admin/campaigns/:id": human("campaigns.read"),
 
@@ -149,6 +151,7 @@ const ALL_ACTIONS: readonly AccessAction[] = [
   "config.read",
   "config.write",
   "groups.write",
+  "groups.read",
 ];
 
 const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.freeze({
@@ -162,6 +165,7 @@ const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.f
     "campaigns.write",
     "taxi.pause",
     "config.read",
+    "groups.read",
   ]),
 });
 

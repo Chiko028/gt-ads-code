@@ -40,7 +40,10 @@ import {
   createSqlTaxiExists,
   registerTaxiConfigRoutes,
 } from "./taxiConfigRoutes.js";
-import { registerTaxiGroupCreateRoute } from "./taxiGroupRoutes.js";
+import {
+  registerTaxiGroupCreateRoute,
+  registerTaxiGroupListRoute,
+} from "./taxiGroupRoutes.js";
 
 export interface HttpCompositionDeps {
   pool: Pool;
@@ -95,6 +98,12 @@ export function registerHttpComposition(
     // CX-115 / R-104: geschuetzte Anlage einer leeren Taxigruppe, genau
     // einmal in dieser Komposition registriert.
     registerTaxiGroupCreateRoute(scope, {
+      pool: deps.pool,
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-116 / R-104: geschuetzte Gruppenliste desselben Bestands.
+    registerTaxiGroupListRoute(scope, {
       pool: deps.pool,
       adminAuth: deps.adminAuth,
     });
