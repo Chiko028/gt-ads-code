@@ -99,6 +99,9 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "GET /v1/admin/devices/:id": human("devices.read"),
   "POST /v1/admin/devices/:id/revoke": human("devices.revoke"),
 
+  // Inventarliste (CX-129 / R-106): ausschliesslich lesend unter devices.read.
+  "GET /v1/admin/inventory": human("devices.read"),
+
   // Menschliche Verwaltung: Registrierungscodes.
   "GET /v1/admin/registration-codes": human("registrationCodes.manage"),
   "POST /v1/admin/registration-codes": human("registrationCodes.manage"),

@@ -53,6 +53,7 @@ import { registerTaxiActivationRoute } from "./taxiActivationRoutes.js";
 import { TaxiActivationService } from "../modules/taxiActivation/index.js";
 import { registerTabletActivationRoute } from "./tabletActivationRoutes.js";
 import { TabletActivationService } from "../modules/tabletActivation/index.js";
+import { registerInventoryListRoute } from "./inventoryList.js";
 
 export interface HttpCompositionDeps {
   pool: Pool;
@@ -130,6 +131,13 @@ export function registerHttpComposition(
     // genau einmal an CX-126; Transaktion und Audit entstehen nur dort.
     registerTabletActivationRoute(scope, {
       service: new TabletActivationService({ pool: deps.pool }),
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-129 / R-106: geschuetzte, paginierte Inventarliste. Der Adapter
+    // liest Geraete per LEFT JOIN; es entsteht keine zweite Persistenz.
+    registerInventoryListRoute(scope, {
+      pool: deps.pool,
       adminAuth: deps.adminAuth,
     });
 
