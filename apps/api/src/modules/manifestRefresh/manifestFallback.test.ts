@@ -11,22 +11,22 @@ import {
   expect,
   it,
 } from "vitest";
-import { ensureCampaignSchema } from "../../src/modules/campaigns/schema.js";
-import { issueDownloadTicket } from "../../src/modules/playout/download.js";
-import { verifySignedManifest } from "../../src/modules/playout/manifest.js";
+import { ensureCampaignSchema } from "../campaigns/schema.js";
+import { issueDownloadTicket } from "../playout/download.js";
+import { verifySignedManifest } from "../playout/manifest.js";
 import {
   FALLBACK_CAMPAIGN_ID,
   ManifestRefreshService,
   markTaxiRevisions,
   type ManifestRefreshOptions,
-} from "../../src/modules/manifestRefresh/index.js";
+} from "./index.js";
 
 const BASE_TIME = Date.parse("2026-11-13T12:00:00.000Z");
 const START = "2026-11-13T00:00:00.000Z";
 const END = "2026-11-15T00:00:00.000Z";
 const MIGRATIONS_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
-  "../../src/db/migrations",
+  "../../db/migrations",
 );
 const MIGRATIONS = [
   "0001_gt_ads_001.up.sql",
@@ -36,9 +36,8 @@ const MIGRATIONS = [
   "0011_cx_078_media_deletion.up.sql",
 ];
 
-let maintenancePool: Pool | null = null;
 let pool: Pool | null = null;
-let databaseName = "";
+let schemaName = "";
 let nowMs = BASE_TIME;
 
 const keyPair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
@@ -200,14 +199,18 @@ async function artifactRows(taxiId: string): Promise<
 
 beforeAll(async () => {
   const base = baseConnection();
-  maintenancePool = new Pool(base);
-  databaseName = ("cx045_" + process.pid + "_" + Date.now().toString(36))
+  schemaName = ("cx045_" + process.pid + "_" + Date.now().toString(36))
     .toLowerCase()
     .slice(0, 63);
-  await maintenancePool.query(
-    "create database " + quoteIdentifier(databaseName),
+  // Eigene Schema-Isolation in der vom Runner bereitgestellten Datenbank:
+  // kein CREATE DATABASE und kein Beenden fremder Backends noetig.
+  pool = new Pool({
+    ...base,
+    options: "-c search_path=" + schemaName + ",public",
+  });
+  await requirePool().query(
+    "create schema " + quoteIdentifier(schemaName),
   );
-  pool = new Pool({ ...base, database: databaseName });
 
   for (const name of MIGRATIONS) {
     const sql = await readFile(join(MIGRATIONS_DIR, name), "utf8");
@@ -230,19 +233,14 @@ beforeEach(async () => {
 
 afterAll(async () => {
   if (pool !== null) {
-    await pool.end();
-  }
-  if (maintenancePool !== null) {
-    if (databaseName !== "") {
-      await maintenancePool.query(
-        "select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()",
-        [databaseName],
-      );
-      await maintenancePool.query(
-        "drop database if exists " + quoteIdentifier(databaseName),
-      );
+    if (schemaName !== "") {
+      await pool
+        .query(
+          "drop schema if exists " + quoteIdentifier(schemaName) + " cascade",
+        )
+        .catch(() => undefined);
     }
-    await maintenancePool.end();
+    await pool.end();
   }
 }, 30_000);
 
