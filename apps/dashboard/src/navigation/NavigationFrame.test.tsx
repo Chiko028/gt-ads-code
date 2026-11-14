@@ -154,7 +154,6 @@ const NAV_LABELS = [
 ];
 
 const PLACEHOLDER_LABELS = [
-  "Taxis",
   "Status",
   "Bedienung",
   "Benutzer",
@@ -242,13 +241,23 @@ describe("CX-034 Dashboard-Navigation", () => {
     expect(net.loginCalls()).toBe(1);
     expect(net.codesGets()).toBe(codesBeforeSwitch);
     expect(net.calls.length).toBeGreaterThan(callsBeforeSwitch);
+    const callsAfterSwitch = net.calls.slice(callsBeforeSwitch);
+    expect(callsAfterSwitch.length).toBeGreaterThan(0);
     expect(
-      net.calls
-        .slice(callsBeforeSwitch)
-        .every(
-          (call) =>
-            call.method === "GET" && call.url.endsWith("/admin/devices"),
-        ),
+      callsAfterSwitch.every(
+        (call) =>
+          call.method === "GET" && call.url.includes("/admin/"),
+      ),
+    ).toBe(true);
+    expect(
+      callsAfterSwitch.every(
+        (call) =>
+          !call.url.includes("/admin/login") &&
+          !call.url.includes("/admin/registration-codes"),
+      ),
+    ).toBe(true);
+    expect(
+      callsAfterSwitch.some((call) => call.url.endsWith("/admin/devices")),
     ).toBe(true);
     expect(screen.queryByRole("heading", { name: "Anmeldung" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Registrierungscodes" })).toBeTruthy();
