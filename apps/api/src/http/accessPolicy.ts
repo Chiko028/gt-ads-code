@@ -92,6 +92,10 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "GET /v1/device/downloads/:id": SIGNED_DOWNLOAD,
   "GET /v1/device/manifest": DEVICE,
 
+  // CX-054 / R-503: geraetegebundener Pausenabruf und Quittierung.
+  "GET /v1/device/commands": DEVICE,
+  "POST /v1/device/commands/ack": DEVICE,
+
   // Menschliche Verwaltung: Sitzung.
   "POST /v1/admin/logout": human("session.logout"),
 

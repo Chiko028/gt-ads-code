@@ -57,6 +57,7 @@ import { registerInventoryListRoute } from "./inventoryList.js";
 import { registerInventoryWriteRoute } from "./inventoryWrite.js";
 import { DeviceInventoryService } from "../modules/inventory/service.js";
 import { registerTaxiPauseRoutes } from "./taxiPauseRoutes.js";
+import { registerDeviceCommandRoutes } from "./deviceCommands.js";
 import { createSqlTaxiDirectory } from "../modules/pause/index.js";
 import { createRemoteControlService } from "../modules/remoteControl/index.js";
 
@@ -153,6 +154,16 @@ export function registerHttpComposition(
       service: remoteControlService,
       adminAuth: deps.adminAuth,
       taxiExists: (taxiId) => taxiDirectory.taxiExists(taxiId),
+    });
+
+    // CX-054 / R-503: geraetegebundener Abruf und Quittierung. Beide Routen
+    // nutzen denselben CX-012-Kern und dieselbe aktuelle Zuordnung; die
+    // Geraeteidentitaet kommt ausschliesslich aus U4.
+    registerDeviceCommandRoutes(scope, {
+      service: remoteControlService,
+      directory: taxiDirectory,
+      deviceAuth: deps.deviceAuth,
+      pool: deps.pool,
     });
 
     // CX-129 / R-106: geschuetzte, paginierte Inventarliste. Der Adapter
