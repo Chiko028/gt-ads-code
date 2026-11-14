@@ -49,3 +49,15 @@ export {
   type CampaignRoutesDeps,
 } from "./campaignRoutes.js";
 export { ensureCampaignSchema } from "./schema.js";
+
+export {
+  CAMPAIGN_QUERY_DEFAULT_LIMIT,
+  CAMPAIGN_QUERY_MAX_LIMIT,
+  queryCampaigns,
+  type CampaignByIdQuery,
+  type CampaignListFilter,
+  type CampaignListQuery,
+  type CampaignQueryPage,
+  type CampaignQueryView,
+} from "./query.js";
+
