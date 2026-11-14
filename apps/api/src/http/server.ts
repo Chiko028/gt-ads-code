@@ -294,18 +294,22 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
       createMedia,
       serviceOptions: mediaServiceOptions,
     };
+  // Geraeteauthentifizierung (U4) wird vor der Komposition erzeugt, damit
+  // auch das CX-042-Manifestplugin denselben Service nutzt.
+  const deviceAuthService = new DeviceAuthService({ pool, config, now });
+
   // CX-033: gemeinsamer Registrierungspunkt fuer die vorhandenen
   // Upload- und Kundenplugins. Jede App-Instanz registriert genau einmal.
   registerHttpComposition(app, {
     pool,
     adminAuth: adminAuthService,
+    deviceAuth: deviceAuthService,
     mediaUpload,
   });
   app.decorate("adminAuthService", adminAuthService);
   app.decorate("devicesService", devicesService);
 
   // Geraeteauthentifizierung (U4); die Middleware nutzt denselben Service.
-  const deviceAuthService = new DeviceAuthService({ pool, config, now });
   registerDeviceAuthRoutes(app, { service: deviceAuthService });
   app.decorate("deviceAuthService", deviceAuthService);
 

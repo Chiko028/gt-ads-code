@@ -13,6 +13,7 @@ export type ApiErrorCode =
   | "challenge_invalid"
   | "device_revoked"
   | "forbidden"
+  | "manifest_not_ready"
   | "not_found"
   | "rate_limited"
   | "internal_error";
@@ -26,6 +27,7 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = Object.f
   challenge_invalid: 401,
   device_revoked: 403,
   forbidden: 403,
+  manifest_not_ready: 404,
   not_found: 404,
   rate_limited: 429,
   internal_error: 500,
@@ -41,6 +43,7 @@ export const API_ERROR_MESSAGES: Readonly<Record<ApiErrorCode, string>> = Object
   challenge_invalid: "Die Anmeldung ist ungueltig oder abgelaufen.",
   device_revoked: "Das Geraet ist gesperrt.",
   forbidden: "Zugriff verweigert.",
+  manifest_not_ready: "Das Manifest ist noch nicht verfuegbar.",
   not_found: "Nicht gefunden.",
   rate_limited: "Zu viele Versuche. Bitte spaeter erneut versuchen.",
   internal_error: "Interner Fehler.",
@@ -98,6 +101,10 @@ export class ApiError extends Error {
 
   static forbidden(): ApiError {
     return new ApiError("forbidden");
+  }
+
+  static manifestNotReady(): ApiError {
+    return new ApiError("manifest_not_ready");
   }
 
   static rateLimited(retryAfterSeconds: number): ApiError {

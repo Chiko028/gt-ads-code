@@ -16,6 +16,12 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import type { AdminAuthService } from "../modules/adminAuth/service.js";
+import type { DeviceAuthService } from "../modules/deviceAuth/service.js";
+import {
+  createDeviceManifestService,
+  createSqlDeviceManifestReader,
+  registerDeviceManifestRoutes,
+} from "../modules/deviceManifest/index.js";
 import { CustomerService } from "../modules/campaigns/customers.js";
 import { CampaignService } from "../modules/campaigns/campaigns.js";
 import { createControlConfigService } from "../modules/controlConfig/index.js";
@@ -34,6 +40,7 @@ import {
 export interface HttpCompositionDeps {
   pool: Pool;
   adminAuth: AdminAuthService;
+  deviceAuth: DeviceAuthService;
   mediaUpload: MediaUploadDeps;
 }
 
@@ -72,6 +79,17 @@ export function registerHttpComposition(
       service: controlConfigService,
       adminAuth: deps.adminAuth,
       taxiExists: createSqlTaxiExists(deps.pool),
+    });
+
+    // CX-042 / R-302: authentifizierter Manifest-Abruf. Taxi und aktive
+    // Tabletzuordnung kommen ausschliesslich aus dem serverseitigen
+    // Leseadapter; die Route nimmt keine Taxi- oder Geraete-ID an.
+    const manifestService = createDeviceManifestService({
+      reader: createSqlDeviceManifestReader(deps.pool),
+    });
+    registerDeviceManifestRoutes(scope, {
+      service: manifestService,
+      deviceAuth: deps.deviceAuth,
     });
   });
 }
