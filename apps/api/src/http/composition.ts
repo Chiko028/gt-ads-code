@@ -56,6 +56,9 @@ import { TabletActivationService } from "../modules/tabletActivation/index.js";
 import { registerInventoryListRoute } from "./inventoryList.js";
 import { registerInventoryWriteRoute } from "./inventoryWrite.js";
 import { DeviceInventoryService } from "../modules/inventory/service.js";
+import { registerTaxiPauseRoutes } from "./taxiPauseRoutes.js";
+import { createSqlTaxiDirectory } from "../modules/pause/index.js";
+import { createRemoteControlService } from "../modules/remoteControl/index.js";
 
 export interface HttpCompositionDeps {
   pool: Pool;
@@ -65,6 +68,8 @@ export interface HttpCompositionDeps {
   mediaList: MediaListDeps;
   /** CX-046: vorhandener CX-009-Kern als schmale Speichergrenze. */
   telemetryIngest: DeviceEventIngest;
+  /** Injizierbare Serveruhr; ohne Angabe gilt die reale Uhr. */
+  now?: () => Date;
 }
 
 export function registerHttpComposition(
@@ -134,6 +139,20 @@ export function registerHttpComposition(
     registerTabletActivationRoute(scope, {
       service: new TabletActivationService({ pool: deps.pool }),
       adminAuth: deps.adminAuth,
+    });
+
+    // CX-052 / R-501: Pause/Fortsetzen. Beide Routen rufen denselben
+    // vorhandenen CX-012-Kern auf; Zuordnung und Taxi kommen aus CX-035.
+    const taxiDirectory = createSqlTaxiDirectory(deps.pool);
+    const remoteControlService = createRemoteControlService({
+      pool: deps.pool,
+      directory: taxiDirectory,
+      now: deps.now,
+    });
+    registerTaxiPauseRoutes(scope, {
+      service: remoteControlService,
+      adminAuth: deps.adminAuth,
+      taxiExists: (taxiId) => taxiDirectory.taxiExists(taxiId),
     });
 
     // CX-129 / R-106: geschuetzte, paginierte Inventarliste. Der Adapter

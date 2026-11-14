@@ -126,6 +126,10 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "GET /v1/admin/customers/:id": human("campaigns.read"),
   "POST /v1/admin/taxis/:id/pause": human("taxi.pause"),
   "POST /v1/admin/taxis/:id/resume": human("taxi.pause"),
+  // CX-052 / R-501: dieselbe fachliche Aktion fuer die tatsaechlich
+  // registrierten Templates mit benanntem Taxi-Parameter.
+  "POST /v1/admin/taxis/:taxi_id/pause": human("taxi.pause"),
+  "POST /v1/admin/taxis/:taxi_id/resume": human("taxi.pause"),
   "POST /v1/admin/taxis/:taxiId/activation": human("taxi.activation"),
   "PATCH /v1/admin/tablets/:tabletId/activation": human("tablet.activation"),
 

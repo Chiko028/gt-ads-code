@@ -9,6 +9,7 @@ export interface NormalizedSetDesiredPauseInput {
   commandId: string;
   expectedRevision: number;
   desiredPaused: boolean;
+  requestId?: string;
 }
 
 export interface NormalizedAcknowledgeAppliedInput {
@@ -54,6 +55,7 @@ export function normalizeSetDesiredPauseInput(input: {
   commandId: string;
   expectedRevision: number;
   desiredPaused: boolean;
+  requestId?: string;
 }): NormalizedSetDesiredPauseInput {
   if (input === null || typeof input !== "object") {
     throw new RemoteControlValidationError("Eingabe fehlt.");
@@ -81,6 +83,10 @@ export function normalizeSetDesiredPauseInput(input: {
       0,
     ),
     desiredPaused: input.desiredPaused,
+    requestId:
+      input.requestId === undefined
+        ? undefined
+        : requireNonEmptyText(input.requestId, "requestId"),
   };
 }
 

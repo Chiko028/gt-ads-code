@@ -320,6 +320,7 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     mediaUpload,
     mediaList,
     telemetryIngest,
+    now,
   });
   app.decorate("adminAuthService", adminAuthService);
   app.decorate("devicesService", devicesService);
