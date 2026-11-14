@@ -44,7 +44,8 @@ export type AccessAction =
   | "audit.read"
   | "security.manage"
   | "config.read"
-  | "config.write";
+  | "config.write"
+  | "groups.write";
 
 export type RoutePolicy =
   | { readonly category: "human"; readonly action: AccessAction }
@@ -106,6 +107,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "GET /v1/admin/campaigns": human("campaigns.read"),
   "PATCH /v1/admin/campaigns/:id": human("campaigns.write"),
   "POST /v1/admin/campaigns": human("campaigns.write"),
+  "POST /v1/admin/taxi-groups": human("groups.write"),
   "GET /v1/admin/campaigns/:id": human("campaigns.read"),
 
   // Kundenkern (CX-032): Basisendpunkte unter derselben Fachaktion.
@@ -146,6 +148,7 @@ const ALL_ACTIONS: readonly AccessAction[] = [
   "security.manage",
   "config.read",
   "config.write",
+  "groups.write",
 ];
 
 const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.freeze({
