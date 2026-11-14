@@ -54,6 +54,8 @@ import { TaxiActivationService } from "../modules/taxiActivation/index.js";
 import { registerTabletActivationRoute } from "./tabletActivationRoutes.js";
 import { TabletActivationService } from "../modules/tabletActivation/index.js";
 import { registerInventoryListRoute } from "./inventoryList.js";
+import { registerInventoryWriteRoute } from "./inventoryWrite.js";
+import { DeviceInventoryService } from "../modules/inventory/service.js";
 
 export interface HttpCompositionDeps {
   pool: Pool;
@@ -138,6 +140,13 @@ export function registerHttpComposition(
     // liest Geraete per LEFT JOIN; es entsteht keine zweite Persistenz.
     registerInventoryListRoute(scope, {
       pool: deps.pool,
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-130 / R-106: geschuetzte Inventaraenderung. Der Adapter delegiert
+    // genau einmal an CX-128; Transaktion und Audit entstehen nur dort.
+    registerInventoryWriteRoute(scope, {
+      service: new DeviceInventoryService({ pool: deps.pool }),
       adminAuth: deps.adminAuth,
     });
 

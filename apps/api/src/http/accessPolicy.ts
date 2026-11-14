@@ -34,6 +34,7 @@ export type Role = (typeof ROLES)[number];
 export type AccessAction =
   | "session.logout"
   | "devices.read"
+  | "devices.inventory"
   | "devices.revoke"
   | "registrationCodes.manage"
   | "media.read"
@@ -101,6 +102,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
 
   // Inventarliste (CX-129 / R-106): ausschliesslich lesend unter devices.read.
   "GET /v1/admin/inventory": human("devices.read"),
+  "PATCH /v1/admin/inventory/:tabletId": human("devices.inventory"),
 
   // Menschliche Verwaltung: Registrierungscodes.
   "GET /v1/admin/registration-codes": human("registrationCodes.manage"),
@@ -148,6 +150,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
 const ALL_ACTIONS: readonly AccessAction[] = [
   "session.logout",
   "devices.read",
+  "devices.inventory",
   "devices.revoke",
   "registrationCodes.manage",
   "media.read",
@@ -170,6 +173,7 @@ const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.f
   Operator: new Set<AccessAction>([
     "session.logout",
     "devices.read",
+    "devices.inventory",
     "media.read",
     "media.write",
     "campaigns.read",
