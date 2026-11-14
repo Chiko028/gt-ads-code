@@ -33,6 +33,10 @@ import {
   type MediaUploadDeps,
 } from "./mediaUpload.js";
 import {
+  registerMediaListRoute,
+  type MediaListDeps,
+} from "./mediaList.js";
+import {
   createSqlTaxiExists,
   registerTaxiConfigRoutes,
 } from "./taxiConfigRoutes.js";
@@ -42,6 +46,7 @@ export interface HttpCompositionDeps {
   adminAuth: AdminAuthService;
   deviceAuth: DeviceAuthService;
   mediaUpload: MediaUploadDeps;
+  mediaList: MediaListDeps;
 }
 
 export function registerHttpComposition(
@@ -54,6 +59,11 @@ export function registerHttpComposition(
 
     // CX-031: Upload-Adapter, genau einmal.
     registerMediaUploadRoute(scope, deps.mediaUpload);
+
+    // CX-095 / R-203: geschuetzte, begrenzte Medienliste. Der Adapter nutzt
+    // die vorhandene CX-030-Listengrenze; es entsteht keine zweite
+    // Medienverwaltung.
+    registerMediaListRoute(scope, deps.mediaList);
 
     // CX-032: Kundenkern-Basisendpunkte, genau einmal. Der Service wird pro
     // App-Instanz neu erzeugt und teilt keinen veraenderlichen Zustand.

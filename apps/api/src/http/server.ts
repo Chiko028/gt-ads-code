@@ -41,9 +41,11 @@ import {
 import { registerAuditReadRoutes } from "./auditRead.js";
 import {
   createMedia,
+  listReadyMedia,
   type MediaServiceOptions,
 } from "../modules/media/index.js";
 import type { MediaUploadDeps } from "./mediaUpload.js";
+import type { MediaListDeps } from "./mediaList.js";
 import { registerHttpComposition } from "./composition.js";
 import {
   createOperationsAlarmAdapter,
@@ -294,6 +296,12 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
       createMedia,
       serviceOptions: mediaServiceOptions,
     };
+  // CX-095: Die Liste nutzt dieselbe vorhandene CX-030-Servicegrenze und
+  // denselben Speicher; es gibt keinen zweiten Medienbestand.
+  const mediaList: MediaListDeps = {
+    listReadyMedia,
+    serviceOptions: mediaServiceOptions,
+  };
   // Geraeteauthentifizierung (U4) wird vor der Komposition erzeugt, damit
   // auch das CX-042-Manifestplugin denselben Service nutzt.
   const deviceAuthService = new DeviceAuthService({ pool, config, now });
@@ -305,6 +313,7 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     adminAuth: adminAuthService,
     deviceAuth: deviceAuthService,
     mediaUpload,
+    mediaList,
   });
   app.decorate("adminAuthService", adminAuthService);
   app.decorate("devicesService", devicesService);

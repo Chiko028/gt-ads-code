@@ -123,6 +123,17 @@ export function mapReadyRow(row: MediaRow): MediaMetadata {
   };
 }
 
+/** Obergrenze des opaken Cursors; beide Werte zusammen bleiben klein. */
+const CURSOR_MAX_LENGTH = 512;
+const CURSOR_FORMAT = /^[A-Za-z0-9_-]+$/;
+
+function invalidCursor(): MediaInputError {
+  return new MediaInputError(
+    "invalid_cursor",
+    "Der Listen-Cursor ist ungueltig.",
+  );
+}
+
 function encodeCursor(item: MediaMetadata): string {
   return Buffer.from(
     JSON.stringify({ createdAt: item.createdAt.toISOString(), id: item.id }),
@@ -130,28 +141,57 @@ function encodeCursor(item: MediaMetadata): string {
   ).toString("base64url");
 }
 
+/**
+ * Dekodiert ausschliesslich den eigenen, groessenbegrenzten Cursor. Geprueft
+ * werden Traegerformat und beide Werte: created_at muss die kanonische
+ * ISO-8601-Darstellung sein, die ID eine gueltige Medien-UUID. Zusaetzliche
+ * Felder werden abgelehnt; der Cursor wird nie als SQL-Fragment verwendet.
+ */
 function decodeCursor(cursor: string): CursorPosition {
+  if (
+    typeof cursor !== "string" ||
+    cursor.length < 1 ||
+    cursor.length > CURSOR_MAX_LENGTH ||
+    !CURSOR_FORMAT.test(cursor)
+  ) {
+    throw invalidCursor();
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
   } catch {
-    throw new MediaInputError("invalid_cursor", "Der Listen-Cursor ist ungueltig.");
+    throw invalidCursor();
   }
 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new MediaInputError("invalid_cursor", "Der Listen-Cursor ist ungueltig.");
+    throw invalidCursor();
   }
 
   const record = parsed as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (
+    keys.length !== 2 ||
+    !keys.includes("createdAt") ||
+    !keys.includes("id")
+  ) {
+    throw invalidCursor();
+  }
+
   const createdAt = record.createdAt;
   const id = record.id;
-  if (typeof createdAt !== "string" || typeof id !== "string" || !isMediaId(id)) {
-    throw new MediaInputError("invalid_cursor", "Der Listen-Cursor ist ungueltig.");
+  if (
+    typeof createdAt !== "string" ||
+    createdAt.length > 40 ||
+    typeof id !== "string" ||
+    !isMediaId(id)
+  ) {
+    throw invalidCursor();
   }
 
   const date = new Date(createdAt);
-  if (Number.isNaN(date.getTime())) {
-    throw new MediaInputError("invalid_cursor", "Der Listen-Cursor ist ungueltig.");
+  if (Number.isNaN(date.getTime()) || date.toISOString() !== createdAt) {
+    throw invalidCursor();
   }
 
   return { createdAt: date, id };
@@ -303,7 +343,7 @@ export class MediaRepository {
         : decodeCursor(query.cursor);
 
     const values: unknown[] = [];
-    const where = ["status = 'ready'"];
+    const where = ["status = 'ready'", "deleted_at is null"];
     if (cursor !== null) {
       const createdAtIndex = values.push(cursor.createdAt);
       const idIndex = values.push(cursor.id);

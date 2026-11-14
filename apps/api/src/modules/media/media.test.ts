@@ -45,6 +45,7 @@ const MIGRATIONS = [
   "0005_cx_013_control_config.up.sql",
   "0006_cx_028_technical_alarms.up.sql",
   "0007_cx_030_media.up.sql",
+  "0011_cx_078_media_deletion.up.sql",
 ];
 const VALID_PROFILE: MediaProfileMetadata = {
   container: "mp4",
