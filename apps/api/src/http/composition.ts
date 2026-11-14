@@ -44,6 +44,7 @@ import {
   registerTaxiGroupCreateRoute,
   registerTaxiGroupListRoute,
 } from "./taxiGroupRoutes.js";
+import { registerPlayoutPreviewRoute } from "./playoutPreview.js";
 
 export interface HttpCompositionDeps {
   pool: Pool;
@@ -111,12 +112,20 @@ export function registerHttpComposition(
     // CX-042 / R-302: authentifizierter Manifest-Abruf. Taxi und aktive
     // Tabletzuordnung kommen ausschliesslich aus dem serverseitigen
     // Leseadapter; die Route nimmt keine Taxi- oder Geraete-ID an.
+    const manifestReader = createSqlDeviceManifestReader(deps.pool);
     const manifestService = createDeviceManifestService({
-      reader: createSqlDeviceManifestReader(deps.pool),
+      reader: manifestReader,
     });
     registerDeviceManifestRoutes(scope, {
       service: manifestService,
       deviceAuth: deps.deviceAuth,
+    });
+
+    // CX-044 / R-304: lesende Ausspielungs-Vorschau. Sie nutzt denselben
+    // veroeffentlichten Manifest-Lesezugriff und erzeugt nichts neu.
+    registerPlayoutPreviewRoute(scope, {
+      getCurrentArtifact: (taxiId) => manifestReader.getCurrentArtifact(taxiId),
+      taxiExists: createSqlTaxiExists(deps.pool),
     });
   });
 }

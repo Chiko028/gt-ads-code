@@ -126,6 +126,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "PUT /v1/admin/taxis/:id/config": human("config.write"),
   "PATCH /v1/admin/taxis/:id/config": human("config.write"),
   "GET /v1/admin/taxis/:taxiId/config": human("config.read"),
+  "GET /v1/admin/taxis/:taxiId/playout-preview": human("config.read"),
   "PATCH /v1/admin/taxis/:taxiId/config": human("config.write"),
 });
 

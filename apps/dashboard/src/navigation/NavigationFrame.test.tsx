@@ -147,6 +147,7 @@ const NAV_LABELS = [
   "Taxis",
   "Medien",
   "Kampagnen",
+  "Ausspielung",
   "Status",
   "Bedienung",
   "Benutzer",
@@ -307,7 +308,7 @@ describe("CX-034 Dashboard-Navigation", () => {
 
     const nav = screen.getByRole("navigation", { name: "Hauptnavigation" });
     expect(nav.tagName).toBe("NAV");
-    expect(within(nav).getAllByRole("link")).toHaveLength(8);
+    expect(within(nav).getAllByRole("link")).toHaveLength(9);
 
     const devicesLink = within(nav).getByRole("link", { name: "Geräte" });
     expect(devicesLink.getAttribute("aria-current")).toBe("page");

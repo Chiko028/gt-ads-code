@@ -23,6 +23,10 @@ export const FLEET_PATHS = {
     "/admin/taxis/" + encodeURIComponent(id) + "/tablets",
   taxiActivation: (id: string) =>
     "/admin/taxis/" + encodeURIComponent(id) + "/activation",
+  playoutPreview: (id: string) =>
+    "/admin/taxis/" +
+    encodeURIComponent(id) +
+    "/playout-preview",
   groups: "/admin/taxi-groups",
   group: (id: string) => "/admin/taxi-groups/" + encodeURIComponent(id),
   tablets: "/admin/tablets",
@@ -75,6 +79,21 @@ export interface FleetInventoryItem {
   readonly revision: number;
 }
 
+/** CX-044: ein geordneter Eintrag des veroeffentlichten Sollplans. */
+export interface PlayoutPreviewEntry {
+  readonly mediaId: string;
+  readonly durationMs: number;
+  readonly startAt: string;
+  readonly endAt: string;
+}
+
+/** CX-044: lesende Vorschau; niemals eine bestaetigte Tablet-Wiedergabe. */
+export interface PlayoutPreview {
+  readonly taxiId: string;
+  readonly manifestVersion: string | null;
+  readonly entries: readonly PlayoutPreviewEntry[];
+}
+
 export interface TaxiWriteInput {
   readonly id: string;
   readonly displayName: string;
@@ -124,6 +143,7 @@ export interface FleetClient {
   renameGroup(id: string, name: string, revision: number): Promise<FleetGroup>;
   listTablets(): Promise<FleetTablet[]>;
   listInventory(): Promise<FleetInventoryItem[]>;
+  getPlayoutPreview(taxiId: string): Promise<PlayoutPreview>;
   updateInventoryItem(
     deviceId: string,
     patch: InventoryPatch,
@@ -383,6 +403,46 @@ function parseInventoryList(value: unknown): FleetInventoryItem[] {
   return body.items.map(parseInventory);
 }
 
+function parsePlayoutPreview(value: unknown): PlayoutPreview {
+  const body = recordOf(value);
+  if (body === null) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  const taxiId = requiredString(body, ["taxi_id", "taxiId"]);
+  const rawVersion = body.manifest_version ?? body.manifestVersion;
+  if (
+    rawVersion !== null &&
+    (typeof rawVersion !== "string" || rawVersion.trim() === "")
+  ) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  const rawEntries = body.entries;
+  if (!Array.isArray(rawEntries)) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  const entries: PlayoutPreviewEntry[] = rawEntries.map((entry) => {
+    const item = recordOf(entry);
+    if (item === null) {
+      throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+    }
+    const durationMs = item.duration_ms ?? item.durationMs;
+    if (typeof durationMs !== "number" || !Number.isFinite(durationMs)) {
+      throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+    }
+    return {
+      mediaId: requiredString(item, ["media_id", "mediaId"]),
+      durationMs,
+      startAt: requiredString(item, ["start_at", "startAt"]),
+      endAt: requiredString(item, ["end_at", "endAt"]),
+    };
+  });
+  return {
+    taxiId,
+    manifestVersion: rawVersion === null ? null : rawVersion,
+    entries,
+  };
+}
+
 async function readJson(response: Response): Promise<unknown> {
   if (response.status === 204) {
     return undefined;
@@ -488,6 +548,12 @@ export function createFleetClient(
   return {
     async listTaxis(): Promise<FleetTaxi[]> {
       return parseTaxiList(await request(FLEET_PATHS.taxis, "GET"));
+    },
+
+    async getPlayoutPreview(taxiId: string): Promise<PlayoutPreview> {
+      return parsePlayoutPreview(
+        await request(FLEET_PATHS.playoutPreview(taxiId), "GET"),
+      );
     },
 
     async createTaxi(input: TaxiWriteInput): Promise<FleetTaxi> {

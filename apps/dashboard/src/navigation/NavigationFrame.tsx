@@ -23,6 +23,11 @@ export interface NavigationFrameProps {
    * der klar gekennzeichnete Platzhalter gerendert.
    */
   readonly campaignPage?: ReactNode;
+  /**
+   * Austauschbarer Seitenplatz fuer #/ausspielung (CX-044). Ohne Angabe
+   * wird der klar gekennzeichnete Platzhalter gerendert.
+   */
+  readonly previewPage?: ReactNode;
 }
 
 function NotFoundPage() {
@@ -42,6 +47,7 @@ function pageFor(
   taxiPage: ReactNode | undefined,
   mediaPage: ReactNode | undefined,
   campaignPage: ReactNode | undefined,
+  previewPage: ReactNode | undefined,
 ) {
   if (match.kind === "not_found") {
     return <NotFoundPage />;
@@ -63,6 +69,12 @@ function pageFor(
       ) : (
         campaignPage
       );
+    case "ausspielung":
+      return previewPage === undefined ? (
+        <UnavailablePage title="Ausspielung" />
+      ) : (
+        previewPage
+      );
     default:
       return <UnavailablePage title={match.route.label} />;
   }
@@ -78,6 +90,7 @@ export function NavigationFrame({
   taxiPage,
   mediaPage,
   campaignPage,
+  previewPage,
 }: NavigationFrameProps = {}) {
   const match = useHashRoute();
   const activeRouteId = match.kind === "route" ? match.route.id : null;
@@ -101,7 +114,7 @@ export function NavigationFrame({
           })}
         </ul>
       </nav>
-      {pageFor(match, taxiPage, mediaPage, campaignPage)}
+      {pageFor(match, taxiPage, mediaPage, campaignPage, previewPage)}
     </>
   );
 }

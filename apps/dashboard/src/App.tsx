@@ -6,6 +6,7 @@ import { FleetPage } from "./fleet/FleetPage";
 import { MediaPage } from "./media/MediaPage";
 import type { UploadTransport } from "./media/uploadTransport";
 import { NavigationFrame } from "./navigation/NavigationFrame";
+import { PlayoutPreviewPage } from "./playout/PlayoutPreviewPage";
 
 export interface AppProps {
   /** Injizierbares fetch fuer Shell, Client und Tests. */
@@ -40,6 +41,12 @@ export function App({
           />
         }
         campaignPage={<CampaignPage fetchImpl={fetchImpl} />}
+        previewPage={
+          <PlayoutPreviewPage
+            fetchImpl={fetchImpl}
+            transport={fleetTransport}
+          />
+        }
       />
     </AdminShell>
   );
