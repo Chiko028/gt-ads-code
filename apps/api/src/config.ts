@@ -9,6 +9,11 @@ export interface AppConfig {
   readonly bindHost: string;
   readonly port: number;
   readonly databaseUrl: string;
+  /**
+   * Optionales, bereits ueber CX-030/031 gespeichertes GT-Ads-Platzhaltermedium
+   * fuer die Manifest-Erzeugung (R-305). null bedeutet "nicht konfiguriert".
+   */
+  readonly fallbackMediaId?: string | null;
   readonly registrationCodePepper: string;
   readonly adminPasswordHash: string;
   readonly registrationCodeTtlSeconds: number;
@@ -56,6 +61,9 @@ export const CONFIG_DEFAULTS = Object.freeze({
 });
 
 const ALLOWED_ENVIRONMENTS: readonly string[] = ["dev", "test"];
+
+/** Nur die kanonische UUID-Form; der Wert wird als Medien-ID gebunden. */
+const MEDIA_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function requiredRaw(env: NodeJS.ProcessEnv, name: string): string {
   const raw = env[name];
@@ -113,6 +121,21 @@ function readBoolean(env: NodeJS.ProcessEnv, name: string, fallback: boolean): b
   throw new ConfigError(name + " muss true oder false sein", [name]);
 }
 
+function readOptionalMediaId(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): string | null {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") {
+    return null;
+  }
+  const value = raw.trim();
+  if (!MEDIA_UUID_PATTERN.test(value)) {
+    throw new ConfigError(name + " muss eine gueltige Medien-UUID sein", [name]);
+  }
+  return value.toLowerCase();
+}
+
 function readAppEnv(env: NodeJS.ProcessEnv): AppEnv {
   const raw = env.GT_ADS_ENV;
   if (raw === undefined || raw.trim() === "") {
@@ -157,6 +180,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     bindHost,
     port: readInteger(env, "GT_ADS_PORT", CONFIG_DEFAULTS.port, 1, 65535),
     databaseUrl,
+    fallbackMediaId: readOptionalMediaId(
+      env,
+      "GT_ADS_MANIFEST_FALLBACK_MEDIA_ID",
+    ),
     registrationCodePepper,
     adminPasswordHash,
     registrationCodeTtlSeconds: readInteger(

@@ -44,6 +44,11 @@ export interface ManifestRefreshOptions {
   now?: () => Date;
   /** Feste Schleifengroesse 12 bis 16; kein neuer Standardwert. */
   slotCount?: number;
+  /**
+   * Optionales, bereits ueber CX-030/031 gespeichertes GT-Ads-Platzhaltermedium
+   * (R-305). null oder undefined bedeutet "nicht konfiguriert".
+   */
+  fallbackMediaId?: string | null;
   /** Obergrenze eines Aufrufs ohne explizite Grenze. */
   defaultLimit?: number;
   planner?: ManifestPlanner;

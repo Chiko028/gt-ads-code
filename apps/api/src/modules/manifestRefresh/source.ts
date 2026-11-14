@@ -71,11 +71,13 @@ export async function loadTaxiGroupIds(
 
 /**
  * Liest alle aktiven, nicht archivierten Kampagnen, die das Taxi direkt oder
- * ueber eine seiner Gruppen adressieren. Die Reihenfolge ist deterministisch.
+ * ueber eine seiner Gruppen adressieren und deren Laufzeitfenster den
+ * injizierten Auswertungszeitpunkt enthaelt. Die Reihenfolge ist deterministisch.
  */
 export async function loadTaxiManifestSource(
   executor: SqlQueryable,
   taxiId: string,
+  evaluatedAt: Date,
 ): Promise<TaxiManifestSource> {
   const groupIds = await loadTaxiGroupIds(executor, taxiId);
 
@@ -99,7 +101,10 @@ export async function loadTaxiManifestSource(
       "  from campaigns c",
       "  join media_objects m on m.id = c.media_id",
       " where c.status = 'active'",
+      "   and m.status = 'ready'",
       "   and c.archived = false",
+      "   and c.start_at <= $2",
+      "   and c.end_at > $2",
       "   and (",
       "     exists (",
       "       select 1 from campaign_targets t",
@@ -118,7 +123,7 @@ export async function loadTaxiManifestSource(
       "   )",
       " order by c.id asc",
     ].join("\n"),
-    [taxiId],
+    [taxiId, evaluatedAt],
   );
 
   const campaigns = result.rows.map((row): SourceCampaign => {

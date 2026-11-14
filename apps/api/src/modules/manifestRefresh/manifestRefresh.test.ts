@@ -25,8 +25,9 @@ import {
 } from "./index.js";
 
 const BASE_TIME = Date.parse("2026-11-13T12:00:00.000Z");
-const START = "2026-12-01T08:00:00.000Z";
-const END = "2026-12-01T18:00:00.000Z";
+// R-305: Das Laufzeitfenster muss den injizierten Auswertungszeitpunkt enthalten.
+const START = "2026-11-13T00:00:00.000Z";
+const END = "2026-11-15T00:00:00.000Z";
 const MIGRATIONS_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
   "../../db/migrations",

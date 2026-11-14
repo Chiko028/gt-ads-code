@@ -11,6 +11,7 @@
  * genau einer Transaktion; die Zeilensperre serialisiert Laeufe je Taxi.
  */
 import type { Pool } from "pg";
+import { validateMediaProfile } from "../media/profile.js";
 import type { SqlQueryable } from "../audit/repository.js";
 import {
   createSignedManifest,
@@ -39,9 +40,61 @@ const MIN_SLOT_COUNT = 12;
 const MAX_SLOT_COUNT = 16;
 const MAX_ERROR_LENGTH = 500;
 
+/**
+ * Stabiler Platzhalter-Kampagnenschluessel des GT-Ads-Fallbacks. Es entsteht
+ * keine Kundenkampagne und keine Buchung; der Wert markiert ausschliesslich
+ * die bestehenden Manifestfelder dieses Ersatzes.
+ */
+export const FALLBACK_CAMPAIGN_ID = "gt-ads-fallback";
+
+/**
+ * Technisches, zeitunabhaengiges Laufzeitfenster des Platzhalters. Dadurch
+ * bleibt eine identische Erzeugung unabhaengig vom Auswertungszeitpunkt
+ * bytegleich; es entsteht keine Kundenkampagne und keine Buchung.
+ */
+const FALLBACK_START_AT = "1970-01-01T00:00:00.000Z";
+const FALLBACK_END_AT = "9999-12-31T23:59:59.999Z";
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export type ManifestFallbackErrorCode =
+  | "fallback_config_missing"
+  | "fallback_config_invalid"
+  | "fallback_media_not_found"
+  | "fallback_media_unavailable"
+  | "fallback_media_invalid";
+
+/** Nachvollziehbarer Fehler des R-305-Platzhalterpfads. */
+export class ManifestFallbackError extends Error {
+  readonly code: ManifestFallbackErrorCode;
+
+  constructor(code: ManifestFallbackErrorCode, message: string) {
+    super(code + ": " + message);
+    this.name = "ManifestFallbackError";
+    this.code = code;
+  }
+}
+
 interface StateRow {
   requested_revision: string;
   processed_revision: string;
+}
+
+interface FallbackMediaRow {
+  id: string;
+  sha256: string | null;
+  size_bytes: string | number | null;
+  container: string | null;
+  video_codec: string | null;
+  width: number | null;
+  height: number | null;
+  frame_rate_numerator: number | null;
+  frame_rate_denominator: number | null;
+  audio_stream_count: number | null;
+  duration_seconds: number | string | null;
+  status: string;
+  deleted_at: Date | null;
 }
 
 interface ArtifactRow {
@@ -171,6 +224,141 @@ function buildBookings(source: TaxiManifestSource, slotCount: number): unknown[]
   return bookings;
 }
 
+/**
+ * Liest das konfigurierte Platzhaltermedium ausschliesslich aus der bereits
+ * ueber CX-030/031 gespeicherten Medienzeile und prueft es erneut gegen das
+ * CX-003-Profil. Es wird nichts hochgeladen, geladen oder transkodiert.
+ */
+async function loadFallbackMedia(
+  executor: SqlQueryable,
+  fallbackMediaId: string | null,
+): Promise<{
+  id: string;
+  sha256: string;
+  sizeBytes: number;
+  durationMs: number;
+}> {
+  if (fallbackMediaId === null) {
+    throw new ManifestFallbackError(
+      "fallback_config_missing",
+      "Es ist kein GT-Ads-Platzhaltermedium konfiguriert (fallbackMediaId).",
+    );
+  }
+  if (!UUID_PATTERN.test(fallbackMediaId)) {
+    throw new ManifestFallbackError(
+      "fallback_config_invalid",
+      "Die konfigurierte fallbackMediaId ist keine gueltige Medien-UUID.",
+    );
+  }
+
+  const result = await executor.query<FallbackMediaRow>(
+    [
+      "select id::text as id, sha256, size_bytes, container, video_codec,",
+      "       width, height, frame_rate_numerator, frame_rate_denominator,",
+      "       audio_stream_count, duration_seconds, status, deleted_at",
+      "  from media_objects",
+      " where id = $1::uuid",
+    ].join("\n"),
+    [fallbackMediaId],
+  );
+  const row = result.rows[0];
+  if (row === undefined) {
+    throw new ManifestFallbackError(
+      "fallback_media_not_found",
+      "Das konfigurierte GT-Ads-Platzhaltermedium wurde nicht gespeichert.",
+    );
+  }
+  if (row.status !== "ready" || row.deleted_at !== null) {
+    throw new ManifestFallbackError(
+      "fallback_media_unavailable",
+      "Das konfigurierte GT-Ads-Platzhaltermedium ist nicht bereit oder geloescht.",
+    );
+  }
+
+  const sizeBytes = Number(row.size_bytes);
+  const durationSeconds = Number(row.duration_seconds);
+  const profile = validateMediaProfile({
+    container: row.container,
+    videoCodec: row.video_codec,
+    width: row.width,
+    height: row.height,
+    frameRateNumerator: row.frame_rate_numerator,
+    frameRateDenominator: row.frame_rate_denominator,
+    audioStreamCount: row.audio_stream_count,
+    durationSeconds,
+    sizeBytes,
+  });
+  if (!profile.valid) {
+    throw new ManifestFallbackError(
+      "fallback_media_invalid",
+      "Das GT-Ads-Platzhaltermedium verletzt das Medienprofil (" +
+        profile.errors.map((error) => error.code).join(", ") +
+        ").",
+    );
+  }
+  if (
+    row.sha256 === null ||
+    !/^[0-9a-f]{64}$/.test(row.sha256) ||
+    !Number.isSafeInteger(sizeBytes) ||
+    sizeBytes <= 0 ||
+    !Number.isFinite(durationSeconds) ||
+    durationSeconds <= 0
+  ) {
+    throw new ManifestFallbackError(
+      "fallback_media_invalid",
+      "Das GT-Ads-Platzhaltermedium hat unvollstaendige Metadaten.",
+    );
+  }
+
+  return {
+    id: row.id,
+    sha256: row.sha256,
+    sizeBytes,
+    durationMs: Math.round(durationSeconds * 1000),
+  };
+}
+
+/**
+ * Bildet die konfigurierte Schleifenkapazitaet ausschliesslich mit
+ * Wiederholungen des vorhandenen Platzhaltermediums ab. Es werden keine
+ * Kundenkampagne und keine Buchung erfunden; Zeitfenster und Positionen sind
+ * deterministisch aus dem festen Platzhalterfenster abgeleitet.
+ */
+function buildFallbackBookings(
+  taxiId: string,
+  media: {
+    id: string;
+    sha256: string;
+    sizeBytes: number;
+    durationMs: number;
+  },
+  slotCount: number,
+): unknown[] {
+  const startAt = FALLBACK_START_AT;
+  const endAt = FALLBACK_END_AT;
+  const bookings: unknown[] = [];
+  for (let position = 1; position <= slotCount; position += 1) {
+    bookings.push({
+      position,
+      campaign: {
+        id: FALLBACK_CAMPAIGN_ID,
+        status: "active" as const,
+        startAt,
+        endAt,
+        taxiIds: [taxiId],
+        groupIds: [],
+      },
+      media: {
+        id: media.id,
+        sha256: media.sha256,
+        sizeBytes: media.sizeBytes,
+        durationMs: media.durationMs,
+      },
+    });
+  }
+  return bookings;
+}
+
 /** Uebernimmt das CX-025-Ergebnis verlustfrei in die CX-007-Planform. */
 function toManifestPlan(built: BuiltLoopPlan): LoopPlan {
   return {
@@ -216,6 +404,7 @@ export class ManifestRefreshService {
   private readonly options: ManifestRefreshOptions;
   private readonly now: () => Date;
   private readonly slotCount: number;
+  private readonly fallbackMediaId: string | null;
   private readonly defaultLimit: number;
 
   constructor(options: ManifestRefreshOptions) {
@@ -223,6 +412,12 @@ export class ManifestRefreshService {
     this.options = options;
     this.now = options.now ?? (() => new Date());
     this.slotCount = checkedSlotCount(options.slotCount);
+    this.fallbackMediaId =
+      options.fallbackMediaId === undefined ||
+      options.fallbackMediaId === null ||
+      options.fallbackMediaId.trim() === ""
+        ? null
+        : options.fallbackMediaId.trim().toLowerCase();
     this.defaultLimit = checkedLimit(options.defaultLimit, DEFAULT_LIMIT);
   }
 
@@ -303,8 +498,16 @@ export class ManifestRefreshService {
         };
       }
 
-      const source = await loadTaxiManifestSource(client, taxiId);
-      const bookings = buildBookings(source, this.slotCount);
+      const evaluatedAt = this.now();
+      const source = await loadTaxiManifestSource(client, taxiId, evaluatedAt);
+      const bookings =
+        source.campaigns.length > 0
+          ? buildBookings(source, this.slotCount)
+          : buildFallbackBookings(
+              taxiId,
+              await loadFallbackMedia(client, this.fallbackMediaId),
+              this.slotCount,
+            );
       const built = (this.options.planner ?? buildLoopPlan)({
         taxiId,
         groupIds: source.groupIds,
@@ -329,7 +532,7 @@ export class ManifestRefreshService {
         trustedKeys: this.options.trustedKeys,
       });
 
-      const createdAt = this.now();
+      const createdAt = evaluatedAt;
       await client.query(
         [
           "insert into taxi_manifest_artifacts",
