@@ -42,6 +42,7 @@ export type AccessAction =
   | "campaigns.write"
   | "taxi.pause"
   | "taxi.activation"
+  | "tablet.activation"
   | "audit.read"
   | "security.manage"
   | "config.read"
@@ -121,6 +122,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/admin/taxis/:id/pause": human("taxi.pause"),
   "POST /v1/admin/taxis/:id/resume": human("taxi.pause"),
   "POST /v1/admin/taxis/:taxiId/activation": human("taxi.activation"),
+  "PATCH /v1/admin/tablets/:tabletId/activation": human("tablet.activation"),
 
   // Reserviert: ausschliesslich Admin.
   "GET /v1/admin/audit": human("audit.read"),
@@ -151,6 +153,7 @@ const ALL_ACTIONS: readonly AccessAction[] = [
   "campaigns.write",
   "taxi.pause",
   "taxi.activation",
+  "tablet.activation",
   "audit.read",
   "security.manage",
   "config.read",
@@ -170,6 +173,7 @@ const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.f
     "campaigns.write",
     "taxi.pause",
     "taxi.activation",
+    "tablet.activation",
     "config.read",
     "groups.read",
   ]),

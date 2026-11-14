@@ -51,6 +51,8 @@ import {
 import { registerPlayoutPreviewRoute } from "./playoutPreview.js";
 import { registerTaxiActivationRoute } from "./taxiActivationRoutes.js";
 import { TaxiActivationService } from "../modules/taxiActivation/index.js";
+import { registerTabletActivationRoute } from "./tabletActivationRoutes.js";
+import { TabletActivationService } from "../modules/tabletActivation/index.js";
 
 export interface HttpCompositionDeps {
   pool: Pool;
@@ -121,6 +123,13 @@ export function registerHttpComposition(
     // delegiert genau einmal an CX-124; Audit entsteht nur dort.
     registerTaxiActivationRoute(scope, {
       service: new TaxiActivationService({ pool: deps.pool }),
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-127 / R-104: geschuetzte Tablet-Aktivierung. Der Adapter delegiert
+    // genau einmal an CX-126; Transaktion und Audit entstehen nur dort.
+    registerTabletActivationRoute(scope, {
+      service: new TabletActivationService({ pool: deps.pool }),
       adminAuth: deps.adminAuth,
     });
 
