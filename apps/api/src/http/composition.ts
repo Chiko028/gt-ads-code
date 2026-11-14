@@ -45,6 +45,8 @@ import {
   registerTaxiGroupListRoute,
   registerTaxiGroupRenameRoute,
 } from "./taxiGroupRoutes.js";
+import { registerTaxiGroupMembershipRoute } from "./taxiGroupMembershipRoutes.js";
+import { TaxiGroupMembershipService } from "../modules/taxiGroupMemberships/service.js";
 import {
   registerDeviceEventRoutes,
   type DeviceEventIngest,
@@ -133,6 +135,13 @@ export function registerHttpComposition(
     // denselben Gruppenbestand und schreibt Audit nur in der Transaktion.
     registerTaxiGroupRenameRoute(scope, {
       pool: deps.pool,
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-119 / R-104: vollstaendige Gruppenzuordnung eines Taxis. Der Adapter
+    // delegiert genau einmal an CX-118; Transaktion und Audit entstehen nur dort.
+    registerTaxiGroupMembershipRoute(scope, {
+      service: new TaxiGroupMembershipService({ pool: deps.pool }),
       adminAuth: deps.adminAuth,
     });
 

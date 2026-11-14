@@ -123,6 +123,8 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "GET /v1/admin/taxi-groups": human("groups.read"),
   "POST /v1/admin/taxi-groups": human("groups.write"),
   "PATCH /v1/admin/taxi-groups/:id": human("groups.write"),
+  // CX-119 / R-104: vollstaendige Gruppenzuordnung eines Taxis.
+  "PUT /v1/admin/taxis/:id/groups": human("groups.write"),
   "GET /v1/admin/campaigns/:id": human("campaigns.read"),
 
   // Kundenkern (CX-032): Basisendpunkte unter derselben Fachaktion.
