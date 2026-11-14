@@ -49,6 +49,8 @@ import {
   type DeviceEventIngest,
 } from "./deviceEvents.js";
 import { registerPlayoutPreviewRoute } from "./playoutPreview.js";
+import { registerTaxiActivationRoute } from "./taxiActivationRoutes.js";
+import { TaxiActivationService } from "../modules/taxiActivation/index.js";
 
 export interface HttpCompositionDeps {
   pool: Pool;
@@ -112,6 +114,13 @@ export function registerHttpComposition(
     // CX-116 / R-104: geschuetzte Gruppenliste desselben Bestands.
     registerTaxiGroupListRoute(scope, {
       pool: deps.pool,
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-125 / R-104: geschuetzte Aktivierung/Deaktivierung. Der Adapter
+    // delegiert genau einmal an CX-124; Audit entsteht nur dort.
+    registerTaxiActivationRoute(scope, {
+      service: new TaxiActivationService({ pool: deps.pool }),
       adminAuth: deps.adminAuth,
     });
 
