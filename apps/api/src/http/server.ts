@@ -23,6 +23,7 @@ import {
 import { DeviceAuthService } from "../modules/deviceAuth/service.js";
 import { registerDeviceAuthRoutes } from "../modules/deviceAuth/routes.js";
 import { HeartbeatService } from "../modules/heartbeat/service.js";
+import { createTelemetryIngestService } from "../modules/telemetry/index.js";
 import { registerHeartbeatRoutes } from "../modules/heartbeat/routes.js";
 import { registerErrorHandler } from "./errors.js";
 import { createOperationsMetrics } from "../modules/operations/metrics.js";
@@ -306,6 +307,10 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   // auch das CX-042-Manifestplugin denselben Service nutzt.
   const deviceAuthService = new DeviceAuthService({ pool, config, now });
 
+  // CX-046 / R-401: Der Ereigniseingang nutzt unveraendert den vorhandenen
+  // CX-009-Speicherkern (Transaktion, Idempotenz, Konflikte, received_at).
+  const telemetryIngest = createTelemetryIngestService({ client: pool, now });
+
   // CX-033: gemeinsamer Registrierungspunkt fuer die vorhandenen
   // Upload- und Kundenplugins. Jede App-Instanz registriert genau einmal.
   registerHttpComposition(app, {
@@ -314,6 +319,7 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     deviceAuth: deviceAuthService,
     mediaUpload,
     mediaList,
+    telemetryIngest,
   });
   app.decorate("adminAuthService", adminAuthService);
   app.decorate("devicesService", devicesService);

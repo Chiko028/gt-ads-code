@@ -119,6 +119,11 @@ export interface JsonRouteDefinition {
   url: string;
   /** Optionales Wurzel-Body-Schema; muss ein geschlossenes Objekt sein. */
   bodySchema?: Record<string, unknown>;
+  /**
+   * Optionales routenspezifisches Bodylimit. Ohne Angabe gilt das Limit der
+   * App-Instanz; die bestehenden Routen bleiben unveraendert.
+   */
+  bodyLimit?: number;
   onRequest?: JsonRouteHook | JsonRouteHook[];
   handler: RouteHandlerMethod;
 }
@@ -141,6 +146,9 @@ export function registerJsonRoute(
   app.route({
     method: definition.method,
     url: definition.url,
+    ...(definition.bodyLimit === undefined
+      ? {}
+      : { bodyLimit: definition.bodyLimit }),
     ...(definition.onRequest === undefined
       ? {}
       : { onRequest: definition.onRequest }),

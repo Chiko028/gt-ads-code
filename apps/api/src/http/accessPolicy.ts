@@ -85,6 +85,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/device/auth/challenge": DEVICE,
   "POST /v1/device/auth/token": DEVICE,
   "POST /v1/device/heartbeat": DEVICE,
+  "POST /v1/device/events": DEVICE,
   "GET /v1/device/downloads/:id": SIGNED_DOWNLOAD,
   "GET /v1/device/manifest": DEVICE,
 

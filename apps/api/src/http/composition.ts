@@ -44,6 +44,10 @@ import {
   registerTaxiGroupCreateRoute,
   registerTaxiGroupListRoute,
 } from "./taxiGroupRoutes.js";
+import {
+  registerDeviceEventRoutes,
+  type DeviceEventIngest,
+} from "./deviceEvents.js";
 import { registerPlayoutPreviewRoute } from "./playoutPreview.js";
 
 export interface HttpCompositionDeps {
@@ -52,6 +56,8 @@ export interface HttpCompositionDeps {
   deviceAuth: DeviceAuthService;
   mediaUpload: MediaUploadDeps;
   mediaList: MediaListDeps;
+  /** CX-046: vorhandener CX-009-Kern als schmale Speichergrenze. */
+  telemetryIngest: DeviceEventIngest;
 }
 
 export function registerHttpComposition(
@@ -126,6 +132,13 @@ export function registerHttpComposition(
     registerPlayoutPreviewRoute(scope, {
       getCurrentArtifact: (taxiId) => manifestReader.getCurrentArtifact(taxiId),
       taxiExists: createSqlTaxiExists(deps.pool),
+    });
+
+    // CX-046 / R-401: authentifizierter, idempotenter Ereigniseingang.
+    // Die Route delegiert unveraendert an den vorhandenen CX-009-Kern.
+    registerDeviceEventRoutes(scope, {
+      ingest: deps.telemetryIngest,
+      deviceAuth: deps.deviceAuth,
     });
   });
 }
