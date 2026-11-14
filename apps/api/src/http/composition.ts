@@ -43,6 +43,7 @@ import {
 import {
   registerTaxiGroupCreateRoute,
   registerTaxiGroupListRoute,
+  registerTaxiGroupRenameRoute,
 } from "./taxiGroupRoutes.js";
 import {
   registerDeviceEventRoutes,
@@ -124,6 +125,13 @@ export function registerHttpComposition(
 
     // CX-116 / R-104: geschuetzte Gruppenliste desselben Bestands.
     registerTaxiGroupListRoute(scope, {
+      pool: deps.pool,
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-117 / R-104: revisionssichere Umbenennung. Der Adapter nutzt
+    // denselben Gruppenbestand und schreibt Audit nur in der Transaktion.
+    registerTaxiGroupRenameRoute(scope, {
       pool: deps.pool,
       adminAuth: deps.adminAuth,
     });

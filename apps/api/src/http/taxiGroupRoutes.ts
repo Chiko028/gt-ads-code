@@ -35,7 +35,10 @@ import type { AdminAuthService } from "../modules/adminAuth/service.js";
 /** Kanonischer Pfad des Dashboard-Adapters (apps/dashboard/src/fleet). */
 export const TAXI_GROUP_CREATE_PATH = "/v1/admin/taxi-groups";
 export const TAXI_GROUP_LIST_PATH = TAXI_GROUP_CREATE_PATH;
+/** CX-117 / R-104: Umbenennung verwendet den bestehenden Ressourcenpfad. */
+export const TAXI_GROUP_RENAME_PATH = TAXI_GROUP_CREATE_PATH + "/:id";
 export const TAXI_GROUP_CREATED_ACTION = "taxi_group.created";
+export const TAXI_GROUP_RENAMED_ACTION = "taxi_group.renamed";
 export const TAXI_GROUP_AUDIT_TARGET_TYPE = "taxi_group";
 export const MAX_TAXI_GROUP_NAME_LENGTH = 120;
 export const TAXI_GROUP_LIST_DEFAULT_LIMIT = 50;
@@ -70,6 +73,28 @@ const CREATE_SCHEMA: Record<string, unknown> = {
     },
   },
 };
+
+/**
+ * CX-117: geschlossenes DTO der Umbenennung. Nur der neue Name und der
+ * bestehende erwartete Aenderungsstand sind zulaessig; Betreiber, Mitglieder
+ * und Revision stammen nie aus dem Request.
+ */
+const RENAME_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["name", "revision"],
+  properties: {
+    name: {
+      type: "string",
+      minLength: 1,
+      maxLength: MAX_TAXI_GROUP_NAME_LENGTH,
+    },
+    revision: { type: "integer", minimum: 0 },
+  },
+};
+
+const GROUP_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Geschlossene Querystring-Parameter: limit 1..100, after als Gruppen-ID. */
 const LIST_QUERY_SCHEMA: Record<string, unknown> = {
@@ -138,6 +163,15 @@ function isUniqueViolation(error: unknown): boolean {
   );
 }
 
+/** Uebernimmt exakt die Namensregel der CX-114-Anlage: trimmen, 1..120. */
+function normalizeTaxiGroupName(rawName: unknown): string {
+  const name = typeof rawName === "string" ? rawName.trim() : "";
+  if (name.length < 1 || name.length > MAX_TAXI_GROUP_NAME_LENGTH) {
+    throw ApiError.invalidRequest();
+  }
+  return name;
+}
+
 /**
  * Legt genau eine leere Gruppe an und schreibt genau einen Audit-Eintrag.
  * Ein doppelter Name wird als Konflikt (409) ohne Folgedatensatz abgebildet.
@@ -148,10 +182,7 @@ async function createTaxiGroup(
   actorId: string,
   at: Date,
 ): Promise<CreatedTaxiGroup> {
-  const name = typeof rawName === "string" ? rawName.trim() : "";
-  if (name.length < 1 || name.length > MAX_TAXI_GROUP_NAME_LENGTH) {
-    throw ApiError.invalidRequest();
-  }
+  const name = normalizeTaxiGroupName(rawName);
   await ensureTaxiGroupSchema(pool);
   const client = await pool.connect();
   try {
@@ -183,6 +214,111 @@ async function createTaxiGroup(
     });
     await client.query("commit");
     return { id: row.id, name: row.name, revision: row.revision };
+  } catch (error) {
+    try {
+      await client.query("rollback");
+    } catch {
+      // Der urspruengliche Fehler bleibt massgeblich.
+    }
+    if (isUniqueViolation(error)) {
+      throw new ApiError("invalid_request", { statusCode: 409 });
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * CX-117 / R-104: benennt genau eine Gruppe des angemeldeten Betreibers um.
+ *
+ * Der Datensatz wird in der Transaktion gesperrt; der zusaetzliche
+ * Versionsvergleich im UPDATE schuetzt auch dann, wenn zwei Anfragen mit
+ * demselben Ausgangsstand konkurrieren. Fremde und unbekannte Gruppen sind
+ * nach aussen nicht unterscheidbar (404). Gleicher Name bei aktuellem Stand
+ * ist ein erfolgreicher No-op ohne Revisionssprung und ohne Aenderungs-Audit.
+ * Audit und Name entstehen auf demselben Client und damit in derselben
+ * Transaktion.
+ */
+async function renameTaxiGroup(
+  pool: Pool,
+  rawId: unknown,
+  rawName: unknown,
+  rawRevision: unknown,
+  actorId: string,
+  at: Date,
+): Promise<CreatedTaxiGroup> {
+  const id = typeof rawId === "string" ? rawId.trim().toLowerCase() : "";
+  if (!GROUP_ID_PATTERN.test(id)) {
+    throw ApiError.notFound();
+  }
+  const name = normalizeTaxiGroupName(rawName);
+  if (
+    typeof rawRevision !== "number" ||
+    !Number.isInteger(rawRevision) ||
+    rawRevision < 0
+  ) {
+    throw ApiError.invalidRequest();
+  }
+
+  await ensureTaxiGroupSchema(pool);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const current = (
+      await client.query<TaxiGroupRow & { owner_id: string }>(
+        [
+          "select id::text as id, name, revision::int as revision, owner_id",
+          "  from taxi_groups where id = $1::uuid for update",
+        ].join("\n"),
+        [id],
+      )
+    ).rows[0];
+    // Nichtoffenlegung: fremde und unbekannte Gruppen liefern dasselbe 404.
+    if (current === undefined || current.owner_id !== actorId) {
+      throw ApiError.notFound();
+    }
+    if (current.revision !== rawRevision) {
+      throw new ApiError("invalid_request", { statusCode: 409 });
+    }
+    if (current.name === name) {
+      await client.query("commit");
+      return {
+        id: current.id,
+        name: current.name,
+        revision: current.revision,
+      };
+    }
+
+    const updated = (
+      await client.query<TaxiGroupRow>(
+        [
+          "update taxi_groups set name = $2, revision = revision + 1",
+          " where id = $1::uuid and revision = $3",
+          "returning id::text as id, name, revision::int as revision",
+        ].join("\n"),
+        [id, name, rawRevision],
+      )
+    ).rows[0];
+    if (updated === undefined) {
+      throw new ApiError("invalid_request", { statusCode: 409 });
+    }
+
+    await insertAuditEvent(client, {
+      at,
+      actorType: "admin",
+      actorId,
+      action: TAXI_GROUP_RENAMED_ACTION,
+      targetType: TAXI_GROUP_AUDIT_TARGET_TYPE,
+      targetId: updated.id,
+      details: {
+        previous_name: current.name,
+        name: updated.name,
+        revision: updated.revision,
+      },
+    });
+    await client.query("commit");
+    return { id: updated.id, name: updated.name, revision: updated.revision };
   } catch (error) {
     try {
       await client.query("rollback");
@@ -282,6 +418,44 @@ export function registerTaxiGroupCreateRoute(
         now(),
       );
       reply.code(201).send({
+        id: group.id,
+        name: group.name,
+        revision: group.revision,
+      });
+    },
+  });
+}
+
+/**
+ * Registriert PATCH /v1/admin/taxi-groups/:id genau einmal. Der Rechtekern
+ * klassifiziert die Route als menschliche Schreibaktion groups.write; der
+ * vorhandene Schreibschutz und die Sitzungspruefung gelten zusaetzlich.
+ */
+export function registerTaxiGroupRenameRoute(
+  app: FastifyInstance,
+  deps: TaxiGroupRoutesDeps,
+): void {
+  const sessionGuard = createAdminSessionMiddleware(deps.adminAuth);
+  const now = (): Date => new Date();
+
+  registerJsonRoute(app, {
+    method: "PATCH",
+    url: TAXI_GROUP_RENAME_PATH,
+    bodySchema: RENAME_SCHEMA,
+    onRequest: [requireAdminWrite, sessionGuard],
+    handler: async (request, reply) => {
+      const params = request.params as { id?: unknown };
+      const body = request.body as Record<string, unknown>;
+      const group = await renameTaxiGroup(
+        deps.pool,
+        params.id,
+        body.name,
+        body.revision,
+        actorIdOf(request),
+        now(),
+      );
+      reply.header("Cache-Control", "no-store");
+      reply.code(200).send({
         id: group.id,
         name: group.name,
         revision: group.revision,

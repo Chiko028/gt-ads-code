@@ -122,6 +122,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/admin/campaigns": human("campaigns.write"),
   "GET /v1/admin/taxi-groups": human("groups.read"),
   "POST /v1/admin/taxi-groups": human("groups.write"),
+  "PATCH /v1/admin/taxi-groups/:id": human("groups.write"),
   "GET /v1/admin/campaigns/:id": human("campaigns.read"),
 
   // Kundenkern (CX-032): Basisendpunkte unter derselben Fachaktion.
