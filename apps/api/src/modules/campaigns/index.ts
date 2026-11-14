@@ -61,3 +61,12 @@ export {
   type CampaignQueryView,
 } from "./query.js";
 
+
+export {
+  CAMPAIGN_TRANSITION_ACTION,
+  CAMPAIGN_TRANSITION_ACTIONS,
+  transitionCampaign,
+  type CampaignTransitionAction,
+  type CampaignTransitionOptions,
+  type CampaignTransitionResult,
+} from "./transition.js";
