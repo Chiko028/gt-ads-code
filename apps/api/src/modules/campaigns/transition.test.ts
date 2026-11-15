@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Pool } from "pg";
+import { Client, Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ApiError } from "../../http/errors.js";
+import { ensureTaxiGroupSchema } from "../../http/taxiGroupRoutes.js";
+import { ensureTaxiGroupMembershipSchema } from "../taxiGroupMemberships/service.js";
 import { CampaignService } from "./campaigns.js";
 import { transitionCampaign } from "./transition.js";
 
@@ -13,6 +15,7 @@ const MIGRATIONS_DIR = join(
   "../../db/migrations",
 );
 const OWNER = "cx105-operator";
+const OTHER_OWNER = "cx105-other-operator";
 const ACTOR = "cx105-actor";
 const START = "2026-12-01T08:00:00.000Z";
 const END = "2026-12-01T18:00:00.000Z";
@@ -113,6 +116,57 @@ async function addTarget(
   );
 }
 
+async function insertTaxi(ownerId = OWNER, active = true): Promise<string> {
+  const id = randomUUID();
+  await pool.query(
+    "insert into taxis (id, display_name, active, revision, owner_id) values ($1, $2, $3, 1, $4)",
+    [id, "SYN-CX105-Taxi", active, ownerId],
+  );
+  return id;
+}
+
+async function insertGroup(ownerId = OWNER): Promise<string> {
+  const id = randomUUID();
+  await pool.query(
+    "insert into taxi_groups (id, name, owner_id, revision, created_at) values ($1::uuid, $2, $3, 1, now())",
+    [id, "SYN-CX105-Gruppe-" + id, ownerId],
+  );
+  return id;
+}
+
+async function addMembership(groupId: string, taxiId: string): Promise<void> {
+  await pool.query(
+    "insert into taxi_group_memberships (group_id, taxi_id) values ($1, $2)",
+    [groupId, taxiId],
+  );
+}
+
+async function waitForLockWaiters(
+  observationClient: Client,
+  expected: number,
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const result = await observationClient.query<{ count: string }>(
+      [
+        "select count(*)::text as count",
+        "  from pg_stat_activity",
+        " where datname = current_database()",
+        "   and pid <> pg_backend_pid()",
+        "   and wait_event_type = 'Lock'",
+      ].join("\n"),
+      [],
+    );
+    if (Number(result.rows[0]?.count ?? "0") >= expected) {
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(
+    "Die Aktivierung wartet nicht auf die Mitgliedschaftssperre.",
+  );
+}
+
 async function campaignState(id: string): Promise<{
   status: string;
   archived: boolean;
@@ -183,11 +237,13 @@ beforeAll(async () => {
     await pool.query(await readFile(join(MIGRATIONS_DIR, name), "utf8"));
   }
   await new CampaignService({ pool }).ensureSchema();
+  await ensureTaxiGroupSchema(pool);
+  await ensureTaxiGroupMembershipSchema(pool);
 }, 60_000);
 
 beforeEach(async () => {
   await pool.query(
-    "truncate table campaign_targets, campaigns, media_objects, audit_events, taxi_group_memberships, taxi_manifest_state, customers restart identity cascade",
+    "truncate table campaign_targets, campaigns, media_objects, audit_events, taxi_group_memberships, taxis, taxi_groups, taxi_manifest_state, customers restart identity cascade",
   );
 });
 
@@ -223,7 +279,8 @@ describe("CX-105 Kampagnenlebenszyklus", () => {
 
     for (const entry of matrix) {
       const id = await insertCampaign(entry.from);
-      await addTarget(id, "taxi", "taxi-matrix");
+      const taxiId = await insertTaxi();
+      await addTarget(id, "taxi", taxiId);
       if (entry.outcome === "invalid") {
         await expect(runTransition(id, 1, entry.action)).rejects.toBeInstanceOf(
           ApiError,
@@ -269,7 +326,8 @@ describe("CX-105 Kampagnenlebenszyklus", () => {
         startAt: END,
         endAt: START,
       });
-      await addTarget(badRuntime, "taxi", "taxi-runtime");
+      const runtimeTaxi = await insertTaxi();
+      await addTarget(badRuntime, "taxi", runtimeTaxi);
       await expect(runTransition(badRuntime, 1, "activate")).rejects.toBeInstanceOf(
         ApiError,
       );
@@ -289,7 +347,8 @@ describe("CX-105 Kampagnenlebenszyklus", () => {
     const deletedCampaign = await insertCampaign("draft", {
       mediaId: deletedMedia,
     });
-    await addTarget(deletedCampaign, "taxi", "taxi-deleted");
+    const deletedTaxi = await insertTaxi();
+    await addTarget(deletedCampaign, "taxi", deletedTaxi);
     await expect(
       runTransition(deletedCampaign, 1, "activate"),
     ).rejects.toBeInstanceOf(ApiError);
@@ -299,20 +358,20 @@ describe("CX-105 Kampagnenlebenszyklus", () => {
     const stagingCampaign = await insertCampaign("draft", {
       mediaId: stagingMedia,
     });
-    await addTarget(stagingCampaign, "taxi", "taxi-staging");
+    const stagingTaxi = await insertTaxi();
+    await addTarget(stagingCampaign, "taxi", stagingTaxi);
     await expect(
       runTransition(stagingCampaign, 1, "activate"),
     ).rejects.toBeInstanceOf(ApiError);
 
     const emptyGroup = await insertCampaign("draft");
-    await addTarget(emptyGroup, "group", "group-empty");
+    const emptyGroupId = await insertGroup();
+    await addTarget(emptyGroup, "group", emptyGroupId);
     await expect(runTransition(emptyGroup, 1, "activate")).rejects.toBeInstanceOf(
       ApiError,
     );
-    await pool.query(
-      "insert into taxi_group_memberships (group_id, taxi_id) values ($1, $2)",
-      ["group-empty", "taxi-member"],
-    );
+    const emptyGroupTaxi = await insertTaxi();
+    await addMembership(emptyGroupId, emptyGroupTaxi);
     const activated = await runTransition(emptyGroup, 1, "activate");
     expect(activated.status).toBe("active");
     expect(activated.changed).toBe(true);
@@ -328,7 +387,8 @@ describe("CX-105 Kampagnenlebenszyklus", () => {
     );
 
     const toArchive = await insertCampaign("draft");
-    await addTarget(toArchive, "taxi", "taxi-archive");
+    const archiveTaxi = await insertTaxi();
+    await addTarget(toArchive, "taxi", archiveTaxi);
     expect((await runTransition(toArchive, 1, "finish")).status).toBe("finished");
     const archived = await runTransition(toArchive, 2, "archive");
     expect(archived).toMatchObject({
@@ -353,9 +413,61 @@ describe("CX-105 Kampagnenlebenszyklus", () => {
     expect(await transitionAudits(toArchive)).toHaveLength(2);
   });
 
+  it("verlangt fuer direkte und gruppenbezogene Ziele ein existierendes, betreibereigenes Taxi", async () => {
+    const unknown = await insertCampaign("draft");
+    await addTarget(unknown, "taxi", "SYN-CX105-unbekannt");
+    await expect(runTransition(unknown, 1, "activate")).rejects.toBeInstanceOf(
+      ApiError,
+    );
+    expect(await campaignState(unknown)).toEqual({
+      status: "draft",
+      archived: false,
+      revision: 1,
+    });
+    expect(await transitionAudits(unknown)).toHaveLength(0);
+
+    const inactiveTaxi = await insertTaxi(OWNER, false);
+    const inactiveDirect = await insertCampaign("draft");
+    await addTarget(inactiveDirect, "taxi", inactiveTaxi);
+    await expect(
+      runTransition(inactiveDirect, 1, "activate"),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect((await campaignState(inactiveDirect)).status).toBe("draft");
+
+    const foreignTaxi = await insertTaxi(OTHER_OWNER);
+    const foreignDirect = await insertCampaign("draft");
+    await addTarget(foreignDirect, "taxi", foreignTaxi);
+    await expect(
+      runTransition(foreignDirect, 1, "activate"),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect((await campaignState(foreignDirect)).status).toBe("draft");
+
+    const foreignGroup = await insertGroup(OTHER_OWNER);
+    await addMembership(foreignGroup, await insertTaxi(OWNER));
+    const foreignGroupCampaign = await insertCampaign("draft");
+    await addTarget(foreignGroupCampaign, "group", foreignGroup);
+    await expect(
+      runTransition(foreignGroupCampaign, 1, "activate"),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect((await campaignState(foreignGroupCampaign)).status).toBe("draft");
+
+    const group = await insertGroup();
+    const groupCampaign = await insertCampaign("draft");
+    await addTarget(groupCampaign, "group", group);
+    await addMembership(group, "SYN-CX105-unbekannt");
+    await addMembership(group, await insertTaxi(OTHER_OWNER));
+    await addMembership(group, await insertTaxi(OWNER, false));
+    await expect(
+      runTransition(groupCampaign, 1, "activate"),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect((await campaignState(groupCampaign)).status).toBe("draft");
+    expect(await transitionAudits(groupCampaign)).toHaveLength(0);
+  });
+
   it("serialisiert konkurrierende Aktionen, laesst gleiche Zustaende ohne Doppelwirkung und rollt Auditfehler vollstaendig zurueck", async () => {
     const id = await insertCampaign("draft");
-    await addTarget(id, "taxi", "taxi-concurrent");
+    const taxiId = await insertTaxi();
+    await addTarget(id, "taxi", taxiId);
 
     const results = await Promise.allSettled([
       runTransition(id, 1, "activate"),
@@ -425,5 +537,50 @@ describe("CX-105 Kampagnenlebenszyklus", () => {
     const pausedNoop = await runTransition(id, 3, "pause");
     expect(pausedNoop.changed).toBe(false);
     expect(await transitionAudits(id)).toHaveLength(2);
+  });
+
+  it("verhindert die Aktivierung, wenn das letzte effektive Gruppenziel konkurrierend entfernt wird", async () => {
+    const groupId = await insertGroup();
+    const taxiId = await insertTaxi();
+    await addMembership(groupId, taxiId);
+    const campaignId = await insertCampaign("draft");
+    await addTarget(campaignId, "group", groupId);
+
+    const base = baseConnection();
+    const remover = new Client({
+      ...base,
+      database: databaseName,
+      application_name: "cx105-remover",
+    });
+    const observer = new Client({
+      ...base,
+      database: databaseName,
+      application_name: "cx105-observer",
+    });
+    await remover.connect();
+    await observer.connect();
+
+    try {
+      await remover.query("begin");
+      await remover.query(
+        "delete from taxi_group_memberships where group_id = $1 and taxi_id = $2",
+        [groupId, taxiId],
+      );
+
+      const activation = runTransition(campaignId, 1, "activate");
+      await waitForLockWaiters(observer, 1);
+      await remover.query("commit");
+      await expect(activation).rejects.toBeInstanceOf(ApiError);
+    } finally {
+      await observer.end();
+      await remover.end();
+    }
+
+    expect(await campaignState(campaignId)).toEqual({
+      status: "draft",
+      archived: false,
+      revision: 1,
+    });
+    expect(await transitionAudits(campaignId)).toHaveLength(0);
   });
 });

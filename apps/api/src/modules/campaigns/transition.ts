@@ -203,7 +203,7 @@ export async function transitionCampaign(
       throw ApiError.invalidRequest();
     }
     if (nextStatus === "active") {
-      await assertActivatable(client, current);
+      await assertActivatable(client, current, ownerId);
     }
 
     const targets = await loadTargets(client, campaignId);
@@ -236,10 +236,17 @@ export async function transitionCampaign(
 /**
  * Aktivierungsvoraussetzungen in fester Reihenfolge: Laufzeit (CX-004),
  * Medium (ready, nicht geloescht, Zeilensperre), effektives Taxiziel.
+ * Direkte Ziele und Gruppenmitglieder werden gegen die vorhandenen
+ * Taxi-/Gruppendatensaetze und den Kampagnenbetreiber geprueft; nur
+ * existierende, aktivierte, betreibereigene Taxis gelten als effektiv. Die
+ * Sperrreihenfolge folgt CX-118: Taxis, Gruppen, Mitgliedschaften. Damit
+ * bleibt jede gezaehlte Referenz bis zum Commit gegen Loeschung und
+ * Umbuchung gesperrt.
  */
 async function assertActivatable(
   client: SqlQueryable,
   current: CampaignTransitionRow,
+  ownerId: string,
 ): Promise<void> {
   if (!validateCampaignRuntime(current.start_at, current.end_at).ok) {
     throw ApiError.invalidRequest();
@@ -261,23 +268,114 @@ async function assertActivatable(
   ) {
     throw ApiError.invalidRequest();
   }
-  const effective = await client.query<{ count: number }>(
+
+  // Ziele sind durch die Kampagnensperre stabil.
+  const targets = await client.query<{ kind: string; target_id: string }>(
     [
-      "select count(*)::int as count",
-      "  from (",
-      "    select target_id as taxi_id",
-      "      from campaign_targets",
-      "     where campaign_id = $1::uuid and kind = 'taxi'",
-      "    union",
-      "    select gm.taxi_id",
-      "      from campaign_targets ct",
-      "      join taxi_group_memberships gm on gm.group_id = ct.target_id",
-      "     where ct.campaign_id = $1::uuid and ct.kind = 'group'",
-      "  ) effective",
+      "select kind, target_id",
+      "  from campaign_targets",
+      " where campaign_id = $1::uuid",
+      " order by kind asc, target_id asc",
     ].join("\n"),
     [current.id],
   );
-  if ((effective.rows[0]?.count ?? 0) < 1) {
+  const directTaxiIds = targets.rows
+    .filter((row) => row.kind === "taxi")
+    .map((row) => row.target_id);
+  const groupIds = targets.rows
+    .filter((row) => row.kind === "group")
+    .map((row) => row.target_id);
+  if (directTaxiIds.length + groupIds.length < 1) {
+    throw ApiError.invalidRequest();
+  }
+
+  // Kandidaten fuer die Sperrreihenfolge: nur existierende Taxis des
+  // Betreibers, direkt oder als Mitglied einer eigenen Gruppe.
+  const candidates = await client.query<{ taxi_id: string }>(
+    [
+      "select tx.id as taxi_id",
+      "  from campaign_targets ct",
+      "  join taxis tx on tx.id = ct.target_id and tx.owner_id = $2",
+      "                   and tx.active",
+      " where ct.campaign_id = $1::uuid and ct.kind = 'taxi'",
+      "union",
+      "select gm.taxi_id",
+      "  from campaign_targets ct",
+      "  join taxi_groups tg on tg.id::text = ct.target_id",
+      "                   and tg.owner_id = $2",
+      "  join taxi_group_memberships gm on gm.group_id = tg.id::text",
+      "  join taxis tx on tx.id = gm.taxi_id and tx.owner_id = $2",
+      "                   and tx.active",
+      " where ct.campaign_id = $1::uuid and ct.kind = 'group'",
+      " order by taxi_id asc",
+    ].join("\n"),
+    [current.id, ownerId],
+  );
+  const candidateTaxiIds = candidates.rows.map((row) => row.taxi_id);
+  const validTaxiIds = new Set<string>();
+  if (candidateTaxiIds.length > 0) {
+    const lockedTaxis = await client.query<{ id: string }>(
+      [
+        "select id",
+        "  from taxis",
+        " where id = any($1::text[])",
+        "   and owner_id = $2",
+        "   and active",
+        " order by id asc",
+        "   for share",
+      ].join("\n"),
+      [candidateTaxiIds, ownerId],
+    );
+    for (const row of lockedTaxis.rows) {
+      validTaxiIds.add(row.id);
+    }
+  }
+
+  const validGroupIds: string[] = [];
+  if (groupIds.length > 0) {
+    const lockedGroups = await client.query<{ id: string }>(
+      [
+        "select id::text as id",
+        "  from taxi_groups",
+        " where id::text = any($1::text[])",
+        "   and owner_id = $2",
+        " order by id::text asc",
+        "   for share",
+      ].join("\n"),
+      [groupIds, ownerId],
+    );
+    for (const row of lockedGroups.rows) {
+      validGroupIds.push(row.id);
+    }
+  }
+
+  let effective = 0;
+  for (const taxiId of directTaxiIds) {
+    if (validTaxiIds.has(taxiId)) {
+      effective += 1;
+    }
+  }
+  if (validGroupIds.length > 0) {
+    const memberships = await client.query<{
+      group_id: string;
+      taxi_id: string;
+    }>(
+      [
+        "select group_id, taxi_id",
+        "  from taxi_group_memberships",
+        " where group_id = any($1::text[])",
+        " order by group_id asc, taxi_id asc",
+        "   for share",
+      ].join("\n"),
+      [validGroupIds],
+    );
+    for (const row of memberships.rows) {
+      if (validTaxiIds.has(row.taxi_id)) {
+        effective += 1;
+      }
+    }
+  }
+  if (effective < 1) {
     throw ApiError.invalidRequest();
   }
 }
