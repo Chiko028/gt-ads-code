@@ -7,6 +7,8 @@ import { MediaPage } from "./media/MediaPage";
 import type { UploadTransport } from "./media/uploadTransport";
 import { NavigationFrame } from "./navigation/NavigationFrame";
 import { PlayoutPreviewPage } from "./playout/PlayoutPreviewPage";
+import type { StatisticsClient } from "./statistics/statisticsApi";
+import { StatisticsPage } from "./statistics/StatisticsPage";
 
 export interface AppProps {
   /** Injizierbares fetch fuer Shell, Client und Tests. */
@@ -21,12 +23,18 @@ export interface AppProps {
    * Ohne Angabe wird der vorhandene same-origin-fetch verwendet.
    */
   readonly fleetTransport?: FleetTransport;
+  /**
+   * Injizierbarer Statistikclient (CX-050). Ohne Angabe wird der vorhandene
+   * Fetch-Client mit derselben Cookie-Sitzung verwendet.
+   */
+  readonly statisticsClient?: StatisticsClient;
 }
 
 export function App({
   fetchImpl,
   uploadTransport,
   fleetTransport,
+  statisticsClient,
 }: AppProps = {}) {
   return (
     <AdminShell fetchImpl={fetchImpl}>
@@ -46,6 +54,9 @@ export function App({
             fetchImpl={fetchImpl}
             transport={fleetTransport}
           />
+        }
+        statisticPage={
+          <StatisticsPage client={statisticsClient} fetchImpl={fetchImpl} />
         }
       />
     </AdminShell>

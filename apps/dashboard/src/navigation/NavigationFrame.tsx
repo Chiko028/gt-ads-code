@@ -28,6 +28,11 @@ export interface NavigationFrameProps {
    * wird der klar gekennzeichnete Platzhalter gerendert.
    */
   readonly previewPage?: ReactNode;
+  /**
+   * Austauschbarer Seitenplatz fuer #/statistik (CX-050). Ohne Angabe wird
+   * der klar gekennzeichnete Platzhalter gerendert.
+   */
+  readonly statisticPage?: ReactNode;
 }
 
 function NotFoundPage() {
@@ -48,6 +53,7 @@ function pageFor(
   mediaPage: ReactNode | undefined,
   campaignPage: ReactNode | undefined,
   previewPage: ReactNode | undefined,
+  statisticPage: ReactNode | undefined,
 ) {
   if (match.kind === "not_found") {
     return <NotFoundPage />;
@@ -75,6 +81,12 @@ function pageFor(
       ) : (
         previewPage
       );
+    case "statistik":
+      return statisticPage === undefined ? (
+        <UnavailablePage title="Statistik" />
+      ) : (
+        statisticPage
+      );
     default:
       return <UnavailablePage title={match.route.label} />;
   }
@@ -91,6 +103,7 @@ export function NavigationFrame({
   mediaPage,
   campaignPage,
   previewPage,
+  statisticPage,
 }: NavigationFrameProps = {}) {
   const match = useHashRoute();
   const activeRouteId = match.kind === "route" ? match.route.id : null;
@@ -114,7 +127,14 @@ export function NavigationFrame({
           })}
         </ul>
       </nav>
-      {pageFor(match, taxiPage, mediaPage, campaignPage, previewPage)}
+      {pageFor(
+        match,
+        taxiPage,
+        mediaPage,
+        campaignPage,
+        previewPage,
+        statisticPage,
+      )}
     </>
   );
 }
