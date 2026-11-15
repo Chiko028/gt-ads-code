@@ -26,3 +26,22 @@ export type {
   StatisticsServiceOptions,
 } from "./types.js";
 
+
+export {
+  CUSTOMER_REPORT_MEASUREMENT,
+  CustomerReportRowLimitError,
+  CustomerReportService,
+  CustomerReportSourceError,
+  createCustomerReportService,
+  parseCustomerReportQuery,
+  type CustomerReportCompleteness,
+  type CustomerReportQuery,
+  type CustomerReportRow,
+  type CustomerReportServiceOptions,
+} from "./customerReport.js";
+export {
+  CUSTOMER_REPORT_COLUMNS,
+  escapeCsvField,
+  neutralizeFormula,
+  serializeCustomerReportCsv,
+} from "./customerReportCsv.js";

@@ -63,6 +63,7 @@ import { registerTaxiPauseRoutes } from "./taxiPauseRoutes.js";
 import { registerDeviceCommandRoutes } from "./deviceCommands.js";
 import { registerStatusRoute } from "./statusRoute.js";
 import { registerStatisticsRoute } from "./statisticsRoute.js";
+import { registerCustomerReportRoute } from "./customerReportRoute.js";
 import { createSqlTaxiDirectory } from "../modules/pause/index.js";
 import { createRemoteControlService } from "../modules/remoteControl/index.js";
 
@@ -233,6 +234,14 @@ export function registerHttpComposition(
     // ausschliesslich vorhandene Telemetrie, Rollups, Zuordnungen und
     // Kampagnen; es entsteht keine neue Speicherung.
     registerStatisticsRoute(scope, {
+      pool: deps.pool,
+      adminAuth: deps.adminAuth,
+      now: deps.now,
+    });
+    // CX-051 / R-406: gekennzeichneter CSV-Kundenbericht. Der Adapter
+    // aggregiert ausschliesslich die Plays des vorhandenen CX-049-Dienstes
+    // je Kundenkampagne; es entsteht keine zweite Zaehlung.
+    registerCustomerReportRoute(scope, {
       pool: deps.pool,
       adminAuth: deps.adminAuth,
       now: deps.now,

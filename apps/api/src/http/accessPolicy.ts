@@ -106,6 +106,9 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "GET /v1/admin/status": human("devices.read"),
   // CX-049 / R-404: lesende Wiedergabe-Statistik und Geraeteverfuegbarkeit.
   "GET /v1/admin/statistics": human("devices.read"),
+
+  // CX-051 / R-406: gekennzeichneter CSV-Kundenbericht (nur lesend).
+  "GET /v1/admin/reports/customer.csv": human("campaigns.read"),
   "POST /v1/admin/devices/:id/revoke": human("devices.revoke"),
 
   // Inventarliste (CX-129 / R-106): ausschliesslich lesend unter devices.read.
