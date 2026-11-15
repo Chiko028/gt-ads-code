@@ -13,6 +13,7 @@ import {
   createAdminLoginRateLimiter,
   registerAdminAuthRoutes,
 } from "../modules/adminAuth/routes.js";
+import { registerAdminOperatorRoutes } from "../modules/adminAuth/operatorRoutes.js";
 import { DevicesService } from "../modules/devices/service.js";
 import { registerAdminDeviceRoutes } from "../modules/devices/routes.js";
 import { RegistrationService } from "../modules/registration/service.js";
@@ -273,6 +274,8 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     loginLimiter: createAdminLoginRateLimiter(config, () => now().getTime()),
     config,
   });
+  // CX-057 / R-602: Operatorverwaltung bleibt ausschliesslich Admin.
+  registerAdminOperatorRoutes(app, { service: adminAuthService });
   registerAdminRegistrationCodeRoutes(app, {
     service,
     adminAuth: adminAuthService,

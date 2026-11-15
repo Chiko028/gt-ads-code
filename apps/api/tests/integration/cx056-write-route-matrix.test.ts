@@ -415,6 +415,7 @@ function concreteUrl(template: string): string {
     .replace(":taxi_id", TAXI_ID)
     .replace(":taxiId", TAXI_ID)
     .replace(":tabletId", TABLET_ID)
+    .replace(":operatorId", randomUUID())
     .replace(":id", randomUUID());
 }
 
@@ -430,6 +431,13 @@ interface PayloadFixture {
  */
 const PAYLOADS: Readonly<Record<string, PayloadFixture>> = Object.freeze({
   "POST /v1/admin/logout": { payload: {} },
+  "POST /v1/admin/operators": {
+    payload: {
+      username: "SYN-CX056-Operator",
+      password: "SYN-CX056-Operator-Passwort",
+    },
+  },
+  "POST /v1/admin/operators/:operatorId/disable": {},
   "POST /v1/admin/registration-codes": { payload: { label: "SYN-CX056-Matrix" } },
   "DELETE /v1/admin/registration-codes/:id": {},
   "POST /v1/admin/devices/:id/revoke": {},

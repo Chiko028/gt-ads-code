@@ -16,7 +16,7 @@ export interface AdminAuthRoutesDeps {
   config: AppConfig;
 }
 
-const LOGIN_FIELDS: ReadonlySet<string> = new Set(["password"]);
+const LOGIN_FIELDS: ReadonlySet<string> = new Set(["password", "username"]);
 
 /**
  * Baut den Login-Rate-Limiter. Es gelten die Fehlversuchsgrenzen des
@@ -38,7 +38,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseLoginBody(body: unknown): string {
+interface ParsedLoginBody {
+  password: string;
+  username?: string;
+}
+
+/**
+ * Geschlossenes Login-DTO: password ist Pflicht, username ist optional.
+ * Ohne Kennung bleibt die konfigurierte CX-015-Identitaet massgeblich; mit
+ * Kennung prueft der Service gezielt genau ein Operatorkonto.
+ */
+function parseLoginBody(body: unknown): ParsedLoginBody {
   if (!isPlainObject(body)) {
     throw ApiError.invalidRequest();
   }
@@ -51,7 +61,14 @@ function parseLoginBody(body: unknown): string {
   if (typeof password !== "string" || password.length === 0 || password.length > 4096) {
     throw ApiError.invalidRequest();
   }
-  return password;
+  const username = body.username;
+  if (username !== undefined) {
+    if (typeof username !== "string" || username.length > 128) {
+      throw ApiError.invalidRequest();
+    }
+    return { password, username };
+  }
+  return { password };
 }
 
 /**
@@ -75,13 +92,14 @@ export function registerAdminAuthRoutes(
         throw ApiError.rateLimited(gate.retryAfterSeconds);
       }
 
-      const password = parseLoginBody(request.body);
+      const body = parseLoginBody(request.body);
 
       let result;
       try {
-        result = await deps.service.login(password);
+        result = await deps.service.login(body.password, body.username);
       } catch (error) {
-        // Nur falsche Passwoerter zaehlen; Formatfehler sind bereits 400.
+        // Nur falsche Passwoerter und unbekannte/gesperrte Kennungen zaehlen;
+        // Formatfehler sind bereits 400.
         if (error instanceof ApiError && error.code === "unauthorized") {
           deps.loginLimiter.hit(sourceKey);
         }

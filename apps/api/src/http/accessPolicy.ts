@@ -49,7 +49,8 @@ export type AccessAction =
   | "config.read"
   | "config.write"
   | "groups.write"
-  | "groups.read";
+  | "groups.read"
+  | "operators.manage";
 
 export type RoutePolicy =
   | { readonly category: "human"; readonly action: AccessAction }
@@ -98,6 +99,10 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
 
   // Menschliche Verwaltung: Sitzung.
   "POST /v1/admin/logout": human("session.logout"),
+
+  // CX-057 / R-602: Operatorverwaltung ausschliesslich Admin.
+  "POST /v1/admin/operators": human("operators.manage"),
+  "POST /v1/admin/operators/:operatorId/disable": human("operators.manage"),
 
   // Menschliche Verwaltung: Geraete.
   "GET /v1/admin/devices": human("devices.read"),
@@ -185,6 +190,7 @@ const ALL_ACTIONS: readonly AccessAction[] = [
   "config.write",
   "groups.write",
   "groups.read",
+  "operators.manage",
 ];
 
 const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.freeze({

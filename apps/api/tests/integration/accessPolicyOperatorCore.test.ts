@@ -24,6 +24,8 @@ const ADMIN_ONLY: ReadonlyArray<{ method: HTTPMethods; url: string }> = [
   { method: "POST", url: "/v1/admin/devices/:id/revoke" },
   { method: "GET", url: "/v1/admin/audit-events" },
   { method: "POST", url: "/v1/admin/security/sessions/revoke" },
+  { method: "POST", url: "/v1/admin/operators" },
+  { method: "POST", url: "/v1/admin/operators/:operatorId/disable" },
   { method: "PUT", url: "/v1/admin/taxis/:id/config" },
   { method: "PATCH", url: "/v1/admin/taxis/:id/config" },
 ];
@@ -109,6 +111,7 @@ describe("CX-015 Rechtekern: Operatorrechte am produktiven Plugin", () => {
     expect(hasAction("Operator", "audit.read")).toBe(false);
     expect(hasAction("Operator", "config.write")).toBe(false);
     expect(hasAction("Operator", "security.manage")).toBe(false);
+    expect(hasAction("Operator", "operators.manage")).toBe(false);
     expect(hasAction("Operator", "registrationCodes.manage")).toBe(false);
     expect(hasAction("Operator", "devices.revoke")).toBe(false);
     expect(hasAction("Unbekannt", "devices.read")).toBe(false);

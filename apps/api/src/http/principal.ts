@@ -8,14 +8,17 @@
 import type { FastifyRequest } from "fastify";
 import { isRole, type Role } from "./accessPolicy.js";
 import { ADMIN_SESSION_COOKIE } from "../modules/adminAuth/middleware.js";
-import type { AdminAuthService } from "../modules/adminAuth/service.js";
+import {
+  LEGACY_ADMIN_ACTOR_ID,
+  type AdminAuthService,
+} from "../modules/adminAuth/service.js";
 
 /**
  * Feste interne Identitaet des bisherigen gemeinsamen Administratorkontos.
  * Sie behauptet keine individuelle Personenzuordnung; die bestehende
  * Produktionsanmeldung kennt nur diese eine Verwaltungsidentitaet.
  */
-export const LEGACY_ADMIN_PRINCIPAL_ID = "legacy-admin";
+export const LEGACY_ADMIN_PRINCIPAL_ID = LEGACY_ADMIN_ACTOR_ID;
 
 export interface Principal {
   readonly id: string;
@@ -44,9 +47,9 @@ function readAdminSessionToken(request: FastifyRequest): string | undefined {
 
 /**
  * Produktionsresolver: nutzt ausschliesslich die vorhandene serverseitige
- * Sitzungspruefung (Ablauf und Logout inklusive). Ein gueltiges Sitzungscookie
- * ergibt die feste Identitaet legacy-admin mit Rolle Admin; alles andere
- * ergibt keine Identitaet.
+ * Sitzungspruefung (Ablauf, Logout und Operatorstatus inklusive). Die Rolle
+ * stammt aus der Sitzung selbst; Operator-Sitzungen werden bei jeder Anfrage
+ * erneut gegen den persistierten Aktivstatus geprueft.
  */
 export function createLegacyAdminPrincipalResolver(
   service: AdminAuthService,
@@ -62,7 +65,7 @@ export function createLegacyAdminPrincipalResolver(
     if (session === null) {
       return null;
     }
-    return { id: LEGACY_ADMIN_PRINCIPAL_ID, role: "Admin" };
+    return { id: session.actorId, role: session.role };
   };
 }
 
