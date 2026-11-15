@@ -18,6 +18,7 @@ import {
   deriveAdminTotpEncryptionKey,
   registerAdminTotpSetupConfirmRoutes,
 } from "../modules/adminAuth/totpSetupConfirm.js";
+import { registerAdminTotpSetupCancelRoutes } from "../modules/adminAuth/totpSetupCancel.js";
 import { DevicesService } from "../modules/devices/service.js";
 import { registerAdminDeviceRoutes } from "../modules/devices/routes.js";
 import { RegistrationService } from "../modules/registration/service.js";
@@ -300,6 +301,13 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     totpEncryptionKey:
       options.mfaTotpEncryptionKey ??
       deriveAdminTotpEncryptionKey(config.registrationCodePepper),
+    now,
+  });
+  // CX-109 / R-605: Abbruch einer ausstehenden TOTP-Einrichtung desselben
+  // Admins, serialisiert mit der Bestaetigung.
+  registerAdminTotpSetupCancelRoutes(app, {
+    pool,
+    adminAuth: adminAuthService,
     now,
   });
   // CX-057 / R-602: Operatorverwaltung bleibt ausschliesslich Admin.
