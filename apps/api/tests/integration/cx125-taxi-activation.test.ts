@@ -336,7 +336,7 @@ async function activationAudits(): Promise<
 }
 
 describe("CX-125 geschuetzte Taxi-Aktivierungsroute", () => {
-  it("aktiviert und deaktiviert ueber die echte Serverfabrik mit bestaetigtem Zustand und Revision; Audit entsteht nur durch CX-124", async () => {
+  it("aktiviert ueber die echte Serverfabrik mit bestaetigtem Zustand und Revision und verweigert Operator ohne Mutation; Audit entsteht nur durch CX-124", async () => {
     const taxiId = "SYN-CX125-ACTIVE";
     await insertTaxi(taxiId);
     await validPair(taxiId);
@@ -363,23 +363,25 @@ describe("CX-125 geschuetzte Taxi-Aktivierungsroute", () => {
       details: { previous_active: false, active: true, revision: 2 },
     });
 
+    // CX-056: Taxiaktivierung bleibt Admin vorbehalten. Der Rechtekern
+    // verweigert die Operatorrolle vor dem Handler; Zustand und Audit bleiben.
     const deactivated = await postActivation(
       app,
       headers("Operator", cookie),
       taxiId,
       { active: false, revision: 2 },
     );
-    expect(deactivated.statusCode).toBe(200);
-    expect(deactivated.json()).toEqual({ active: false, revision: 3 });
-    expect(await taxiRow(taxiId)).toEqual({ active: false, revision: 3 });
+    expect(deactivated.statusCode).toBe(403);
+    expect(deactivated.json().error.code).toBe("forbidden");
+    expect(await taxiRow(taxiId)).toEqual({ active: true, revision: 2 });
     expect(await assignments(taxiId)).toEqual(assignmentsBefore);
 
     const allAudits = await activationAudits();
-    expect(allAudits).toHaveLength(2);
-    expect(allAudits[1]).toMatchObject({
-      actor_id: OPERATOR_ID,
+    expect(allAudits).toHaveLength(1);
+    expect(allAudits[0]).toMatchObject({
+      actor_id: ADMIN_ID,
       target_id: taxiId,
-      details: { previous_active: true, active: false, revision: 3 },
+      details: { previous_active: false, active: true, revision: 2 },
     });
   });
 

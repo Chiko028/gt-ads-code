@@ -355,7 +355,7 @@ async function activationAudits(): Promise<
 }
 
 describe("CX-127 geschuetzte Tablet-Aktivierungsroute", () => {
-  it("deaktiviert Tablet und zugeordnetes Taxi mit bestaetigten Zustaenden und Revisionen; Operator darf reaktivieren; Audit entsteht nur durch CX-126", async () => {
+  it("deaktiviert Tablet und zugeordnetes Taxi mit bestaetigten Zustaenden und Revisionen und verweigert Operator ohne Mutation; Audit entsteht nur durch CX-126", async () => {
     const deviceId = await insertDevice();
     const taxiId = "SYN-CX127-PAIR";
     await insertTaxi(taxiId, true, 1);
@@ -396,28 +396,35 @@ describe("CX-127 geschuetzte Tablet-Aktivierungsroute", () => {
       },
     });
 
+    // CX-056: Tabletaktivierung bleibt Admin vorbehalten. Der Rechtekern
+    // verweigert die Operatorrolle vor dem Handler; Zustand und Audit bleiben.
     const reactivated = await patchActivation(
       app,
       headers("Operator", cookie),
       deviceId,
       { active: true, expectedRevision: 1 },
     );
-    expect(reactivated.statusCode).toBe(200);
-    expect(reactivated.json()).toEqual({
-      active: true,
-      revision: 2,
-      taxi: null,
-    });
-    expect(await tabletRow(deviceId)).toEqual({ active: true, revision: 2 });
+    expect(reactivated.statusCode).toBe(403);
+    expect(reactivated.json().error.code).toBe("forbidden");
+    expect(await tabletRow(deviceId)).toEqual({ active: false, revision: 1 });
     expect(await taxiRow(taxiId)).toEqual({ active: false, revision: 2 });
     expect(await assignmentActive(taxiId, deviceId)).toBe(false);
 
     const allAudits = await activationAudits();
-    expect(allAudits).toHaveLength(2);
-    expect(allAudits[1]).toMatchObject({
-      actor_id: OPERATOR_ID,
+    expect(allAudits).toHaveLength(1);
+    expect(allAudits[0]).toMatchObject({
+      actor_id: ADMIN_ID,
       target_id: deviceId,
-      details: { previous_active: false, active: true, revision: 2 },
+      details: {
+        previous_active: true,
+        active: false,
+        revision: 1,
+        taxi_id: taxiId,
+        taxi_previous_active: true,
+        taxi_active: false,
+        taxi_revision: 2,
+        assignment_active: false,
+      },
     });
   });
 

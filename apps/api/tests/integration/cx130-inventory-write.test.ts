@@ -369,7 +369,7 @@ async function patchInventory(
 }
 
 describe("CX-130 geschuetzte Inventaraenderung", () => {
-  it("speichert und leert die drei Inventarfelder mit bestaetigter Revision; Identitaet und Aktivzustand bleiben unveraendert", async () => {
+  it("speichert die drei Inventarfelder mit bestaetigter Revision, verweigert Operator ohne Mutation; Identitaet und Aktivzustand bleiben unveraendert", async () => {
     const deviceId = await insertDevice();
     await setAdminState(deviceId, false, 5);
     const identityBefore = await deviceIdentity(deviceId);
@@ -420,6 +420,8 @@ describe("CX-130 geschuetzte Inventaraenderung", () => {
       },
     });
 
+    // CX-056: Inventaraenderungen bleiben Admin vorbehalten. Der Rechtekern
+    // verweigert die Operatorrolle vor dem Handler; Inventar und Audit bleiben.
     const cleared = await patchInventory(
       app,
       headers("Operator", cookie),
@@ -431,32 +433,30 @@ describe("CX-130 geschuetzte Inventaraenderung", () => {
         revision: 1,
       },
     );
-    expect(cleared.statusCode).toBe(200);
-    expect(cleared.json()).toEqual({
-      id: deviceId,
-      serial_number: null,
-      device_type: "SYN-Geraetetyp",
-      replacement_note: null,
-      revision: 2,
-    });
+    expect(cleared.statusCode).toBe(403);
+    expect(cleared.json().error.code).toBe("forbidden");
     expect(await inventoryRow(deviceId)).toEqual({
       device_id: deviceId,
-      serial_number: null,
+      serial_number: "SYN-SERIE-1",
       device_type: "SYN-Geraetetyp",
-      replacement_note: null,
-      revision: 2,
+      replacement_note: "SYN-Austauschvermerk",
+      revision: 1,
     });
     expect(await deviceIdentity(deviceId)).toEqual(identityBefore);
     expect(await adminState(deviceId)).toEqual({ active: false, revision: 5 });
 
     const allAudits = await inventoryAudits();
-    expect(allAudits).toHaveLength(2);
-    expect(allAudits[1]).toMatchObject({
-      actor_id: OPERATOR_ID,
+    expect(allAudits).toHaveLength(1);
+    expect(allAudits[0]).toMatchObject({
+      actor_id: ADMIN_ID,
       target_id: deviceId,
       details: {
-        revision: 2,
-        changed_fields: ["serial_number", "replacement_note"],
+        revision: 1,
+        changed_fields: [
+          "serial_number",
+          "device_type",
+          "replacement_note",
+        ],
       },
     });
   });

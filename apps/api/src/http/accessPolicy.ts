@@ -163,7 +163,8 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
  * Operator erhaelt fachliche Leseaktionen, Medien-/Kampagnenbearbeitung sowie
  * Pause/Fortsetzen. Registrierungscodeverwaltung, Geraetesperren, Audit-Lesen,
  * Sicherheitsverwaltung und versionierte Konfigurationsaenderungen bleiben
- * Admin vorbehalten.
+ * Admin vorbehalten. Spaeter ergaenzte Schreibrouten erhalten keine
+ * zusaetzlichen Operatorrechte.
  */
 const ALL_ACTIONS: readonly AccessAction[] = [
   "session.logout",
@@ -191,14 +192,11 @@ const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.f
   Operator: new Set<AccessAction>([
     "session.logout",
     "devices.read",
-    "devices.inventory",
     "media.read",
     "media.write",
     "campaigns.read",
     "campaigns.write",
     "taxi.pause",
-    "taxi.activation",
-    "tablet.activation",
     "config.read",
     "groups.read",
   ]),
