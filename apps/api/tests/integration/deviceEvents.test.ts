@@ -296,7 +296,7 @@ function errorCode(response: { json: () => any }): string {
 }
 
 describe("CX-046 / R-401 idempotenter Tablet-Ereigniseingang", () => {
-  it("speichert einen gueltigen Batch und erzeugt bei identischer und paralleler Wiederholung je Ereignis genau einen Datensatz", async () => {
+  it("speichert einen gueltigen Batch, bestaetigt identische Wiederholungen und erzeugt bei konkurrierendem Erstschreiben je Ereignis genau einen Datensatz", async () => {
     const app = await buildApp();
     const device = await registerDevice(app);
     const token = await accessToken(app, device);
@@ -325,20 +325,35 @@ describe("CX-046 / R-401 idempotenter Tablet-Ereigniseingang", () => {
     expect(secondBody.duplicate_event_ids).toHaveLength(3);
     expect(await countRows(device.deviceId)).toBe(3);
 
+    // Ein noch nicht gespeicherter Batch wird gleichzeitig mehrfach gesendet:
+    // konkurrierende Erstschreibvorgaenge derselben Ereignis-IDs.
     nowMs += 1000;
+    const freshEvents = [event(), event(), event()];
+    const freshEventIds = freshEvents.map((item) => item.event_id).sort();
     const parallel = await Promise.all(
-      Array.from({ length: 5 }, () => postEvents(app, token, { events })),
+      Array.from({ length: 5 }, () =>
+        postEvents(app, token, { events: freshEvents }),
+      ),
     );
+    const insertedAcrossRequests: string[] = [];
     for (const response of parallel) {
       expect(response.statusCode).toBe(200);
       const body = response.json();
-      expect([...body.accepted_event_ids].sort()).toEqual(
-        [...firstBody.accepted_event_ids].sort(),
-      );
-      expect(body.inserted_event_ids).toHaveLength(0);
-      expect(body.duplicate_event_ids).toHaveLength(3);
+      expect([...body.accepted_event_ids].sort()).toEqual(freshEventIds);
+      expect(
+        new Set([
+          ...body.inserted_event_ids,
+          ...body.duplicate_event_ids,
+        ]).size,
+      ).toBe(freshEventIds.length);
+      expect(
+        body.inserted_event_ids.length + body.duplicate_event_ids.length,
+      ).toBe(freshEventIds.length);
+      insertedAcrossRequests.push(...body.inserted_event_ids);
     }
-    expect(await countRows(device.deviceId)).toBe(3);
+    // Jedes Ereignis wurde von genau einer Anfrage tatsaechlich eingefuegt.
+    expect(insertedAcrossRequests.sort()).toEqual(freshEventIds);
+    expect(await countRows(device.deviceId)).toBe(6);
 
     const rows = await pool.query<{ event_id: string; count: string }>(
       [
@@ -349,7 +364,7 @@ describe("CX-046 / R-401 idempotenter Tablet-Ereigniseingang", () => {
       ].join(" "),
       [device.deviceId],
     );
-    expect(rows.rows).toHaveLength(3);
+    expect(rows.rows).toHaveLength(6);
     for (const row of rows.rows) {
       expect(row.count).toBe("1");
     }
@@ -492,9 +507,16 @@ describe("CX-046 / R-401 idempotenter Tablet-Ereigniseingang", () => {
     // Dieselbe Ereignis-ID mit anderem Inhalt: CX-009-Konflikt, ganzer Batch
     // zurueck, Original bleibt unveraendert.
     const conflicting = { ...late, playback: "stopped" as const };
-    const fresh = event();
+    // Das neue Ereignis steht vor dem Konflikt: Ohne Transaktion waere es
+    // bereits geschrieben, bevor der Konflikt erkannt wird. Die Ereignis-ID
+    // ist zusaetzlich kleiner als die Konflikt-ID, damit auch eine sortierende
+    // Einfuege-Reihenfolge das neue Ereignis zuerst schreibt.
+    let fresh = event();
+    while (fresh.event_id >= late.event_id) {
+      fresh = event();
+    }
     const conflict = await postEvents(app, token, {
-      events: [conflicting, fresh],
+      events: [fresh, conflicting],
     });
     expect(conflict.statusCode).toBe(409);
     expect(errorCode(conflict)).toBe("invalid_request");
