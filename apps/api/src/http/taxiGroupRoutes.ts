@@ -7,17 +7,16 @@
  * (CX-015) und das Audit-Repository (CX-016). Betreiber, Akteur und
  * Revision stammen nie aus dem Request.
  *
- * Der additive Gruppenbestand wird idempotent bereitgestellt (Muster
- * CX-038), weil CX-115 keine Migration einfuehren darf. Name ist eindeutig;
- * die Datenbank entscheidet damit auch bei parallelen Anfragen, und Audit
- * wird in derselben Transaktion geschrieben.
+ * Die Anlage delegiert genau einmal an die Anlagefunktion des
+ * Gruppenbestands (R-104 / CX-114). Die Route erzeugt weder Identitaet noch
+ * Revision, fuehrt kein INSERT aus, schreibt kein Audit und legt kein Schema
+ * an; sie prueft Schutz und DTO, bildet Fehler ab und projiziert die Antwort.
  *
  * CX-116 / R-104: Die Liste liest ausschliesslich den Betreiberbereich des
  * angemeldeten Prinzipals (owner_id, Muster CX-103). Es entsteht keine zweite
  * Persistenz und keine Migration: dieselbe Tabelle wird additiv um die
  * Betreiberspalte ergaenzt; Revision bleibt der vorhandene Aenderungsstand.
  */
-import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 import { ApiError } from "./errors.js";
@@ -31,16 +30,30 @@ import {
 } from "../modules/adminAuth/middleware.js";
 import { insertAuditEvent } from "../modules/audit/repository.js";
 import type { AdminAuthService } from "../modules/adminAuth/service.js";
+import {
+  createTaxiGroup,
+  ensureTaxiGroupSchema,
+  MAX_TAXI_GROUP_NAME_LENGTH,
+  TAXI_GROUP_AUDIT_TARGET_TYPE,
+  TaxiGroupCreateError,
+  type CreatedTaxiGroup,
+} from "./taxiGroupCreateService.js";
+
+// Kompatibilitaets-Reexport der Anlagefunktion fuer bestehende Aufrufer; die
+// Route selbst legt kein Schema an.
+export {
+  ensureTaxiGroupSchema,
+  MAX_TAXI_GROUP_NAME_LENGTH,
+  TAXI_GROUP_AUDIT_TARGET_TYPE,
+  TAXI_GROUP_CREATED_ACTION,
+} from "./taxiGroupCreateService.js";
 
 /** Kanonischer Pfad des Dashboard-Adapters (apps/dashboard/src/fleet). */
 export const TAXI_GROUP_CREATE_PATH = "/v1/admin/taxi-groups";
 export const TAXI_GROUP_LIST_PATH = TAXI_GROUP_CREATE_PATH;
 /** CX-117 / R-104: Umbenennung verwendet den bestehenden Ressourcenpfad. */
 export const TAXI_GROUP_RENAME_PATH = TAXI_GROUP_CREATE_PATH + "/:id";
-export const TAXI_GROUP_CREATED_ACTION = "taxi_group.created";
 export const TAXI_GROUP_RENAMED_ACTION = "taxi_group.renamed";
-export const TAXI_GROUP_AUDIT_TARGET_TYPE = "taxi_group";
-export const MAX_TAXI_GROUP_NAME_LENGTH = 120;
 export const TAXI_GROUP_LIST_DEFAULT_LIMIT = 50;
 export const TAXI_GROUP_LIST_MAX_LIMIT = 100;
 
@@ -52,12 +65,6 @@ const UUID_PATTERN =
 export interface TaxiGroupRoutesDeps {
   pool: Pool;
   adminAuth: AdminAuthService;
-}
-
-export interface CreatedTaxiGroup {
-  id: string;
-  name: string;
-  revision: number;
 }
 
 /** Geschlossenes DTO: ausschliesslich name, keine Mitglieder/Betreiber. */
@@ -111,42 +118,6 @@ const LIST_QUERY_SCHEMA: Record<string, unknown> = {
 
 const validateListQuery = compileClosedObjectSchema(LIST_QUERY_SCHEMA);
 
-const SCHEMA_SQL = [
-  "create table if not exists taxi_groups (",
-  "  id uuid primary key,",
-  "  name text not null,",
-  "  owner_id text not null default 'legacy-admin',",
-  "  revision integer not null default 1,",
-  "  created_at timestamptz not null,",
-  "  constraint taxi_groups_name_unique unique (name),",
-  "  constraint taxi_groups_name_length check",
-  "    (char_length(name) between 1 and 120),",
-  "  constraint taxi_groups_revision_positive check (revision >= 1)",
-  ");",
-  // Additive Spalte fuer bestehende Datenbestaende; auf neuen Datenbanken
-  // ist die Anweisung folgenlos. Keine Migration, keine zweite Tabelle.
-  "alter table taxi_groups",
-  "  add column if not exists owner_id text not null default 'legacy-admin';",
-].join("\n");
-
-const schemaReady = new WeakMap<Pool, Promise<void>>();
-
-/** Legt den additiven Bestand genau einmal je Pool an; Wiederholung ist folgenlos. */
-export function ensureTaxiGroupSchema(pool: Pool): Promise<void> {
-  const pending = schemaReady.get(pool);
-  if (pending !== undefined) {
-    return pending;
-  }
-  const created = pool.query(SCHEMA_SQL).then(() => undefined);
-  schemaReady.set(pool, created);
-  created.catch(() => {
-    if (schemaReady.get(pool) === created) {
-      schemaReady.delete(pool);
-    }
-  });
-  return created;
-}
-
 function actorIdOf(request: FastifyRequest): string {
   const principal = request.accessPrincipal;
   if (principal === undefined || principal.id.length === 0) {
@@ -170,63 +141,6 @@ function normalizeTaxiGroupName(rawName: unknown): string {
     throw ApiError.invalidRequest();
   }
   return name;
-}
-
-/**
- * Legt genau eine leere Gruppe an und schreibt genau einen Audit-Eintrag.
- * Ein doppelter Name wird als Konflikt (409) ohne Folgedatensatz abgebildet.
- */
-async function createTaxiGroup(
-  pool: Pool,
-  rawName: unknown,
-  actorId: string,
-  at: Date,
-): Promise<CreatedTaxiGroup> {
-  const name = normalizeTaxiGroupName(rawName);
-  await ensureTaxiGroupSchema(pool);
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    const inserted = await client.query<{
-      id: string;
-      name: string;
-      revision: number;
-    }>(
-      [
-        "insert into taxi_groups (id, name, revision, created_at, owner_id)",
-        "values ($1, $2, 1, $3, $4)",
-        "returning id, name, revision::int as revision",
-      ].join("\n"),
-      [randomUUID(), name, at, actorId],
-    );
-    const row = inserted.rows[0];
-    if (row === undefined) {
-      throw new Error("Gruppe wurde nicht gespeichert");
-    }
-    await insertAuditEvent(client, {
-      at,
-      actorType: "admin",
-      actorId,
-      action: TAXI_GROUP_CREATED_ACTION,
-      targetType: TAXI_GROUP_AUDIT_TARGET_TYPE,
-      targetId: row.id,
-      details: { name: row.name },
-    });
-    await client.query("commit");
-    return { id: row.id, name: row.name, revision: row.revision };
-  } catch (error) {
-    try {
-      await client.query("rollback");
-    } catch {
-      // Der urspruengliche Fehler bleibt massgeblich.
-    }
-    if (isUniqueViolation(error)) {
-      throw new ApiError("invalid_request", { statusCode: 409 });
-    }
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 /**
@@ -411,12 +325,24 @@ export function registerTaxiGroupCreateRoute(
     onRequest: [requireAdminWrite, sessionGuard],
     handler: async (request, reply) => {
       const body = request.body as Record<string, unknown>;
-      const group = await createTaxiGroup(
-        deps.pool,
-        body.name,
-        actorIdOf(request),
-        now(),
-      );
+      const principalId = actorIdOf(request);
+      let group: CreatedTaxiGroup;
+      try {
+        group = await createTaxiGroup(deps.pool, {
+          name: body.name,
+          ownerId: principalId,
+          actorId: principalId,
+          at: now(),
+        });
+      } catch (error) {
+        if (error instanceof TaxiGroupCreateError) {
+          if (error.code === "conflict") {
+            throw new ApiError("invalid_request", { statusCode: 409 });
+          }
+          throw ApiError.invalidRequest();
+        }
+        throw error;
+      }
       reply.code(201).send({
         id: group.id,
         name: group.name,

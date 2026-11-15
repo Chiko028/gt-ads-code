@@ -2,9 +2,13 @@
  * CX-115 / R-104: Integrationsnachweis der geschuetzten Gruppen-Anlageroute.
  *
  * Die drei Faelle laufen gegen die tatsaechliche CX-033-Serverfabrik, eine
- * echte PostgreSQL-17-Datenbank und die vorhandene Admin-Sitzung. Es wird
- * weder Authentifizierung noch Persistenz gemockt; jede App wird geschlossen.
+ * echte PostgreSQL-17-Datenbank und die vorhandene Sitzungsaufloesung. Es
+ * wird weder Authentifizierung noch Persistenz gemockt: Admin und Operator
+ * melden sich ueber die produktive Loginroute an, Rollen und Akteure stammen
+ * ausschliesslich aus der serverseitig geprueften Sitzung. Jede App wird
+ * geschlossen.
  */
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
@@ -20,17 +24,18 @@ import {
 import { CONFIG_DEFAULTS, type AppConfig } from "../../src/config.js";
 import { hashPassword } from "../../src/crypto/password.js";
 import { migrateUp } from "../../src/db/migrate.js";
-import type { Principal } from "../../src/http/principal.js";
+import { LEGACY_ADMIN_PRINCIPAL_ID } from "../../src/http/principal.js";
 import { createServer } from "../../src/http/server.js";
-import { ensureTaxiGroupSchema } from "../../src/http/taxiGroupRoutes.js";
+import { ensureTaxiGroupSchema } from "../../src/http/taxiGroupCreateService.js";
 import { ADMIN_SESSION_COOKIE } from "../../src/modules/adminAuth/middleware.js";
+import { AdminAuthService } from "../../src/modules/adminAuth/service.js";
 
 const BASE_TIME = Date.parse("2026-11-14T10:00:00.000Z");
 const ADMIN_PASSWORD = "SYN-CX115-Gruppen-Passwort";
 const HOST = "127.0.0.1:8080";
 const FOREIGN_ORIGIN = "http://fremde.example";
-const ADMIN_ID = "SYN-CX115-ADMIN";
-const OPERATOR_ID = "SYN-CX115-OPERATOR";
+const OPERATOR_USERNAME = "syn-cx115-operator";
+const OPERATOR_PASSWORD = "SYN-CX115-Operator-Passwort";
 const GROUPS_URL = "/v1/admin/taxi-groups";
 const JSON_HEADERS = { "content-type": "application/json" };
 
@@ -38,6 +43,7 @@ let maintenancePool: Pool;
 let pool: Pool;
 let databaseName = "";
 let config: AppConfig;
+let operatorId = "";
 const openApps: FastifyInstance[] = [];
 
 function quoteIdentifier(value: string): string {
@@ -59,19 +65,6 @@ function baseConnection(): {
   return { host, port: Number(process.env.PGPORT ?? "5432"), user, database };
 }
 
-function resolveTestPrincipal(request: {
-  headers: Record<string, string | string[] | undefined>;
-}): Promise<Principal | null> {
-  const role = request.headers["x-test-role"];
-  if (role === "Admin") {
-    return Promise.resolve({ id: ADMIN_ID, role: "Admin" });
-  }
-  if (role === "Operator") {
-    return Promise.resolve({ id: OPERATOR_ID, role: "Operator" });
-  }
-  return Promise.resolve(null);
-}
-
 beforeAll(async () => {
   const base = baseConnection();
   maintenancePool = new Pool(base);
@@ -91,6 +84,16 @@ beforeAll(async () => {
 
   pool = new Pool({ ...base, database: databaseName });
   await migrateUp(pool);
+  // Die vorhandenen additiven Migrationen bereitstellen, damit die echte
+  // Operator- und Sitzungskette (0015) wie im Integrationsstand verfuegbar
+  // ist. Migration 0001 wurde bereits durch migrateUp ausgefuehrt.
+  const migrationsDirectory = join(process.cwd(), "src/db/migrations");
+  for (const file of (await readdir(migrationsDirectory)).sort()) {
+    if (!file.endsWith(".up.sql") || file === "0001_gt_ads_001.up.sql") {
+      continue;
+    }
+    await pool.query(await readFile(join(migrationsDirectory, file), "utf8"));
+  }
   await ensureTaxiGroupSchema(pool);
 
   config = {
@@ -100,6 +103,20 @@ beforeAll(async () => {
     registrationCodePepper: "SYN-CX115-Pepper",
     adminPasswordHash: await hashPassword(ADMIN_PASSWORD),
   };
+
+  // Echte Operatoridentitaet ueber den vorhandenen Dienst. Die Sitzung
+  // entsteht spaeter ausschliesslich ueber die produktive Loginroute.
+  const adminAuth = new AdminAuthService({
+    pool,
+    config,
+    now: () => new Date(BASE_TIME),
+  });
+  const created = await adminAuth.createOperator({
+    username: OPERATOR_USERNAME,
+    password: OPERATOR_PASSWORD,
+    actorId: LEGACY_ADMIN_PRINCIPAL_ID,
+  });
+  operatorId = created.operator_id;
 }, 60_000);
 
 beforeEach(async () => {
@@ -128,7 +145,6 @@ async function buildApp(): Promise<FastifyInstance> {
     config,
     pool,
     now: () => new Date(BASE_TIME),
-    resolvePrincipal: resolveTestPrincipal,
     logger: { level: "silent" },
   });
   await app.ready();
@@ -149,30 +165,37 @@ function sessionCookieOf(response: {
   );
 }
 
-async function loginCookie(app: FastifyInstance): Promise<string> {
+async function loginCookie(
+  app: FastifyInstance,
+  username?: string,
+): Promise<string> {
   const response = await app.inject({
     method: "POST",
     url: "/v1/admin/login",
     headers: { host: HOST, ...JSON_HEADERS },
-    payload: { password: ADMIN_PASSWORD },
-    remoteAddress: "192.0.2.240",
+    payload:
+      username === undefined
+        ? { password: ADMIN_PASSWORD }
+        : { password: OPERATOR_PASSWORD, username },
+    remoteAddress: username === undefined ? "192.0.2.240" : "192.0.2.241",
   });
   expect(response.statusCode).toBe(204);
   return sessionCookieOf(response);
 }
 
 function headers(
-  role: "Admin" | "Operator",
-  cookie: string,
+  cookie: string | null,
   extra: Record<string, string> = {},
 ): Record<string, string> {
-  return {
+  const result: Record<string, string> = {
     host: HOST,
-    "x-test-role": role,
-    cookie: ADMIN_SESSION_COOKIE + "=" + cookie,
     ...JSON_HEADERS,
     ...extra,
   };
+  if (cookie !== null) {
+    result.cookie = ADMIN_SESSION_COOKIE + "=" + cookie;
+  }
+  return result;
 }
 
 async function postGroup(
@@ -208,7 +231,7 @@ describe("CX-115 geschuetzte Gruppen-Anlageroute", () => {
     const app = await buildApp();
     const cookie = await loginCookie(app);
 
-    const response = await postGroup(app, headers("Admin", cookie), {
+    const response = await postGroup(app, headers(cookie), {
       name: "  SYN-CX115 Alpha  ",
     });
 
@@ -243,7 +266,7 @@ describe("CX-115 geschuetzte Gruppen-Anlageroute", () => {
     expect(audit.rowCount).toBe(1);
     expect(audit.rows[0]).toMatchObject({
       actor_type: "admin",
-      actor_id: ADMIN_ID,
+      actor_id: LEGACY_ADMIN_PRINCIPAL_ID,
       action: "taxi_group.created",
       target_type: "taxi_group",
       target_id: body.id,
@@ -254,10 +277,21 @@ describe("CX-115 geschuetzte Gruppen-Anlageroute", () => {
   it("verhindert die Anlage vollstaendig ohne Sitzung, ohne Schreibrecht und bei verletztem CSRF-Schutz", async () => {
     const app = await buildApp();
     const cookie = await loginCookie(app);
+    const operatorCookie = await loginCookie(app, OPERATOR_USERNAME);
+
+    // Die echte Operatorsitzung liefert die Rolle Operator; groups.read ist
+    // erlaubt, groups.write nicht. Das belegt die unveraenderte
+    // Authentifizierungskette vor der eigentlichen Verweigerung.
+    const operatorRead = await app.inject({
+      method: "GET",
+      url: GROUPS_URL,
+      headers: headers(operatorCookie),
+    });
+    expect(operatorRead.statusCode).toBe(200);
 
     const withoutSession = await postGroup(
       app,
-      { host: HOST, ...JSON_HEADERS },
+      headers(null),
       { name: "SYN-CX115 Ohne Sitzung" },
     );
     expect(withoutSession.statusCode).toBe(401);
@@ -265,7 +299,7 @@ describe("CX-115 geschuetzte Gruppen-Anlageroute", () => {
 
     const withoutWrite = await postGroup(
       app,
-      headers("Operator", cookie),
+      headers(operatorCookie),
       { name: "SYN-CX115 Ohne Schreibrecht" },
     );
     expect(withoutWrite.statusCode).toBe(403);
@@ -273,7 +307,7 @@ describe("CX-115 geschuetzte Gruppen-Anlageroute", () => {
 
     const foreignOrigin = await postGroup(
       app,
-      headers("Admin", cookie, { origin: FOREIGN_ORIGIN }),
+      headers(cookie, { origin: FOREIGN_ORIGIN }),
       { name: "SYN-CX115 Fremder Ursprung" },
     );
     expect(foreignOrigin.statusCode).toBe(403);
@@ -286,7 +320,7 @@ describe("CX-115 geschuetzte Gruppen-Anlageroute", () => {
   it("weist leeren und ueberlangen Namen, Zusatzfelder und doppelte Namen bereinigt ohne Folgedatensaetze ab", async () => {
     const app = await buildApp();
     const cookie = await loginCookie(app);
-    const adminHeaders = headers("Admin", cookie);
+    const adminHeaders = headers(cookie);
 
     const invalid: ReadonlyArray<{
       label: string;
@@ -301,7 +335,7 @@ describe("CX-115 geschuetzte Gruppen-Anlageroute", () => {
       },
       {
         label: "Betreiberfeld",
-        payload: { name: "SYN-CX115 Betreiber", operator_id: OPERATOR_ID },
+        payload: { name: "SYN-CX115 Betreiber", operator_id: operatorId },
       },
     ];
 
