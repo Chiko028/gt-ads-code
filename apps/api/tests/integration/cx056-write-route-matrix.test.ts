@@ -16,7 +16,7 @@ import { CONFIG_DEFAULTS, type AppConfig } from "../../src/config.js";
 import { hashPassword } from "../../src/crypto/password.js";
 import { generateAccessToken, hashToken } from "../../src/crypto/tokens.js";
 import { migrateUp } from "../../src/db/migrate.js";
-import { hasAction, type AccessAction } from "../../src/http/accessPolicy.js";
+import type { AccessAction } from "../../src/http/accessPolicy.js";
 import { getRoutePolicyInventory } from "../../src/http/authorization.js";
 import { createServer } from "../../src/http/server.js";
 import type { MediaUploadDeps } from "../../src/http/mediaUpload.js";
@@ -396,6 +396,48 @@ interface WriteRoute {
   readonly action: AccessAction;
 }
 
+/**
+ * Unabhaengige Erwartungsmatrix der Operatorrechte, gepflegt als reine
+ * Testtabelle. Sie wird bewusst nicht aus hasAction abgeleitet: eine
+ * versehentliche Freigabe in accessPolicy.ts (etwa devices.inventory) macht
+ * genau den zugehoerigen Negativfall rot, statt ihn stillschweigend
+ * verschwinden zu lassen.
+ */
+const OPERATOR_WRITE_RIGHTS: Readonly<
+  Partial<Record<AccessAction, boolean>>
+> = Object.freeze({
+  "session.logout": true,
+  "devices.read": true,
+  "devices.inventory": false,
+  "devices.revoke": false,
+  "registrationCodes.manage": false,
+  "media.read": true,
+  "media.write": true,
+  "campaigns.read": true,
+  "campaigns.write": true,
+  "taxi.pause": true,
+  "taxi.activation": false,
+  "tablet.activation": false,
+  "audit.read": false,
+  "security.manage": false,
+  "config.read": true,
+  "config.write": false,
+  "groups.write": false,
+  "groups.read": true,
+  "operators.manage": false,
+  "operations.read": false,
+  "operations.manage": false,
+});
+
+function operatorMayWrite(action: AccessAction): boolean {
+  const expected = OPERATOR_WRITE_RIGHTS[action];
+  expect(
+    expected,
+    "keine unabhaengige Operator-Erwartung fuer Aktion " + action,
+  ).toBeDefined();
+  return expected === true;
+}
+
 function humanWriteRoutes(app: FastifyInstance): WriteRoute[] {
   return getRoutePolicyInventory(app)
     .filter((record) => WRITE_METHODS.has(record.method))
@@ -513,7 +555,7 @@ function injectWrite(
 }
 
 describe("CX-056 Matrix der Verwaltungs-Schreibrouten", () => {
-  it("leitet jede POST/PUT/PATCH/DELETE-Route aus der tatsaechlichen Registrierung ab und verweigert ohne Sitzung 401 sowie unzulaessigen Operatorrollen 403 ohne Fachmutation", async () => {
+  it("leitet jede POST/PUT/PATCH/DELETE-Route aus der tatsaechlichen Registrierung ab und verweigert ohne Sitzung 401 sowie unzulaessigen Operatorrollen 403 ohne Fachmutation, geprueft gegen eine unabhaengige Rechte-Matrix", async () => {
     const discoveryApp = await buildApp("Admin");
     const routes = humanWriteRoutes(discoveryApp);
     const keys = routes.map((route) => route.method + " " + route.url);
@@ -536,6 +578,30 @@ describe("CX-056 Matrix der Verwaltungs-Schreibrouten", () => {
     );
     expect(routes.length).toBeGreaterThanOrEqual(17);
 
+    // Admin-Exklusivitaet unabhaengig von der produktiven Rechtepruefung:
+    // Diese registrierten Schreibrouten sind fuer Operator ausdruecklich
+    // verboten und muessen in der Matrix als solche erwartet werden.
+    expect(
+      routes
+        .filter((route) => !operatorMayWrite(route.action))
+        .map((route) => route.method + " " + route.url),
+    ).toEqual(
+      expect.arrayContaining([
+        "POST /v1/admin/operators",
+        "POST /v1/admin/operators/:operatorId/disable",
+        "POST /v1/admin/registration-codes",
+        "DELETE /v1/admin/registration-codes/:id",
+        "POST /v1/admin/devices/:id/revoke",
+        "PATCH /v1/admin/inventory/:tabletId",
+        "POST /v1/admin/taxis/:taxiId/activation",
+        "PATCH /v1/admin/tablets/:tabletId/activation",
+        "PATCH /v1/admin/taxis/:taxiId/config",
+        "POST /v1/admin/taxi-groups",
+        "PATCH /v1/admin/taxi-groups/:id",
+        "PUT /v1/admin/taxis/:id/groups",
+      ]),
+    );
+
     const noSessionApp = await buildApp(null);
     const operatorApp = await buildApp("Operator");
     const operatorCookie = await loginCookie(operatorApp);
@@ -551,9 +617,11 @@ describe("CX-056 Matrix der Verwaltungs-Schreibrouten", () => {
         beforeAnonymous,
       );
 
-      if (!hasAction("Operator", route.action)) {
+      if (!operatorMayWrite(route.action)) {
         const beforeOperator = await snapshotDomainState();
-        const denied = await injectWrite(operatorApp, route, { cookie: operatorCookie });
+        const denied = await injectWrite(operatorApp, route, {
+          cookie: operatorCookie,
+        });
         expect(
           denied.statusCode,
           "Operator darf nicht schreiben: " + label,
@@ -563,9 +631,23 @@ describe("CX-056 Matrix der Verwaltungs-Schreibrouten", () => {
           await snapshotDomainState(),
           "403 darf nicht mutieren: " + label,
         ).toEqual(beforeOperator);
+      } else {
+        // Gegenprobe der Matrix: eine dort erlaubte Operatoraktion darf nicht
+        // als Rechteverweigerung enden (fachliche Fehler wie 404 sind zulaessig).
+        const allowed = await injectWrite(operatorApp, route, {
+          cookie: operatorCookie,
+        });
+        expect(
+          allowed.statusCode,
+          "Operator muss laut Matrix schreiben duerfen: " + label,
+        ).not.toBe(403);
+        // 204-Antworten (etwa Logout) tragen keinen JSON-Koerper.
+        if (allowed.body.length > 0) {
+          expect(allowed.json()?.error?.code).not.toBe("forbidden");
+        }
       }
     }
-  });
+  }, 20_000);
 });
 
 const mediaStubCalls: unknown[] = [];

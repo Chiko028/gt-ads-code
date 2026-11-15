@@ -540,6 +540,46 @@ describe("CX-130 geschuetzte Inventaraenderung", () => {
       target_id: deviceId,
       details: { revision: 2 },
     });
+
+    // Derselbe Loesch-PATCH als Admin bleibt wirksam: Die zuvor verweigerte
+    // Aenderung leert die Felder, erhoeht die Revision und wird auditiert;
+    // Geraeteidentitaet und Aktivzustand bleiben unberuehrt.
+    const adminCleared = await patchInventory(
+      app,
+      headers(adminCookie),
+      deviceId,
+      {
+        serial_number: null,
+        device_type: "SYN-Geraetetyp",
+        replacement_note: null,
+        revision: 2,
+      },
+    );
+    expect(adminCleared.statusCode).toBe(200);
+    expect(adminCleared.json()).toEqual({
+      id: deviceId,
+      serial_number: null,
+      device_type: "SYN-Geraetetyp",
+      replacement_note: null,
+      revision: 3,
+    });
+    expect(await inventoryRow(deviceId)).toEqual({
+      device_id: deviceId,
+      serial_number: null,
+      device_type: "SYN-Geraetetyp",
+      replacement_note: null,
+      revision: 3,
+    });
+    expect(await deviceIdentity(deviceId)).toEqual(identityBefore);
+    expect(await adminState(deviceId)).toEqual({ active: false, revision: 5 });
+
+    const clearedAudits = await inventoryAudits();
+    expect(clearedAudits).toHaveLength(3);
+    expect(clearedAudits[2]).toMatchObject({
+      actor_id: LEGACY_ADMIN_PRINCIPAL_ID,
+      target_id: deviceId,
+      details: { revision: 3, changed_fields: ["serial_number"] },
+    });
   });
 
   it("verweigert fehlende Sitzung, gueltigen Geraetenachweis und Operator-Sitzung sowie fremde Felder und ueberlange Texte ohne Schreibwirkung", async () => {
