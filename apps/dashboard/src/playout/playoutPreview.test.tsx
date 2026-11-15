@@ -227,6 +227,54 @@ describe("CX-044 Ausspielungs-Vorschau", () => {
     expect(within(previewRegion).queryByRole("form")).toBeNull();
   });
 
+  it("zeigt bei der tatsaechlichen API-Leerantwort den Leerzustand statt eines Fehlers", async () => {
+    const user = userEvent.setup();
+    const server = createTransport((call) => {
+      if (call.method === "GET" && call.path === "/v1/admin/taxis") {
+        return json(200, {
+          items: [wireTaxi(taxi({ id: "t-1", displayName: "Taxi Eins" }))],
+        });
+      }
+      if (
+        call.method === "GET" &&
+        call.path === "/v1/admin/taxis/t-1/playout-preview"
+      ) {
+        // Tatsaechliche Leerantwort der API (siehe apps/api/src/http/playoutPreview.ts).
+        return json(200, {
+          taxi_id: "t-1",
+          manifest_version: null,
+          entries: [],
+        });
+      }
+      throw new Error("Unerwarteter Aufruf: " + call.method + " " + call.path);
+    });
+
+    renderPreview(server.transport);
+
+    const select = await screen.findByRole("combobox", { name: "Taxi" });
+    await waitFor(() => {
+      expect(
+        (select as HTMLSelectElement).querySelectorAll("option").length,
+      ).toBe(2);
+    });
+    await user.selectOptions(select, "t-1");
+
+    expect(
+      await screen.findByText("Noch kein veröffentlichtes Manifest."),
+    ).toBeTruthy();
+    // Kein Fehlerzustand: weder Alarm noch Fehlertext.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      screen.queryByText(/ungültige Antwort|Ungültige Antwort/),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("table", { name: "Geordnete Einträge" }),
+    ).toBeNull();
+    expect(
+      server.count("GET", "/v1/admin/taxis/t-1/playout-preview"),
+    ).toBe(1);
+  });
+
   it("zeigt einen Ladefehler und lässt eine verspätete Antwort des vorherigen Taxis die aktuelle Auswahl nicht überschreiben", async () => {
     const user = userEvent.setup();
     const pendingA: Array<Deferred<Response>> = [];

@@ -409,7 +409,13 @@ function parsePlayoutPreview(value: unknown): PlayoutPreview {
     throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
   }
   const taxiId = requiredString(body, ["taxi_id", "taxiId"]);
-  const rawVersion = body.manifest_version ?? body.manifestVersion;
+  // Der explizite Leerzustand der API ist manifest_version: null. Ein
+  // ??-Fallback wuerde null als fehlendes Feld behandeln und die gueltige
+  // Leerantwort als invalid_response verwerfen; nur undefined faellt zurueck.
+  const rawVersion =
+    body.manifest_version === undefined
+      ? body.manifestVersion
+      : body.manifest_version;
   if (
     rawVersion !== null &&
     (typeof rawVersion !== "string" || rawVersion.trim() === "")
