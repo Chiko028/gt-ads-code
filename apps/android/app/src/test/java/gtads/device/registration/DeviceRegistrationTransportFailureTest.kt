@@ -85,11 +85,12 @@ class DeviceRegistrationTransportFailureTest(private val scenario: TransportScen
         when (scenario) {
             TransportScenario.TIMEOUT -> {
                 assertEquals(TransportResult.Failure(ErrorCode.TIMEOUT), result)
-                assertEquals(0, fake.responseCodeCalls)
+                // Der Fehler entsteht in getResponseCode(); genau ein Aufruf, keine Wiederholung.
+                assertEquals(1, fake.responseCodeCalls)
             }
             TransportScenario.IO_FAILURE -> {
                 assertEquals(TransportResult.Failure(ErrorCode.NETWORK), result)
-                assertEquals(0, fake.responseCodeCalls)
+                assertEquals(1, fake.responseCodeCalls)
             }
             TransportScenario.TIMEOUT_ON_WRITE -> {
                 assertEquals(TransportResult.Failure(ErrorCode.TIMEOUT), result)
