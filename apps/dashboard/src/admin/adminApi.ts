@@ -124,6 +124,8 @@ const NETWORK_MESSAGE =
 const INVALID_RESPONSE_MESSAGE = "Die Antwort des Servers war ungültig.";
 const UNAUTHORIZED_MESSAGE =
   "Anmeldung fehlgeschlagen. Bitte das Passwort prüfen.";
+const SESSION_EXPIRED_MESSAGE =
+  "Die Sitzung ist abgelaufen. Bitte erneut anmelden.";
 const FORBIDDEN_MESSAGE = "Die Aktion ist nicht erlaubt.";
 const NOT_FOUND_MESSAGE = "Der Eintrag wurde nicht gefunden.";
 const INVALID_REQUEST_MESSAGE = "Die Anfrage ist ungültig.";
@@ -142,7 +144,10 @@ function parseRetryAfter(value: string | null): number | null {
   return Number.isSafeInteger(seconds) ? seconds : null;
 }
 
-function errorFromResponse(response: Response): AdminApiError {
+function errorFromResponse(
+  response: Response,
+  protectedOperation: boolean,
+): AdminApiError {
   const status = response.status;
   if (status === 429) {
     const retryAfterSeconds = parseRetryAfter(
@@ -160,7 +165,11 @@ function errorFromResponse(response: Response): AdminApiError {
     );
   }
   if (status === 401) {
-    return new AdminApiError("unauthorized", UNAUTHORIZED_MESSAGE, { status });
+    return new AdminApiError(
+      "unauthorized",
+      protectedOperation ? SESSION_EXPIRED_MESSAGE : UNAUTHORIZED_MESSAGE,
+      { status },
+    );
   }
   if (status === 403) {
     return new AdminApiError("forbidden", FORBIDDEN_MESSAGE, { status });
@@ -168,7 +177,7 @@ function errorFromResponse(response: Response): AdminApiError {
   if (status === 404) {
     return new AdminApiError("not_found", NOT_FOUND_MESSAGE, { status });
   }
-  if (status === 400) {
+  if (status === 400 || status === 422) {
     return new AdminApiError("invalid_request", INVALID_REQUEST_MESSAGE, {
       status,
     });
@@ -360,12 +369,31 @@ function joinUrl(baseUrl: string, path: string): string {
   return base + path;
 }
 
+/** Optionen eines einzelnen Aufrufs der Transport-Abstraktion. */
+export interface ApiRequestOptions {
+  readonly method?: "GET" | "POST" | "DELETE";
+  readonly body?: unknown;
+  /** Nur geschuetzte Operationen loesen die zentrale 401-Behandlung aus. */
+  readonly protectedOperation?: boolean;
+}
+
 /**
- * Kleiner HTTP-Client fuer die Admin-API (API-VERTRAG.md v0.1.0, Abschnitte
- * 1, 5 und 7). Der Client verwaltet keine Tokens, wertet keine Cookies aus
- * und wiederholt schreibende Requests nie automatisch.
+ * Gemeinsamer HTTP-Transport der Dashboard-Clients. Er kapselt Netzwerk,
+ * same-origin-Cookies, zentrale Fehleruebersetzung, Sitzungsgeneration und
+ * JSON-Auswertung; die Clients liefern nur Pfad, Methode und Validierung.
  */
-export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
+export interface ApiTransport {
+  request(path: string, init?: ApiRequestOptions): Promise<Response>;
+  json<T>(
+    path: string,
+    init: ApiRequestOptions,
+    parse: (value: unknown) => T,
+  ): Promise<T>;
+}
+
+export function createApiTransport(
+  options: CreateAdminApiOptions = {},
+): ApiTransport {
   const fetchImpl: FetchLike =
     options.fetchImpl ??
     ((input, init) => {
@@ -377,10 +405,11 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
 
   async function request(
     path: string,
-    method: "GET" | "POST" | "DELETE",
-    body: unknown,
-    protectedOperation: boolean,
+    initOptions: ApiRequestOptions = {},
   ): Promise<Response> {
+    const method = initOptions.method ?? "GET";
+    const body = initOptions.body;
+    const protectedOperation = initOptions.protectedOperation === true;
     // Bereits beim Requeststart erfassen: eine spaete 401 einer alten
     // Sitzung darf eine inzwischen neu angemeldete Sitzung nicht beenden.
     const sessionGeneration = getSessionGeneration?.();
@@ -416,9 +445,38 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
           onUnauthorized?.();
         }
       }
-      throw errorFromResponse(response);
+      throw errorFromResponse(response, protectedOperation);
     }
     return response;
+  }
+
+  return {
+    request,
+    async json<T>(
+      path: string,
+      initOptions: ApiRequestOptions,
+      parse: (value: unknown) => T,
+    ): Promise<T> {
+      return parse(await readJson(await request(path, initOptions)));
+    },
+  };
+}
+
+/**
+ * Kleiner HTTP-Client fuer die Admin-API (API-VERTRAG.md v0.1.0, Abschnitte
+ * 1, 5 und 7). Der Client verwaltet keine Tokens, wertet keine Cookies aus
+ * und wiederholt schreibende Requests nie automatisch.
+ */
+export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
+  const transport = createApiTransport(options);
+
+  async function request(
+    path: string,
+    method: "GET" | "POST" | "DELETE",
+    body: unknown,
+    protectedOperation: boolean,
+  ): Promise<Response> {
+    return transport.request(path, { method, body, protectedOperation });
   }
 
   return {

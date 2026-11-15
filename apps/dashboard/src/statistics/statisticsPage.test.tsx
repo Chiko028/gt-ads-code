@@ -276,6 +276,47 @@ describe("CX-050 Statistikseite", () => {
     ).toBeTruthy();
   });
 
+  it("zeigt den abweichenden Geltungsbereich der Sync-Fehler neben der Verfügbarkeit", async () => {
+    const { client } = captureClient(async () =>
+      statisticsResponse({
+        // Verfuegbarkeit gilt fuer Gerät und Taxi, die Sync-Fehler dagegen
+        // fuer Gerät oder Taxi: beide Geltungsbereiche muessen sichtbar sein.
+        qualityScope: "device_taxi_time",
+        deviceQuality: [
+          qualityRow({
+            deviceId: "Geltungsbereich-Geraet",
+            syncErrors: 4,
+            syncErrorScope: "device_or_taxi_time",
+          }),
+        ],
+      }),
+    );
+    await renderPage(client);
+
+    await userEvent.setup().click(
+      screen.getByRole("button", { name: "Anwenden" }),
+    );
+
+    const qualityRegion = await screen.findByRole("region", {
+      name: "Gerätequalität und Sync-Fehler",
+    });
+    expect(
+      within(qualityRegion).getByText(
+        /Geltungsbereich der Verfügbarkeit: Gerät und Taxi im gewählten Zeitraum \(device_taxi_time\)/,
+      ),
+    ).toBeTruthy();
+
+    const row = within(qualityRegion).getByRole("row", {
+      name: /Geltungsbereich-Geraet/,
+    });
+    const cells = within(row).getAllByRole("cell");
+    expect(cells[5]!.textContent).toContain("4");
+    expect(cells[5]!.textContent).toMatch(
+      /Geltungsbereich: Gerät oder Taxi im gewählten Zeitraum \(device_or_taxi_time\)/,
+    );
+    expect(cells[2]!.textContent).not.toContain("device_or_taxi_time");
+  });
+
   it("ignoriert eine ältere Antwort nach zwei schnellen Anfragen und zeigt bei Fehlern keine alten Zahlen", async () => {
     const gate1 = deferred<StatisticsResponse>();
     const gate2 = deferred<StatisticsResponse>();

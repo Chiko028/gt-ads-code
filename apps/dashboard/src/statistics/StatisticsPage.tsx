@@ -148,6 +148,16 @@ function qualityScopeLabel(scope: string): string {
     : scope;
 }
 
+/** Geltungsbereich der Sync-Fehler; kann vom Qualitätsbereich abweichen. */
+function syncErrorScopeLabel(scope: string): string {
+  if (scope === "") {
+    return "unbekannt";
+  }
+  return scope === "device_or_taxi_time"
+    ? "Gerät oder Taxi im gewählten Zeitraum (device_or_taxi_time)"
+    : scope;
+}
+
 function missingDayReason(reason: string): string {
   if (reason === "no_raw_evidence") {
     return "keine Rohdaten vorhanden";
@@ -243,7 +253,13 @@ function QualityTable({
             </td>
             <td>{formatDuration(row.observedMs)}</td>
             <td>{formatDuration(row.technicalFaultMs)}</td>
-            <td>{row.syncErrors}</td>
+            <td>
+              <span>{row.syncErrors}</span>
+              <span>
+                {" "}
+                – Geltungsbereich: {syncErrorScopeLabel(row.syncErrorScope)}
+              </span>
+            </td>
           </tr>
         ))}
       </tbody>
@@ -546,8 +562,10 @@ export function StatisticsPage({
           <section aria-labelledby="stats-quality-heading">
             <h3 id="stats-quality-heading">Gerätequalität und Sync-Fehler</h3>
             <p>
-              Getrennt von den Wiedergaben. Geltungsbereich:{" "}
-              {qualityScopeLabel(result.data.qualityScope)}.
+              Getrennt von den Wiedergaben. Geltungsbereich der
+              Verfügbarkeit: {qualityScopeLabel(result.data.qualityScope)}.
+              Der Geltungsbereich der Sync-Fehler kann davon abweichen und
+              steht in der Spalte „Sync-Fehler“.
             </p>
             <QualityTable rows={result.data.deviceQuality} />
           </section>

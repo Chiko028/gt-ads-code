@@ -3,12 +3,12 @@
  * Statistikroute aus CX-049.
  *
  * Der Client nutzt ausschliesslich die vorhandene same-origin-Cookie-Sitzung
- * ueber die bestehende FetchLike-Abstraktion. Er aggregiert nichts im Browser
- * und veraendert die Antwortsemantik nicht: Wiedergaben und Geraetequalitaet
- * bleiben getrennt, null bleibt unbekannt.
+ * ueber den gemeinsamen Transport der bestehenden Client-Abstraktion. Er
+ * aggregiert nichts im Browser und veraendert die Antwortsemantik nicht:
+ * Wiedergaben und Geraetequalitaet bleiben getrennt, null bleibt unbekannt.
  */
-import type { FetchLike } from "../admin/adminApi";
-import { AdminApiError, isAdminApiError } from "../admin/adminApi";
+import type { ApiTransport, FetchLike } from "../admin/adminApi";
+import { AdminApiError, createApiTransport } from "../admin/adminApi";
 
 /** Relativer Pfad zur vorhandenen Statistikroute (CX-049). */
 export const STATISTICS_API_PATH = "/admin/statistics";
@@ -93,50 +93,18 @@ export interface StatisticsClient {
 }
 
 export interface StatisticsClientOptions {
+  /**
+   * Vorhandener Transport der Client-Abstraktion. Ohne Angabe wird die
+   * gemeinsame Transport-Abstraktion mit den folgenden Optionen erzeugt.
+   */
+  readonly transport?: ApiTransport;
   readonly fetchImpl?: FetchLike;
   readonly baseUrl?: string;
   /** Wird ausschliesslich bei einer 401 der geschuetzten Route aufgerufen. */
   readonly onUnauthorized?: () => void;
 }
 
-const NETWORK_MESSAGE =
-  "Der Server ist nicht erreichbar. Bitte die Verbindung prüfen.";
 const INVALID_RESPONSE_MESSAGE = "Die Antwort des Servers war ungültig.";
-const UNAUTHORIZED_MESSAGE =
-  "Die Sitzung ist abgelaufen. Bitte erneut anmelden.";
-const FORBIDDEN_MESSAGE = "Die Aktion ist nicht erlaubt.";
-const NOT_FOUND_MESSAGE = "Der Eintrag wurde nicht gefunden.";
-const INVALID_REQUEST_MESSAGE = "Die Anfrage wurde vom Server abgelehnt.";
-const RATE_LIMITED_MESSAGE =
-  "Zu viele Anfragen. Bitte später erneut versuchen.";
-const SERVER_MESSAGE =
-  "Der Server hat einen Fehler gemeldet. Bitte später erneut versuchen.";
-
-function joinUrl(baseUrl: string, path: string): string {
-  const base = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
-  return base + path;
-}
-
-function statusError(status: number): AdminApiError {
-  if (status === 401) {
-    return new AdminApiError("unauthorized", UNAUTHORIZED_MESSAGE, { status });
-  }
-  if (status === 403) {
-    return new AdminApiError("forbidden", FORBIDDEN_MESSAGE, { status });
-  }
-  if (status === 404) {
-    return new AdminApiError("not_found", NOT_FOUND_MESSAGE, { status });
-  }
-  if (status === 429) {
-    return new AdminApiError("rate_limited", RATE_LIMITED_MESSAGE, { status });
-  }
-  if (status === 400 || status === 422) {
-    return new AdminApiError("invalid_request", INVALID_REQUEST_MESSAGE, {
-      status,
-    });
-  }
-  return new AdminApiError("server", SERVER_MESSAGE, { status });
-}
 
 function recordOf(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -302,27 +270,6 @@ export function parseStatisticsResponse(value: unknown): StatisticsResponse {
     plays: arrayOf(body.plays).map(parsePlayRow),
     deviceQuality: arrayOf(body.device_quality).map(parseQualityRow),
   };
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  let text: string;
-  try {
-    text = await response.text();
-  } catch {
-    throw new AdminApiError("network", NETWORK_MESSAGE);
-  }
-  if (text.trim() === "") {
-    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE, {
-      status: response.status,
-    });
-  }
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE, {
-      status: response.status,
-    });
-  }
 }
 
 function queryString(request: StatisticsRequest): string {
@@ -517,38 +464,25 @@ export function normalizeStatisticsResponse(
 export function createStatisticsClient(
   options: StatisticsClientOptions = {},
 ): StatisticsClient {
-  const baseUrl = options.baseUrl ?? "/v1";
-  const fetchImpl: FetchLike =
-    options.fetchImpl ??
-    ((input, init) => {
-      return globalThis.fetch(input, init);
+  const transport =
+    options.transport ??
+    createApiTransport({
+      fetchImpl: options.fetchImpl,
+      baseUrl: options.baseUrl,
+      onUnauthorized: options.onUnauthorized,
     });
 
   return {
-    async getStatistics(request: StatisticsRequest): Promise<StatisticsResponse> {
-      let response: Response;
-      try {
-        response = await fetchImpl(
-          joinUrl(baseUrl, STATISTICS_API_PATH) + "?" + queryString(request),
-          {
-            method: "GET",
-            credentials: "same-origin",
-            headers: { Accept: "application/json" },
-          },
-        );
-      } catch (error) {
-        if (isAdminApiError(error)) {
-          throw error;
-        }
-        throw new AdminApiError("network", NETWORK_MESSAGE);
-      }
-      if (!response.ok) {
-        if (response.status === 401) {
-          options.onUnauthorized?.();
-        }
-        throw statusError(response.status);
-      }
-      return parseStatisticsResponse(await readJson(response));
+    async getStatistics(
+      request: StatisticsRequest,
+    ): Promise<StatisticsResponse> {
+      // Transport, Fehleruebersetzung, 401-Behandlung und JSON-Auswertung
+      // stammen unveraendert aus der gemeinsamen Client-Abstraktion.
+      return transport.json(
+        STATISTICS_API_PATH + "?" + queryString(request),
+        { method: "GET", protectedOperation: true },
+        parseStatisticsResponse,
+      );
     },
   };
 }
