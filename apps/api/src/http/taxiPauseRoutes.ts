@@ -11,16 +11,16 @@
  * eingetragen. Damit kann CX-015 Operatorrechte ergaenzen, ohne diese Route
  * umzubauen.
  *
- * PFADBLOCKER (CX-052): Der vorhandene CX-012-Kern muesste fuer eine
- * Request-ID im Audit um SetDesiredPauseInput, Normalisierung und den
- * Audit-Datensatz in apps/api/src/modules/remoteControl/ erweitert werden.
- * Dieser Kern liegt ausserhalb der fuer CX-052 freigegebenen Pfade
- * (apps/api/src/http/, apps/api/src/modules/pause/). Die Request-ID wird
- * deshalb hier nicht an den Kern uebergeben; die Anbindung bleibt bis zur
- * ausdruecklichen Freigabe des tatsaechlichen Kernpfads blockiert.
+ * Request-ID im Audit: Der vorhandene CX-012-Kern kennt keine Request-ID.
+ * Der Adapter reicht die Fastify-Request-ID ueber dessen vorhandenen
+ * Audit-Writer-Hook in denselben Audit-Datensatz und dieselbe Transaktion
+ * weiter (modules/pause/auditWriter.ts). Der Kern unter modules/remoteControl/
+ * bleibt unveraendert; eine Kernaenderung ausserhalb der freigegebenen Pfade
+ * ist dafuer nicht noetig.
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ApiError } from "./errors.js";
+import { runWithRequestId } from "../modules/pause/index.js";
 import { registerJsonRoute } from "./jsonContract.js";
 import {
   createAdminSessionMiddleware,
@@ -132,13 +132,15 @@ function registerAction(
 
       let result: Awaited<ReturnType<RemoteControlService["setDesiredPause"]>>;
       try {
-        result = await deps.service.setDesiredPause({
-          actor: { id: actorIdOf(request), type: "admin" },
-          taxiId,
-          commandId: body.command_id,
-          expectedRevision: body.expected_revision,
-          desiredPaused,
-        });
+        result = await runWithRequestId(request.id, () =>
+          deps.service.setDesiredPause({
+            actor: { id: actorIdOf(request), type: "admin" },
+            taxiId,
+            commandId: body.command_id,
+            expectedRevision: body.expected_revision,
+            desiredPaused,
+          }),
+        );
       } catch (error) {
         mapPauseError(error);
       }

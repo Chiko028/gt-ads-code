@@ -3,3 +3,5 @@ export {
   createSqlTaxiDirectory,
   type SqlTaxiDirectory,
 } from "./sqlTaxiDirectory.js";
+export { createRequestAuditWriter } from "./auditWriter.js";
+export { currentRequestId, runWithRequestId } from "./requestContext.js";

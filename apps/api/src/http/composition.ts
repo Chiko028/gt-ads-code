@@ -64,7 +64,10 @@ import { registerDeviceCommandRoutes } from "./deviceCommands.js";
 import { registerStatusRoute } from "./statusRoute.js";
 import { registerStatisticsRoute } from "./statisticsRoute.js";
 import { registerCustomerReportRoute } from "./customerReportRoute.js";
-import { createSqlTaxiDirectory } from "../modules/pause/index.js";
+import {
+  createRequestAuditWriter,
+  createSqlTaxiDirectory,
+} from "../modules/pause/index.js";
 import { createRemoteControlService } from "../modules/remoteControl/index.js";
 
 export interface HttpCompositionDeps {
@@ -171,6 +174,7 @@ export function registerHttpComposition(
       pool: deps.pool,
       directory: taxiDirectory,
       now: deps.now,
+      auditWriter: createRequestAuditWriter(),
     });
     registerTaxiPauseRoutes(scope, {
       service: remoteControlService,
