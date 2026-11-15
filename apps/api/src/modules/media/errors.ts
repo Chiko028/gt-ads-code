@@ -44,12 +44,12 @@ export class MediaNotFoundError extends MediaError {
   readonly mediaId: string;
 }
 
-/** Das Medium wird noch von einer aktiven Kampagne verwendet. */
+/** Das Medium wird noch von einer aktiven Kampagne oder einem Manifest verwendet. */
 export class MediaInUseError extends MediaError {
   constructor(id: string) {
     super(
       "media_in_use",
-      "Das Medium wird von einer aktiven Kampagne verwendet.",
+      "Das Medium wird von einer aktiven Kampagne oder einem veroeffentlichten Manifest verwendet.",
     );
     this.name = "MediaInUseError";
     this.mediaId = id;

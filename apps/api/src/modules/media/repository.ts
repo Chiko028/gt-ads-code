@@ -379,6 +379,49 @@ export class MediaRepository {
     return result.rows[0]?.active === true;
   }
 
+  /**
+   * Prueft eine Referenz im aktuell veroeffentlichten Manifest-Artefakt.
+   * Auch der GT-Ads-Fallback erzeugt keine Kampagne, seine Medienreferenz
+   * steht aber in der unveraenderlichen Manifest-Nutzlast. Ohne diese Pruefung
+   * koennte das Platzhaltermedium trotz bestehender Auslieferungsreferenz
+   * geloescht werden. Aeltere, nicht mehr aktuelle Artefakte blockieren die
+   * logische Loeschung nicht; ihre Bytes bleiben gemaess CX-078 lesbar. Das
+   * Manifest-Schema wird additiv angelegt; fehlt es, gibt es keine Referenz.
+   */
+  async hasManifestReference(
+    executor: SqlQueryable,
+    id: string,
+  ): Promise<boolean> {
+    const table = await executor.query<{ present: boolean }>(
+      [
+        "select to_regclass('taxi_manifest_state') is not null",
+        "   and to_regclass('taxi_manifest_artifacts') is not null as present",
+      ].join("\n"),
+    );
+    if (table.rows[0]?.present !== true) {
+      return false;
+    }
+    const result = await executor.query<{ referenced: boolean }>(
+      [
+        "select exists (",
+        "  select 1",
+        "    from taxi_manifest_state s",
+        "    join taxi_manifest_artifacts a",
+        "      on a.taxi_id = s.taxi_id and a.version = s.current_version",
+        "   where exists (",
+        "     select 1",
+        "       from jsonb_array_elements(",
+        "         convert_from(decode(a.payload_base64, 'base64'), 'UTF8')::jsonb -> 'entries'",
+        "       ) as entry",
+        "      where entry->>'mediaId' = $1",
+        "   )",
+        ") as referenced",
+      ].join("\n"),
+      [id],
+    );
+    return result.rows[0]?.referenced === true;
+  }
+
   /** Setzt deleted_at genau einmal und liefert den gespeicherten Zeitpunkt. */
   async markDeleted(
     executor: SqlQueryable,

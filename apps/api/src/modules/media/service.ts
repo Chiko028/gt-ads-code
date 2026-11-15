@@ -341,10 +341,12 @@ export class MediaService {
    *
    * Die Zeile wird mit FOR UPDATE gesperrt; Zuordnung und Aktivierung halten
    * dieselbe Zeile mit FOR SHARE. Markierung und media.deleted-Audit laufen in
-   * genau einer Transaktion. Aktive, nicht archivierte Kampagnen sperren die
-   * Loeschung. Ein bereits markiertes Medium liefert dasselbe Ergebnis ohne
-   * zweites Audit; unbekannte oder nicht bereite Medien gelten als nicht
-   * gefunden. Die Bytes bleiben lesbar, Listen blenden sie aus.
+   * genau einer Transaktion. Aktive, nicht archivierte Kampagnen und
+   * aktuell veroeffentlichte Manifest-Referenzen sperren die Loeschung. Ein
+   * bereits markiertes Medium liefert dasselbe Ergebnis ohne zweites Audit;
+   * unbekannte
+   * oder nicht bereite Medien gelten als nicht gefunden. Die Bytes bleiben
+   * lesbar, Listen blenden sie aus.
    */
   async deleteMedia(
     id: string,
@@ -370,6 +372,12 @@ export class MediaService {
         };
       }
       if (await this.repository.hasActiveCampaign(client, id)) {
+        throw new MediaInUseError(id);
+      }
+      // CX-045: Der GT-Ads-Fallback erzeugt keine Kampagne, ist aber im
+      // aktuell veroeffentlichten Manifest referenziert. Diese Referenz
+      // schuetzt das Platzhaltermedium genauso vor der Loeschung.
+      if (await this.repository.hasManifestReference(client, id)) {
         throw new MediaInUseError(id);
       }
 

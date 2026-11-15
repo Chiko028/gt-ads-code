@@ -1,5 +1,6 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
@@ -12,7 +13,11 @@ import {
   it,
 } from "vitest";
 import { ensureCampaignSchema } from "../campaigns/schema.js";
-import { issueDownloadTicket } from "../playout/download.js";
+import { createMediaService } from "../media/service.js";
+import {
+  issueDownloadTicket,
+  processDownloadRequest,
+} from "../playout/download.js";
 import { verifySignedManifest } from "../playout/manifest.js";
 import {
   FALLBACK_CAMPAIGN_ID,
@@ -38,6 +43,7 @@ const MIGRATIONS = [
 
 let pool: Pool | null = null;
 let schemaName = "";
+let storageRoot = "";
 let nowMs = BASE_TIME;
 
 const keyPair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
@@ -67,6 +73,37 @@ function requirePool(): Pool {
     throw new Error("Testdatenbank ist nicht initialisiert.");
   }
   return pool;
+}
+
+function syntheticMp4Bytes(): Uint8Array {
+  // Synthetisches ISO-BMFF-Fixture: ftyp-Kopf plus mdat-Nutzlast. Es wird
+  // ausschliesslich ueber den bestehenden Uploadweg gespeichert.
+  const payload = Buffer.alloc(256);
+  for (let index = 0; index < payload.byteLength; index += 1) {
+    payload[index] = (index * 29 + 11) & 0xff;
+  }
+  const bytes = Buffer.alloc(24 + 8 + payload.byteLength);
+  bytes.writeUInt32BE(24, 0);
+  bytes.write("ftyp", 4, "ascii");
+  bytes.write("isom", 8, "ascii");
+  bytes.writeUInt32BE(0x200, 12);
+  bytes.write("isomiso2", 16, "ascii");
+  bytes.writeUInt32BE(8 + payload.byteLength, 24);
+  bytes.write("mdat", 28, "ascii");
+  payload.copy(bytes, 32);
+  return new Uint8Array(bytes);
+}
+
+async function* streamOf(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
+  yield bytes;
+}
+
+function mediaService() {
+  return createMediaService({
+    pool: requirePool(),
+    storageRoot,
+    now: () => new Date(nowMs),
+  });
 }
 
 async function insertCustomer(id: string): Promise<void> {
@@ -217,6 +254,7 @@ beforeAll(async () => {
     await requirePool().query(sql);
   }
   await ensureCampaignSchema(requirePool());
+  storageRoot = await mkdtemp(join(tmpdir(), "cx045-media-"));
 }, 60_000);
 
 beforeEach(async () => {
@@ -229,6 +267,8 @@ beforeEach(async () => {
       "restart identity cascade",
     ].join("\n"),
   );
+  await rm(storageRoot, { recursive: true, force: true });
+  await mkdir(storageRoot, { recursive: true, mode: 0o700 });
 });
 
 afterAll(async () => {
@@ -242,13 +282,34 @@ afterAll(async () => {
     }
     await pool.end();
   }
+  await rm(storageRoot, { recursive: true, force: true });
 }, 30_000);
 
 describe("CX-045 / R-305 GT-Ads-Fallback im Manifest", () => {
-  it("erzeugt ohne ausspielbare Kampagne ein signiertes Manifest mit dem konfigurierten Platzhaltermedium; Hash und Downloadreferenz verweisen auf das gespeicherte Medium", async () => {
-    const fallbackId = randomUUID();
-    const sha256 = "c".repeat(64);
-    await insertMedia({ id: fallbackId, sha256, durationSeconds: 15 });
+  it("erzeugt ohne ausspielbare Kampagne ein signiertes Manifest mit dem gespeicherten Platzhaltermedium; Hash, Manifestreferenz und CX-043-Download stimmen ueberein", async () => {
+    const media = mediaService();
+    const bytes = syntheticMp4Bytes();
+    const uploaded = await media.createMedia({
+      displayName: "SYN-CX045-Spot.mp4",
+      content: streamOf(bytes),
+      metadata: {
+        container: "mp4",
+        videoCodec: "h264",
+        width: 1920,
+        height: 1080,
+        frameRateNumerator: 30,
+        frameRateDenominator: 1,
+        audioStreamCount: 0,
+        durationSeconds: 15,
+        sizeBytes: bytes.byteLength,
+      },
+      actorType: "admin",
+      actorId: "admin",
+    });
+    const fallbackId = uploaded.id;
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    expect(uploaded.sha256).toBe(sha256);
+    expect(uploaded.sizeBytes).toBe(bytes.byteLength);
     await mark("taxi-fallback");
 
     const service = new ManifestRefreshService(
@@ -267,7 +328,7 @@ describe("CX-045 / R-305 GT-Ads-Fallback im Manifest", () => {
     for (const spot of verified.plan.spots) {
       expect(spot.mediaId).toBe(fallbackId);
       expect(spot.sha256).toBe(sha256);
-      expect(spot.sizeBytes).toBe(1000);
+      expect(spot.sizeBytes).toBe(bytes.byteLength);
       expect(spot.durationMs).toBe(15_000);
       expect(spot.campaignId).toBe(FALLBACK_CAMPAIGN_ID);
     }
@@ -287,6 +348,53 @@ describe("CX-045 / R-305 GT-Ads-Fallback im Manifest", () => {
     expect(ticket.payload.mediaId).toBe(fallbackId);
     expect(ticket.payload.sha256).toBe(sha256);
     expect(ticket.payload.manifestVersion).toBe(verified.version);
+
+    const download = await processDownloadRequest({
+      ticket: ticket.ticket,
+      deviceId: "device-cx045",
+      secret: "s".repeat(32),
+      clock: () => new Date(nowMs),
+      authorization: { authorize: () => true },
+      mediaSource: {
+        async read(mediaId: string) {
+          const stored = await media.getReadyMedia(mediaId);
+          if (stored === null) {
+            return null;
+          }
+          return {
+            sha256: stored.sha256,
+            sizeBytes: stored.sizeBytes,
+            content: await stored.read(),
+          };
+        },
+      },
+    });
+    expect(download.error).toBeUndefined();
+    expect(download.status).toBe(200);
+    expect(download.headers.ETag).toBe('"' + sha256 + '"');
+    expect(download.headers["Content-Length"]).toBe(String(bytes.byteLength));
+    expect(Buffer.from(download.bytes).equals(Buffer.from(bytes))).toBe(true);
+    expect(createHash("sha256").update(download.bytes).digest("hex")).toBe(
+      sha256,
+    );
+
+    const artifactBefore = await artifactRows("taxi-fallback");
+    await expect(media.deleteMedia(fallbackId)).rejects.toMatchObject({
+      code: "media_in_use",
+    });
+    const stored = await media.getReadyMedia(fallbackId);
+    expect(stored).not.toBeNull();
+    if (stored === null) {
+      throw new Error("Das Platzhaltermedium ist nach abgelehnter Loeschung nicht mehr verfuegbar.");
+    }
+    expect(stored.sha256).toBe(sha256);
+    expect(Buffer.from(await stored.read()).equals(Buffer.from(bytes))).toBe(
+      true,
+    );
+    expect(await artifactRows("taxi-fallback")).toEqual(artifactBefore);
+    expect((await service.getCurrentArtifact("taxi-fallback"))?.version).toBe(
+      verified.version,
+    );
   });
 
   it("laesst den bestehenden Schleifenplan einer aktiven, gueltigen, zugeordneten Kampagne unveraendert", async () => {
@@ -392,13 +500,15 @@ describe("CX-045 / R-305 GT-Ads-Fallback im Manifest", () => {
     }
   });
 
-  it("erzeugt beim Wechsel Kampagne zu Fallback und zurueck passende neue Versionen und dupliziert bei identischer Wiederholung nichts", async () => {
+  it("wechselt beim Erreichen von Kampagnenende und Kampagnenstart zeitgesteuert zwischen Kampagne und Fallback und dupliziert bei identischer Wiederholung nichts", async () => {
     const customerId = randomUUID();
     const mediaA = randomUUID();
     const mediaB = randomUUID();
     const fallbackId = randomUUID();
     const campaignA = randomUUID();
     const campaignB = randomUUID();
+    const campaignAEnd = "2026-11-14T00:00:00.000Z";
+    const campaignBStart = "2026-11-15T00:00:00.000Z";
     await insertCustomer(customerId);
     await insertMedia({ id: mediaA, sha256: "2".repeat(64), durationSeconds: 15 });
     await insertMedia({ id: mediaB, sha256: "3".repeat(64), durationSeconds: 15 });
@@ -408,6 +518,19 @@ describe("CX-045 / R-305 GT-Ads-Fallback im Manifest", () => {
       customerId,
       mediaId: mediaA,
       taxiIds: ["taxi-switch"],
+      startAt: START,
+      endAt: campaignAEnd,
+    });
+    // Die zweite Kampagne existiert bereits, ist zum Ausgangszeitpunkt aber
+    // noch nicht gestartet. Der Wechsel erfolgt ausschliesslich ueber die
+    // injizierte Uhr und den bestehenden zeitabhaengigen Erzeugungsaufruf.
+    await insertCampaign({
+      id: campaignB,
+      customerId,
+      mediaId: mediaB,
+      taxiIds: ["taxi-switch"],
+      startAt: campaignBStart,
+      endAt: "2026-11-17T00:00:00.000Z",
     });
 
     const service = new ManifestRefreshService(
@@ -422,10 +545,10 @@ describe("CX-045 / R-305 GT-Ads-Fallback im Manifest", () => {
     );
     expect(first.plan.spots.every((spot) => spot.campaignId === campaignA)).toBe(true);
 
-    await requirePool().query(
-      "update campaigns set status = 'finished', updated_at = $2 where id = $1::uuid",
-      [campaignA, new Date(nowMs + 1000)],
-    );
+    // Kampagnenende: An diesem Zeitpunkt endet nur Kampagne A; Kampagne B
+    // hat noch nicht begonnen. Der bestehende Erzeugungsaufruf veroeffentlicht
+    // daher den Fallback.
+    nowMs = Date.parse(campaignAEnd);
     await mark("taxi-switch");
     expect((await service.drainPending({ limit: 10 })).published).toBe(1);
     const second = verifyArtifact(
@@ -439,12 +562,10 @@ describe("CX-045 / R-305 GT-Ads-Fallback im Manifest", () => {
       ),
     ).toBe(true);
 
-    await insertCampaign({
-      id: campaignB,
-      customerId,
-      mediaId: mediaB,
-      taxiIds: ["taxi-switch"],
-    });
+    // Kampagnenstart: Kampagne B beginnt an diesem Zeitpunkt. Fuer den
+    // Rueckwechsel sind weder eine manuelle Statusaenderung noch eine neue
+    // Kampagne notwendig.
+    nowMs = Date.parse(campaignBStart);
     await mark("taxi-switch");
     expect((await service.drainPending({ limit: 10 })).published).toBe(1);
     const third = verifyArtifact(
@@ -452,12 +573,16 @@ describe("CX-045 / R-305 GT-Ads-Fallback im Manifest", () => {
       "taxi-switch",
     );
     expect(third.version).not.toBe(second.version);
-    expect(third.plan.spots.every((spot) => spot.campaignId === campaignB)).toBe(true);
+    expect(
+      third.plan.spots.every(
+        (spot) => spot.campaignId === campaignB && spot.mediaId === mediaB,
+      ),
+    ).toBe(true);
 
     const rowsBefore = await artifactRows("taxi-switch");
     expect(rowsBefore).toHaveLength(3);
 
-    // Gleicher Quellstand, späterer Auswertungszeitpunkt: keine neue Version,
+    // Gleicher Quellstand, spaeterer Auswertungszeitpunkt: keine neue Version,
     // kein veraendertes altes Artefakt.
     nowMs += 60_000;
     await mark("taxi-switch");
