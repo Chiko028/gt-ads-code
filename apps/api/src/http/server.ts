@@ -108,6 +108,9 @@ function defaultLogger(config: AppConfig): FastifyServerOptions["logger"] {
         "req.body.public_key",
         "req.body.signature",
         "req.body.password",
+        // CX-066: Einmalcode und TOTP-Code sind Geheimnisse.
+        "req.body.code",
+        "req.body.totp_code",
       ],
       censor: REDACTED,
     },

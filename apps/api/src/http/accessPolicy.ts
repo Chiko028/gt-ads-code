@@ -100,6 +100,12 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   // Menschliche Verwaltung: Sitzung.
   "POST /v1/admin/logout": human("session.logout"),
 
+  // CX-066 / R-605: Wiederherstellung als zweiter Faktor und Codesatz-Ausgabe.
+  // Beide Routen sind ausdrueckliche Katalogeintraege der bestehenden
+  // Sicherheitsverwaltung (nur Admin); es gibt keine Pfadpraefix-Ausnahme.
+  "POST /v1/admin/auth/recovery/verify": human("security.manage"),
+  "POST /v1/admin/auth/recovery-codes": human("security.manage"),
+
   // CX-057 / R-602: Operatorverwaltung ausschliesslich Admin.
   "POST /v1/admin/operators": human("operators.manage"),
   "POST /v1/admin/operators/:operatorId/disable": human("operators.manage"),

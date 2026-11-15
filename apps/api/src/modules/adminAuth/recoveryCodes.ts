@@ -453,3 +453,89 @@ export function createRecoveryCodeService(
 ): RecoveryCodeService {
   return new DefaultRecoveryCodeService(options);
 }
+
+export interface IssueRecoveryCodeSetOptions {
+  /** Injizierbare Serveruhr; ohne Angabe gilt die reale Uhr. */
+  now?: () => Date;
+  /** Optionaler Audit-Port; Standard ist der vorhandene Schreiber. */
+  auditWriter?: RecoveryCodeAuditWriter;
+}
+
+/**
+ * CX-066: Erzeugt oder ersetzt den Codesatz innerhalb einer bereits offenen
+ * Transaktion des Aufrufers. Der Kern aus CX-065 bleibt unveraendert; diese
+ * Variante erlaubt es der HTTP-Schicht, Codessatz, Replay-Sperre und Audit
+ * gemeinsam zu committen. Die Semantik entspricht create() bei fehlendem
+ * aktivem Satz und replace() bei vorhandenem aktivem Satz.
+ */
+export async function issueRecoveryCodeSetInTransaction(
+  client: RecoveryCodeSqlClient,
+  actorId: string,
+  options: IssueRecoveryCodeSetOptions = {},
+): Promise<RecoveryCodeSet> {
+  assertActorId(actorId);
+  const now = options.now ?? (() => new Date());
+  const createdAt = now();
+  assertValidDate(createdAt);
+
+  await lockActor(client, actorId);
+  const active = await selectActiveSetForUpdate(client, actorId);
+
+  const codeSetId = randomUUID();
+  const codes = generateRecoveryCodeSet();
+  const hashes = codes.map((code) => {
+    const normalized = normalizeRecoveryCode(code);
+    if (normalized === null) {
+      throw new Error("Erzeugter Wiederherstellungscode ist ungueltig");
+    }
+    return hashRecoveryCode(actorId, normalized);
+  });
+
+  let replacedCodeSetId: string | null = null;
+  if (active !== null) {
+    const invalidated = await client.query(
+      [
+        "update admin_mfa_recovery_code_sets",
+        "   set invalidated_at = $2",
+        " where id = $1",
+        "   and invalidated_at is null",
+        "returning id::text as id",
+      ].join("\n"),
+      [active.id, createdAt],
+    );
+    if ((invalidated.rowCount ?? 0) !== 1) {
+      throw new Error("Aktiver Codesatz konnte nicht entwertet werden");
+    }
+    replacedCodeSetId = active.id;
+  }
+
+  await insertSet(client, codeSetId, actorId, createdAt);
+  await insertCodes(client, codeSetId, actorId, hashes, createdAt);
+
+  const event: AuditEventInput = {
+    at: createdAt,
+    actorType: "admin",
+    actorId,
+    action:
+      replacedCodeSetId === null
+        ? RECOVERY_CODE_SET_CREATED_ACTION
+        : RECOVERY_CODE_SET_REPLACED_ACTION,
+    targetType: RECOVERY_CODE_SET_TARGET_TYPE,
+    targetId: codeSetId,
+    details:
+      replacedCodeSetId === null
+        ? { code_set_id: codeSetId, code_count: codes.length }
+        : {
+            code_set_id: codeSetId,
+            replaced_code_set_id: replacedCodeSetId,
+            code_count: codes.length,
+          },
+  };
+  if (options.auditWriter !== undefined) {
+    await options.auditWriter(client, event);
+  } else {
+    await insertAuditEvent(client, event);
+  }
+
+  return { codeSetId, actorId, createdAt, codes };
+}

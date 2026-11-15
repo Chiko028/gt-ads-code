@@ -197,3 +197,40 @@ export async function markOperatorDisabled(
   );
   return result.rowCount ?? 0;
 }
+
+/**
+ * Liest und sperrt genau die Sitzungszeile einer bereits geprueften
+ * Vorsitzung (CX-066). Die Sperre serialisiert parallele Rotationen derselben
+ * Vorsitzung; nach dem Commit der ersten Rotation ist die Zeile weg.
+ */
+export async function findAdminSessionByIdForUpdate(
+  executor: SqlQueryable,
+  sessionId: string,
+): Promise<AdminSessionRow | null> {
+  const result = await executor.query<AdminSessionRow>(
+    [
+      "select s.id::text as id, s.expires_at,",
+      "       to_jsonb(s) ->> 'actor_id' as actor_id",
+      "  from admin_sessions s",
+      " where s.id = $1::uuid",
+      "   for update",
+    ].join("\n"),
+    [sessionId],
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * Loescht genau die Vorsitzung, die durch eine MFA-Sitzung ersetzt wird.
+ * Liefert 0, wenn eine parallele Anfrage bereits rotiert hat.
+ */
+export async function deleteAdminSessionById(
+  executor: SqlQueryable,
+  sessionId: string,
+): Promise<number> {
+  const result = await executor.query(
+    "delete from admin_sessions where id = $1::uuid",
+    [sessionId],
+  );
+  return result.rowCount ?? 0;
+}

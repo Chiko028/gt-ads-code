@@ -32,6 +32,12 @@ const READ_SQL = `select enrollment_id::text as enrollment_id,
    and enrollment_id = $2
    for update`;
 
+const READ_FOR_ACTOR_SQL = `select enrollment_id::text as enrollment_id,
+       expires_at, nonce, ciphertext, tag
+  from admin_mfa_pending_totp_enrollments
+ where actor_id = $1
+   for update`;
+
 /** Schmale SQL-Schnittstelle einer vom Aufrufer eroeffneten Transaktion. */
 export type PendingTotpSqlClient = Pick<PoolClient, "query">;
 
@@ -146,6 +152,42 @@ export class PendingTotpEnrollmentStore {
     }
 
     const result = await this.client.query<PendingRow>(READ_SQL, [actorId, enrollmentId]);
+    const row = result.rows[0];
+    if (row === undefined) {
+      return null;
+    }
+    const now = this.now();
+    assertClock(now);
+    if (row.expires_at.getTime() <= now.getTime()) {
+      return null;
+    }
+    if (row.nonce.length !== NONCE_BYTES || row.tag.length !== TAG_BYTES) {
+      throw new PendingTotpCryptoError();
+    }
+
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", this.key, row.nonce);
+      decipher.setAAD(buildAad(actorId, row.enrollment_id, row.expires_at));
+      decipher.setAuthTag(row.tag);
+      const plaintext = Buffer.concat([decipher.update(row.ciphertext), decipher.final()]);
+      return {
+        enrollmentId: row.enrollment_id,
+        expiresAt: row.expires_at,
+        secret: plaintext.toString("utf8"),
+      };
+    } catch {
+      throw new PendingTotpCryptoError();
+    }
+  }
+
+  /**
+   * Liest die aktuelle Einrichtung eines Kontos ohne vorab bekannte
+   * Einrichtungs-ID (CX-066). Es gelten dieselben Pruefungen wie in read();
+   * die Zeile wird in der Transaktion des Aufrufers gesperrt.
+   */
+  async readForActor(actorId: string): Promise<ReadPendingTotpEnrollment | null> {
+    assertActorId(actorId);
+    const result = await this.client.query<PendingRow>(READ_FOR_ACTOR_SQL, [actorId]);
     const row = result.rows[0];
     if (row === undefined) {
       return null;
