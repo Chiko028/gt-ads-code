@@ -152,6 +152,19 @@ export class TabletActivationService {
         [deviceId],
       )).rows[0];
       if (device === undefined) fail("not_found", "Das Tablet existiert nicht.");
+
+      // Der Verwaltungszustand wird unter denselben Sperren gelesen; die
+      // Revision entscheidet vor jeder fachlichen Vorbedingung. Auch eine
+      // widerrufene Identitaet mit veralteter Revision bleibt ein Konflikt.
+      const state = (await client.query<TabletStateRow>(
+        "select active, revision::text as revision from tablet_admin_states" +
+          " where device_id = $1::uuid for update",
+        [deviceId],
+      )).rows[0];
+      const previousActive = state?.active ?? true;
+      const currentRevision = state === undefined ? 0 : readRevision(state.revision);
+      if (currentRevision !== expectedRevision) conflict();
+
       if (desiredActive && device.state === "revoked") {
         fail("revoked_identity", "Eine widerrufene Geraeteidentitaet ist nicht reaktivierbar.");
       }
@@ -162,14 +175,6 @@ export class TabletActivationService {
         await this.readAssignments(client, deviceId),
         taxiId,
       );
-      const state = (await client.query<TabletStateRow>(
-        "select active, revision::text as revision from tablet_admin_states" +
-          " where device_id = $1::uuid for update",
-        [deviceId],
-      )).rows[0];
-      const previousActive = state?.active ?? true;
-      const currentRevision = state === undefined ? 0 : readRevision(state.revision);
-      if (currentRevision !== expectedRevision) conflict();
 
       const tabletChanged = previousActive !== desiredActive;
       const taxiChanged = !desiredActive && taxi !== undefined && taxi.active;

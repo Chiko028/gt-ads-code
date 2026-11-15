@@ -17,11 +17,7 @@ import {
   it,
 } from "vitest";
 import { migrateUp } from "../../db/migrate.js";
-import {
-  TaxiActivationError,
-  TaxiActivationService,
-  ensureTaxiActivationSchema,
-} from "../taxiActivation/service.js";
+import { ensureTaxiActivationSchema } from "../taxiActivation/service.js";
 import {
   TABLET_ACTIVATION_AUDIT_ACTION,
   TabletActivationError,
@@ -238,8 +234,113 @@ function newTabletService(): TabletActivationService {
   return new TabletActivationService({ pool, now: () => FIXED_NOW });
 }
 
-function newTaxiService(): TaxiActivationService {
-  return new TaxiActivationService({ pool, now: () => FIXED_NOW });
+/**
+ * Abbild des bestehenden Paarzuordnungsdienstes auf der vorhandenen
+ * CX-035-Struktur: Eine Paarzuordnung sperrt die beiden Tablet-Zeilen,
+ * prueft den administrativen Aktivzustand und ersetzt danach die aktiven
+ * Zuordnungen. Die CX-035-HTTP-Route fehlt im Integrationsstand; der Test
+ * fuehrt deshalb genau diese Transaktion konkurrierend aus.
+ */
+class PairAssignmentError extends Error {
+  readonly code = "invalid_assignment";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "PairAssignmentError";
+  }
+}
+
+interface PairAssignmentController {
+  /** Ergebnis der Transaktion; genau einmal auszuwerten. */
+  result: Promise<void>;
+  /** Loest das Gate aus (vor oder nach dem Schreiben, je nach Modus). */
+  release(): void;
+  /** Erfuellt sich, sobald die Zuordnungen geschrieben sind. */
+  written: Promise<void>;
+}
+
+function startPairAssignment(
+  taxiId: string,
+  deviceIds: readonly [string, string],
+  mode: "write-then-wait" | "wait-then-write",
+): PairAssignmentController {
+  const base = baseConnection();
+  const client = new Client({
+    ...base,
+    database: databaseName,
+    application_name: "cx126-pair-assignment",
+  });
+  let releaseGate: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  let markWritten: () => void = () => undefined;
+  const written = new Promise<void>((resolve) => {
+    markWritten = resolve;
+  });
+
+  const result = (async () => {
+    await client.connect();
+    try {
+      await client.query("begin");
+      if (mode === "wait-then-write") await gate;
+
+      const devices = await client.query<{ id: string; state: string }>(
+        "select id::text as id, state from devices" +
+          " where id = any($1::uuid[]) order by id asc for update",
+        [deviceIds],
+      );
+      if (devices.rows.length !== deviceIds.length ||
+          devices.rows.some((row) => row.state !== "active")) {
+        throw new PairAssignmentError(
+          "Eine Paarzuordnung verlangt zwei aktive Tablets.",
+        );
+      }
+
+      const states = await client.query<{ device_id: string; active: boolean }>(
+        "select device_id::text as device_id, active from tablet_admin_states" +
+          " where device_id = any($1::uuid[])",
+        [deviceIds],
+      );
+      const inactive = new Set(
+        states.rows.filter((row) => !row.active).map((row) => row.device_id),
+      );
+      if (deviceIds.some((deviceId) => inactive.has(deviceId))) {
+        throw new PairAssignmentError(
+          "Ein administrativ deaktiviertes Tablet ist nicht paarzuordenbar.",
+        );
+      }
+
+      await client.query(
+        "update device_taxi_assignments set active = false, updated_at = $2" +
+          " where device_id = any($1::uuid[]) and active = true",
+        [deviceIds, FIXED_NOW],
+      );
+      await client.query(
+        "insert into device_taxi_assignments" +
+          " (device_id, taxi_id, active, updated_at)" +
+          " values ($1::uuid, $3, true, $4), ($2::uuid, $3, true, $4)" +
+          " on conflict (device_id, taxi_id) do update" +
+          " set active = true, updated_at = excluded.updated_at",
+        [deviceIds[0], deviceIds[1], taxiId, FIXED_NOW],
+      );
+      markWritten();
+      if (mode === "write-then-wait") await gate;
+      await client.query("commit");
+    } catch (error) {
+      try {
+        await client.query("rollback");
+      } catch {
+        // Der urspruengliche Fehler bleibt massgeblich.
+      }
+      markWritten();
+      throw error;
+    } finally {
+      await client.end();
+    }
+  })();
+
+  return { result, release: () => releaseGate(), written };
 }
 
 async function waitForLockWaiters(
@@ -262,7 +363,7 @@ async function waitForLockWaiters(
     }
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  throw new Error("Die konkurrierenden Transaktionen warten nicht auf die Taxisperre.");
+  throw new Error("Die konkurrierenden Transaktionen warten nicht auf die erwarteten Sperren.");
 }
 
 beforeAll(async () => {
@@ -434,6 +535,32 @@ describe("CX-126 Tablet-Verwaltungszustand", () => {
     expect(await auditRows()).toHaveLength(2);
   });
 
+  it("meldet fuer eine widerrufene Identitaet mit veralteter Revision den Revisionskonflikt", async () => {
+    const taxiId = "SYN-CX126-REVOKED-STALE";
+    await insertTaxi(taxiId, true, 1);
+    const revoked = await insertDevice("revoked");
+    await insertTabletState(revoked, false, 5);
+    await assign(taxiId, revoked);
+
+    const service = newTabletService();
+    await expect(
+      service.setActiveState({
+        deviceId: revoked,
+        expectedRevision: 4,
+        active: true,
+        actorId: ACTOR,
+      }),
+    ).rejects.toMatchObject({
+      name: "TabletActivationError",
+      code: "revision_conflict",
+    });
+    expect(await deviceState(revoked)).toBe("revoked");
+    expect(await tabletRow(revoked)).toEqual({ active: false, revision: 5 });
+    expect(await taxiRow(taxiId)).toEqual({ active: true, revision: 1 });
+    expect(await assignmentActive(taxiId, revoked)).toBe(true);
+    expect(await auditCount()).toBe(0);
+  });
+
   it("laesst bei veralteter Revision, Auditfehler und konkurrierender Paarzuordnung keine aktive unzulaessige Paarung zurueck", async () => {
     const staleTaxi = "SYN-CX126-STALE";
     await insertTaxi(staleTaxi, true, 1);
@@ -493,82 +620,125 @@ describe("CX-126 Tablet-Verwaltungszustand", () => {
     await pool.query("drop function cx126_fail_audit()");
 
     const raceTaxi = "SYN-CX126-RACE";
+    const oldTaxi = "SYN-CX126-OLD";
     await insertTaxi(raceTaxi, false, 1);
+    await insertTaxi(oldTaxi, false, 1);
     const first = await insertDevice();
     const second = await insertDevice();
     await insertTabletState(first, true, 1);
     await insertTabletState(second, true, 1);
-    await assign(raceTaxi, first);
-    await assign(raceTaxi, second);
-    const tabletService = newTabletService();
-    const taxiService = newTaxiService();
+    await assign(oldTaxi, first);
     const base = baseConnection();
-    const holder = new Client({
-      ...base,
-      database: databaseName,
-      application_name: "cx126-holder",
-    });
     const observer = new Client({
       ...base,
       database: databaseName,
       application_name: "cx126-observer",
     });
-    await holder.connect();
     await observer.connect();
 
-    let activationReason: unknown = null;
+    // Reihenfolge 1: Die Paarzuordnung schreibt zuerst und haelt die
+    // Tablet-Sperren, bis die Deaktivierung wartet; erst dann committet sie.
     try {
-      await holder.query("begin");
-      await holder.query("select id from taxis where id = $1 for update", [
+      const pairFirst = startPairAssignment(
         raceTaxi,
-      ]);
-
-      const deactivate = tabletService.setActiveState({
-        deviceId: first,
-        expectedRevision: 1,
-        active: false,
-        actorId: ACTOR,
-      });
-      const activatePair = taxiService.setActiveState({
-        taxiId: raceTaxi,
-        expectedRevision: 1,
-        active: true,
-        actorId: ACTOR,
-      });
-      await waitForLockWaiters(observer, 2);
-      await holder.query("commit");
-
-      const results = await Promise.allSettled([deactivate, activatePair]);
-      expect(results[0].status).toBe("fulfilled");
-      if (results[0].status === "fulfilled") {
-        expect(results[0].value).toMatchObject({
+        [first, second],
+        "write-then-wait",
+      );
+      await pairFirst.written;
+      const deactivateAfterPair = newTabletService()
+        .setActiveState({
           deviceId: first,
+          expectedRevision: 1,
           active: false,
-          revision: 2,
-          changed: true,
+          actorId: ACTOR,
+        })
+        .then(
+          () => ({ status: "fulfilled" as const }),
+          (error: unknown) => ({ status: "rejected" as const, error }),
+        );
+      await waitForLockWaiters(observer, 1);
+      pairFirst.release();
+      await expect(pairFirst.result).resolves.toBeUndefined();
+      const deactivationOutcome = await deactivateAfterPair;
+      expect(deactivationOutcome.status).toBe("rejected");
+      if (deactivationOutcome.status === "rejected") {
+        expect(deactivationOutcome.error).toMatchObject({
+          name: "TabletActivationError",
+          code: "invalid_assignment",
         });
-      }
-      if (results[1].status === "rejected") {
-        activationReason = results[1].reason;
-        expect(activationReason).toBeInstanceOf(TaxiActivationError);
-        expect(activationReason).toMatchObject({ code: "invalid_pair" });
       }
     } finally {
       await observer.end();
-      await holder.end();
     }
 
-    expect(await tabletRow(first)).toEqual({ active: false, revision: 2 });
-    expect(await tabletRow(second)).toEqual({ active: true, revision: 1 });
-    expect(await assignmentActive(raceTaxi, first)).toBe(false);
+    expect(await tabletRow(first)).toEqual({ active: true, revision: 1 });
+    expect(await assignmentActive(raceTaxi, first)).toBe(true);
     expect(await assignmentActive(raceTaxi, second)).toBe(true);
-    const raceTaxiRow = await taxiRow(raceTaxi);
-    expect(raceTaxiRow?.active).toBe(false);
-    expect([1, 3]).toContain(raceTaxiRow?.revision);
+    expect(await assignmentActive(oldTaxi, first)).toBe(false);
     expect(await activeInvalidPairCount()).toBe(0);
+
+    // Reihenfolge 2: Die Deaktivierung committet zuerst, waehrend die
+    // Paarzuordnung bereits geoeffnet ist und auf ihr Gate wartet; danach
+    // darf sie das deaktivierte Tablet nicht mehr aktiv paaren.
+    const secondRaceTaxi = "SYN-CX126-RACE-2";
+    const secondOldTaxi = "SYN-CX126-OLD-2";
+    await insertTaxi(secondRaceTaxi, false, 1);
+    await insertTaxi(secondOldTaxi, true, 1);
+    const third = await insertDevice();
+    const fourth = await insertDevice();
+    await insertTabletState(third, true, 1);
+    await insertTabletState(fourth, true, 1);
+    await assign(secondOldTaxi, third);
+
+    const pairSecond = startPairAssignment(
+      secondRaceTaxi,
+      [third, fourth],
+      "wait-then-write",
+    );
+    const deactivation = await newTabletService().setActiveState({
+      deviceId: third,
+      expectedRevision: 1,
+      active: false,
+      actorId: ACTOR,
+    });
+    expect(deactivation).toMatchObject({
+      deviceId: third,
+      active: false,
+      revision: 2,
+      changed: true,
+    });
+    const pairSecondOutcome = pairSecond.result.then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    pairSecond.release();
+    const pairOutcome = await pairSecondOutcome;
+    expect(pairOutcome.status).toBe("rejected");
+    if (pairOutcome.status === "rejected") {
+      expect(pairOutcome.error).toMatchObject({
+        name: "PairAssignmentError",
+        code: "invalid_assignment",
+      });
+    }
+
+    expect(await tabletRow(third)).toEqual({ active: false, revision: 2 });
+    expect(await assignmentActive(secondOldTaxi, third)).toBe(false);
+    expect(await taxiRow(secondOldTaxi)).toEqual({ active: false, revision: 2 });
+    const pairRows = await pool.query<{ count: string }>(
+      "select count(*)::text as count from device_taxi_assignments" +
+        " where taxi_id = $1",
+      [secondRaceTaxi],
+    );
+    expect(Number(pairRows.rows[0]?.count ?? "0")).toBe(0);
+    expect(await activeInvalidPairCount()).toBe(0);
+
     const tabletAudits = (await auditRows()).filter(
       (row) => row.action === TABLET_ACTIVATION_AUDIT_ACTION,
     );
     expect(tabletAudits).toHaveLength(1);
+    expect(tabletAudits[0]).toMatchObject({
+      target_id: third,
+      details: { previous_active: true, active: false, revision: 2 },
+    });
   });
 });
