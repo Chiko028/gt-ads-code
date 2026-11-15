@@ -5,6 +5,9 @@
  * Wiedergabe-Statistik (CX-049):
  * - Zeitvalidierung, Datenstand und Qualitaetssemantik kommen unveraendert
  *   aus CX-049; es gibt keine zweite Zaehlung und keine neue Persistenz.
+ * - Die Statistikquelle wird bereits vor ihrer Zeilenobergrenze auf die
+ *   aufgeloesten Kundenkampagnen begrenzt; fremde Kampagnen und deren
+ *   Geraete zaehlen nicht mit.
  * - Kunden und Kampagnen werden ueber die vorhandenen CX-032-Tabellen
  *   (customers/campaigns) aufgeloest, einschliesslich archivierter
  *   Kampagnen. Fremde Kunden und fremde Betreiberkontexte liefern generisch
@@ -257,6 +260,7 @@ export class CustomerReportService {
       fromMs: query.fromMs,
       toMs: query.toMs,
       campaignId: query.campaignId,
+      campaignIds: campaigns.map((campaign) => campaign.id),
       deviceId: null,
       taxiId: null,
     });

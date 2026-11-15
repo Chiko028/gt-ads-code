@@ -249,20 +249,38 @@ export class StatisticsService {
       return matching.size === 1 ? [...matching][0]! : null;
     };
 
+    const campaignIds =
+      query.campaignIds === undefined || query.campaignIds === null
+        ? null
+        : new Set(query.campaignIds);
     const { plays, unattributedPlays } = this.buildPlays(
       observations,
       query,
       resolveTaxi,
       resolveCampaign,
+      campaignIds,
     );
 
-    const quality = this.buildQuality(
+    const qualityAll = this.buildQuality(
       candidateDevices,
       query,
       rollups,
       resolveTaxi,
       syncErrors,
     );
+    // Mehrfachbegrenzung (Kundenbericht): Die Geraetequalitaet wird erst
+    // nach der gemeinsamen Berechnung auf Geraete mit Treffern der
+    // Auswahl begrenzt. Werte und Zuordnung bleiben damit identisch zur
+    // globalen Berechnung; fremde Geraete zaehlen nicht gegen die
+    // Zeilenobergrenze.
+    const measuredDeviceIds =
+      campaignIds === null
+        ? null
+        : new Set(plays.map((play) => play.device_id));
+    const quality =
+      measuredDeviceIds === null
+        ? qualityAll
+        : qualityAll.filter((row) => measuredDeviceIds.has(row.device_id));
 
     if (plays.length + quality.length > STATISTICS_ROW_LIMIT) {
       throw new StatisticsRowLimitError();
@@ -464,6 +482,7 @@ export class StatisticsService {
     query: StatisticsQuery,
     resolveTaxi: (deviceId: string, atMs: number) => string | null,
     resolveCampaign: (taxiId: string | null, atMs: number) => string | null,
+    campaignIds: ReadonlySet<string> | null,
   ): { plays: PlayRow[]; unattributedPlays: number } {
     const byDevice = new Map<string, ObservationRow[]>();
     for (const row of observations) {
@@ -521,6 +540,9 @@ export class StatisticsService {
     const filtered = inRange.filter((play) => {
       if (play.campaignId === null) return false;
       if (query.campaignId !== null && play.campaignId !== query.campaignId) {
+        return false;
+      }
+      if (campaignIds !== null && !campaignIds.has(play.campaignId)) {
         return false;
       }
       if (query.taxiId !== null && play.taxiId !== query.taxiId) return false;

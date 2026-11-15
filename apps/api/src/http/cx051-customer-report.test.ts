@@ -376,6 +376,7 @@ describe("CX-051 CSV-Kundenbericht", () => {
     const customerB = await insertCustomer("SYN-CX051-Kunde-B");
     await insertTaxi("SYN-CX051-TAXI-A1");
     await insertTaxi("SYN-CX051-TAXI-A2");
+    await insertTaxi("SYN-CX051-TAXI-A3");
     await insertTaxi("SYN-CX051-TAXI-B1");
 
     const campaignA1 = await insertCampaign({
@@ -383,6 +384,11 @@ describe("CX-051 CSV-Kundenbericht", () => {
       mediaId: await insertMedia("Kampagne A1"),
       taxiId: "SYN-CX051-TAXI-A1",
     });
+    // Dieselbe Kundenkampagne auf einem weiteren Taxi.
+    await pool.query(
+      "insert into campaign_targets (campaign_id, kind, target_id) values ($1::uuid, 'taxi', $2)",
+      [campaignA1, "SYN-CX051-TAXI-A3"],
+    );
     const campaignA2 = await insertCampaign({
       customerId: customerA,
       mediaId: await insertMedia("Archivierte Kampagne A2"),
@@ -396,15 +402,23 @@ describe("CX-051 CSV-Kundenbericht", () => {
     });
 
     const deviceA1 = await insertDevice("Tablet A1");
+    const deviceA1B = await insertDevice("Tablet A1b");
     const deviceA2 = await insertDevice("Tablet A2");
+    const deviceA3 = await insertDevice("Tablet A3");
     const deviceB1 = await insertDevice("Tablet B1");
     await insertAssignment(deviceA1, "SYN-CX051-TAXI-A1", true, "2026-11-13T00:00:00.000Z");
+    await insertAssignment(deviceA1B, "SYN-CX051-TAXI-A1", true, "2026-11-13T00:00:00.000Z");
     await insertAssignment(deviceA2, "SYN-CX051-TAXI-A2", true, "2026-11-13T00:00:00.000Z");
+    await insertAssignment(deviceA3, "SYN-CX051-TAXI-A3", true, "2026-11-13T00:00:00.000Z");
     await insertAssignment(deviceB1, "SYN-CX051-TAXI-B1", true, "2026-11-13T00:00:00.000Z");
 
     await insertPlay(deviceA1, "2026-11-14T10:00:00.000Z", "2026-11-14T10:00:15.000Z");
     await insertPlay(deviceA1, "2026-11-14T13:00:00.000Z", "2026-11-14T13:00:15.000Z");
+    await insertPlay(deviceA1, "2026-11-14T14:00:00.000Z", "2026-11-14T14:00:15.000Z");
+    await insertPlay(deviceA1B, "2026-11-14T15:00:00.000Z", "2026-11-14T15:00:15.000Z");
     await insertPlay(deviceA2, "2026-11-14T13:30:00.000Z", "2026-11-14T13:30:15.000Z");
+    await insertPlay(deviceA3, "2026-11-14T16:00:00.000Z", "2026-11-14T16:00:15.000Z");
+    await insertPlay(deviceA3, "2026-11-14T17:00:00.000Z", "2026-11-14T17:00:15.000Z");
     await insertPlay(deviceB1, "2026-11-14T12:00:00.000Z", "2026-11-14T12:00:15.000Z");
 
     const app = await buildApp();
@@ -423,11 +437,15 @@ describe("CX-051 CSV-Kundenbericht", () => {
       new Set([campaignA1, campaignA2]),
     );
     expect(records.map((row) => row.campaign_id)).not.toContain(campaignB1);
+    const expectedPlays = new Map<string, string>([
+      [campaignA1, "5"],
+      [campaignA2, "1"],
+    ]);
     for (const record of records) {
       expect(record.customer_id).toBe(customerA);
       expect(record.from_utc).toBe(from);
       expect(record.to_utc).toBe(DAY_END);
-      expect(record.plays_reported).toBe("1");
+      expect(record.plays_reported).toBe(expectedPlays.get(record.campaign_id));
     }
     expect(records.find((row) => row.campaign_id === campaignA1)!.campaign_name).toBe(
       "Kampagne A1",
@@ -444,7 +462,11 @@ describe("CX-051 CSV-Kundenbericht", () => {
     });
     expect(statistics.statusCode).toBe(200);
     const statisticsBody = statistics.json() as {
-      plays: Array<{ campaign_id: string | null; play_count: number }>;
+      plays: Array<{
+        campaign_id: string | null;
+        taxi_id: string | null;
+        play_count: number;
+      }>;
     };
     const expected = new Map<string, number>();
     for (const play of statisticsBody.plays) {
@@ -454,6 +476,16 @@ describe("CX-051 CSV-Kundenbericht", () => {
     for (const record of records) {
       expect(Number(record.plays_reported)).toBe(expected.get(record.campaign_id) ?? 0);
     }
+    // Mehrere Geraete auf demselben Taxi plus ein weiteres Taxi derselben
+    // Kampagne: drei Statistikzeilen, deren Summe ohne Taxi-Deduplizierung
+    // vollstaendig in CSV und CX-049 erscheint.
+    const a1Plays = statisticsBody.plays.filter((play) => play.campaign_id === campaignA1);
+    expect(a1Plays).toHaveLength(3);
+    expect(a1Plays.reduce((sum, play) => sum + play.play_count, 0)).toBe(5);
+    expect(new Set(a1Plays.map((play) => play.taxi_id))).toEqual(
+      new Set(["SYN-CX051-TAXI-A1", "SYN-CX051-TAXI-A3"]),
+    );
+    expect(expected.get(campaignA2)).toBe(1);
 
     // Kampagnenfilter: nur die gewaehlte Kunde-Kampagne.
     const filtered = await app.inject({
@@ -494,6 +526,92 @@ describe("CX-051 CSV-Kundenbericht", () => {
     expect(forB.statusCode).toBe(200);
     const recordsB = toRecords(forB.body);
     expect(recordsB.map((row) => row.campaign_id)).toEqual([campaignB1]);
+  });
+
+  it("begrenzt die Statistikquelle vor der Zeilenobergrenze auf die Kundenkampagnen", async () => {
+    const customer = await insertCustomer("SYN-CX051-Kunde-Klein");
+    const foreign = await insertCustomer("SYN-CX051-Kunde-Fremd");
+    await insertTaxi("SYN-CX051-TAXI-KLEIN");
+    await insertTaxi("SYN-CX051-TAXI-FREMD");
+    const campaign = await insertCampaign({
+      customerId: customer,
+      mediaId: await insertMedia("Kleine Kundenkampagne"),
+      taxiId: "SYN-CX051-TAXI-KLEIN",
+    });
+    await insertCampaign({
+      customerId: foreign,
+      mediaId: await insertMedia("Fremde Masse"),
+      taxiId: "SYN-CX051-TAXI-FREMD",
+    });
+    const device = await insertDevice("Tablet klein");
+    await insertAssignment(device, "SYN-CX051-TAXI-KLEIN", true, "2026-11-13T00:00:00.000Z");
+    await insertPlay(device, "2026-11-14T10:00:00.000Z", "2026-11-14T10:00:15.000Z");
+
+    // 10 001 fremde Geraete mit je einem abgeschlossenen Play auf demselben
+    // fremden Taxi: zusammen mit ihren Qualitaetszeilen mehr als die harte
+    // CX-049-Grenze von 10 000 Zeilen. Der kleine Kundenexport darf daran
+    // nicht scheitern.
+    await pool.query(
+      "insert into registration_codes (id, code_hash, label, created_at, created_by, expires_at)" +
+        " select md5('cx051-reg-' || i)::uuid, decode(md5('cx051-code-' || i), 'hex')," +
+        " 'SYN-CX051', $1::timestamptz, $2, $3::timestamptz" +
+        " from generate_series(1, 10001) as i",
+      [new Date(BASE_TIME - 86_400_000), ADMIN_ID, new Date(BASE_TIME + 86_400_000)],
+    );
+    await pool.query(
+      "insert into devices (id, label, public_key_spki, public_key_fingerprint, state," +
+        " manufacturer, model, os_version, sdk_int, app_version, app_flavor," +
+        " registration_code_id, registration_request_id, registered_at, last_seen_at)" +
+        " select md5('cx051-dev-' || i)::uuid, 'Fremd ' || i," +
+        " decode(md5('cx051-key-' || i), 'hex'), 'SYN-CX051-FP-' || i, 'active'," +
+        " 'SYN', 'SYN', '15', 35, '1.0.0', 'dev', md5('cx051-reg-' || i)::uuid," +
+        " gen_random_uuid(), $1::timestamptz, $1::timestamptz" +
+        " from generate_series(1, 10001) as i",
+      [new Date(BASE_TIME - 86_400_000)],
+    );
+    await pool.query(
+      "insert into device_taxi_assignments (device_id, taxi_id, active, updated_at)" +
+        " select md5('cx051-dev-' || i)::uuid, 'SYN-CX051-TAXI-FREMD', true, $1::timestamptz" +
+        " from generate_series(1, 10001) as i",
+      [new Date(BASE_TIME - 86_400_000)],
+    );
+    await pool.query(
+      "insert into telemetry_observations (device_id, event_id, occurred_at," +
+        " vehicle_ready, paused, playback, technical_fault, received_at)" +
+        " select md5('cx051-dev-' || i)::uuid, gen_random_uuid(), $1::timestamptz," +
+        " true, false, 'playing', false, $1::timestamptz" +
+        " from generate_series(1, 10001) as i" +
+        " union all" +
+        " select md5('cx051-dev-' || i)::uuid, gen_random_uuid(), $2::timestamptz," +
+        " true, false, 'stopped', false, $2::timestamptz" +
+        " from generate_series(1, 10001) as i",
+      ["2026-11-14T09:00:00.000Z", "2026-11-14T09:00:15.000Z"],
+    );
+
+    const app = await buildApp();
+    const cookie = await loginCookie(app);
+    const response = await app.inject({
+      method: "GET",
+      url: reportUrl({ customer_id: customer, from: DAY_START, to: DAY_END }),
+      headers: headers(cookie),
+    });
+    expect(response.statusCode).toBe(200);
+    const records = toRecords(response.body);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.campaign_id).toBe(campaign);
+    expect(records[0]!.plays_reported).toBe("1");
+
+    // Die ungefilterte Statistik ueberschreitet weiterhin die Grenze; der
+    // kleine Export ist nicht durch eine entfallene Grenze erfolgreich.
+    const statistics = await app.inject({
+      method: "GET",
+      url: statisticsUrl({ from: DAY_START, to: DAY_END }),
+      headers: headers(cookie),
+    });
+    expect(statistics.statusCode).toBe(400);
+    expect((statistics.json() as { error: { code: string } }).error.code).toBe(
+      "invalid_request",
+    );
   });
 
   it("quotet Kommas, Anfuehrungszeichen und Zeilenumbrueche und neutralisiert Formelpraefixe", async () => {

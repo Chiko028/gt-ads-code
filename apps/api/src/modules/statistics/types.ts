@@ -27,6 +27,14 @@ export interface StatisticsQuery {
   fromMs: number;
   toMs: number;
   campaignId: string | null;
+  /**
+   * Optionale Begrenzung auf mehrere Kundenkampagnen (interner Aufruf des
+   * Kundenberichts). Wirkt wie campaignId auf die Wiedergabezeilen; die
+   * Geraetequalitaet wird auf Geraete mit Treffern dieser Auswahl begrenzt.
+   * Datenstand und Vollstaendigkeit bleiben unveraendert global.
+   * null/undefined bedeutet: keine Mehrfachbegrenzung.
+   */
+  campaignIds?: readonly string[] | null;
   deviceId: string | null;
   taxiId: string | null;
 }
