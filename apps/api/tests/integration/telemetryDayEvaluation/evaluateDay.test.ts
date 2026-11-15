@@ -187,6 +187,35 @@ async function countRollupsFor(deviceId: string, localDate: string): Promise<num
   return Number(result.rows[0]?.count ?? "0");
 }
 
+async function waitForBlockedAdvisoryLock(
+  watcher: Pool,
+  classId: number,
+  objId: number,
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const result = await watcher.query<{ count: string }>(
+      [
+        "select count(*)::text as count",
+        "  from pg_locks",
+        " where locktype = 'advisory'",
+        "   and classid = $1::oid",
+        "   and objid = $2::oid",
+        "   and objsubid = 2",
+        "   and not granted",
+      ].join(" "),
+      [classId, objId],
+    );
+    if (Number(result.rows[0]?.count ?? "0") > 0) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("CX-047 Wartelock wurde nicht erreicht.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 async function rawRows(deviceId: string): Promise<unknown[]> {
   const result = await pool.query(
     [
@@ -391,6 +420,145 @@ describe("CX-047 evaluateDay", () => {
     }
   });
 
+  it("schuetzt bei konkurrierenden Auswertungen mit verspaetetem Ereignis den neuesten Datenstand", async () => {
+    const olderEvaluationTime = Date.parse("2026-03-02T12:00:00.000Z");
+    const newerEvaluationTime = Date.parse("2026-03-05T00:00:00.000Z");
+    const gateClassId = 47047;
+    const gateObjId = 1;
+
+    nowMs = newerEvaluationTime;
+    await ingest.ingestObservations(deviceB, [
+      observation("2026-03-01T08:00:00.000Z"),
+    ]);
+
+    const olderEvaluation = createTelemetryDayEvaluationService({
+      client: pool,
+      now: () => new Date(olderEvaluationTime),
+    });
+    const newerEvaluation = createTelemetryDayEvaluationService({
+      client: pool,
+      now: () => new Date(newerEvaluationTime),
+    });
+
+    const gateClient = await pool.connect();
+    let olderRun: Promise<DayEvaluationResult> | undefined;
+    let newerRun: Promise<DayEvaluationResult> | undefined;
+
+    try {
+      // Die Sitzungssperre haelt den ersten Rollup-Insert an, bis der
+      // verspaetete Datenstand geschrieben und die zweite Auswertung gestartet ist.
+      await gateClient.query("select pg_advisory_lock(47047, 1)");
+      await pool.query(
+        [
+          "create or replace function cx047_gate_rollup_insert() returns trigger",
+          "language plpgsql as $$",
+          "begin",
+          "  perform pg_advisory_xact_lock(47047, 1);",
+          "  return new;",
+          "end",
+          "$$",
+        ].join(" "),
+      );
+      await pool.query(
+        "create trigger cx047_gate_rollup_insert_trigger before insert on telemetry_daily_rollups for each row execute function cx047_gate_rollup_insert()",
+      );
+
+      olderRun = olderEvaluation.evaluateDay({
+        deviceId: deviceB,
+        localDate: DAY_ONE,
+        configuration: configA(),
+      });
+      await waitForBlockedAdvisoryLock(pool, gateClassId, gateObjId);
+
+      // Dieses Ereignis ist im bereits laufenden ersten Lauf nicht sichtbar.
+      await ingest.ingestObservations(deviceB, [
+        observation("2026-03-01T20:00:00.000Z", { paused: true }),
+      ]);
+
+      newerRun = newerEvaluation.evaluateDay({
+        deviceId: deviceB,
+        localDate: DAY_ONE,
+        configuration: configA(),
+      });
+
+      await gateClient.query("select pg_advisory_unlock(47047, 1)");
+
+      const older = await olderRun;
+      const newer = await newerRun;
+
+      expect(older.status).toBe("created");
+      expect(older.revision).toBe(1);
+      expect(newer.status).toBe("replaced");
+      expect(newer.revision).toBe(older.revision + 1);
+
+      const stored = await fetchRollup(deviceB, DAY_ONE, TIME_ZONE, "cx-047-p1");
+      expect(stored).not.toBeNull();
+      expect(stored?.revision).toBe(newer.revision);
+      expect(stored?.revision).toBeGreaterThanOrEqual(older.revision);
+      expect(stored?.classes).toEqual(newer.rollup.classes);
+      expect(stored?.classes).not.toEqual(older.rollup.classes);
+
+      const expected = classifyDay({
+        tabletId: deviceB,
+        localDate: DAY_ONE,
+        timeZone: TIME_ZONE,
+        evaluatedAt: new Date(newerEvaluationTime).toISOString(),
+        observations: [
+          {
+            eventId: randomUUID(),
+            occurredAt: "2026-03-01T08:00:00.000Z",
+            vehicleReady: true,
+            paused: false,
+            playback: "playing",
+            technicalFault: false,
+          },
+          {
+            eventId: randomUUID(),
+            occurredAt: "2026-03-01T20:00:00.000Z",
+            vehicleReady: true,
+            paused: true,
+            playback: "playing",
+            technicalFault: false,
+          },
+        ],
+        policy: policyA(),
+      });
+      expect(stored?.classes).toEqual(expected.classes);
+      expect(stored?.classes.paused_conscious).toBe(10 * 60 * 1000);
+      expect(await countRollupsFor(deviceB, DAY_ONE)).toBe(1);
+
+      // Auch ein danach gestarteter Lauf mit aelterem Auswertungszeitpunkt
+      // darf das neuere Ergebnis weder ersetzen noch die Revision senken.
+      const stale = await olderEvaluation.evaluateDay({
+        deviceId: deviceB,
+        localDate: DAY_ONE,
+        configuration: configA(),
+      });
+      expect(stale.status).toBe("stale");
+      expect(stale.revision).toBe(newer.revision);
+      expect(await fetchRollup(deviceB, DAY_ONE, TIME_ZONE, "cx-047-p1")).toEqual(
+        stored,
+      );
+    } finally {
+      try {
+        await gateClient.query("select pg_advisory_unlock(47047, 1)");
+      } catch {
+        // Die Verbindung wird ohnehin freigegeben.
+      }
+      gateClient.release();
+      if (olderRun !== undefined) {
+        await olderRun.catch(() => undefined);
+      }
+      if (newerRun !== undefined) {
+        await newerRun.catch(() => undefined);
+      }
+      await pool.query(
+        "drop trigger if exists cx047_gate_rollup_insert_trigger on telemetry_daily_rollups",
+      );
+      await pool.query("drop function if exists cx047_gate_rollup_insert()");
+    }
+  });
+
   it("korrigiert nach einem verspaeteten Ereignis ueber CX-011, laesst das Ergebnis bei einem Persistenzfehler unveraendert und loescht keine Rohdaten", async () => {
     nowMs = Date.parse("2026-03-03T00:00:00.000Z");
     await ingest.ingestObservations(deviceA, [
@@ -559,4 +727,70 @@ describe("CX-047 evaluateDay", () => {
     );
     expect(await countRollupsFor(deviceA, openDay)).toBe(0);
   });
+
+  it("uebernimmt einen noch gueltigen Zustand von vor Tagesbeginn an einer Sommerzeitgrenze", async () => {
+    const localDate = "2026-03-29";
+    nowMs = Date.parse("2026-03-30T00:00:00.000Z");
+    clockMs = Date.parse("2026-03-30T12:00:00.000Z");
+
+    await ingest.ingestObservations(deviceA, [
+      observation("2026-03-28T22:59:00.000Z", {
+        vehicle_ready: false,
+        paused: false,
+      }),
+      observation("2026-03-29T01:30:00.000Z"),
+    ]);
+
+    const result = await evaluate(deviceA, localDate, configA());
+    expect(result.status).toBe("created");
+    expect(result.rollup.dayStart).toBe("2026-03-28T23:00:00.000Z");
+    expect(result.rollup.dayEnd).toBe("2026-03-29T22:00:00.000Z");
+    expect(result.rollup.dayLengthMs).toBe(23 * 3_600_000);
+
+    // Der Zustand von 22:59 UTC gilt ab Tagesbeginn 23:00 UTC noch bis
+    // 23:59 UTC; danach ist der Tag bis zur naechsten Beobachtung unbekannt.
+    expect(result.rollup.classes.vehicle_off_expected).toBe(59 * 60 * 1000);
+    expect(result.rollup.classes.healthy).toBe(3_600_000);
+    expect(result.rollup.classes.paused_conscious).toBe(0);
+    expect(result.rollup.classes.technical_fault).toBe(0);
+    expect(
+      Object.values(result.rollup.classes).reduce(
+        (sum, value) => sum + value,
+        0,
+      ),
+    ).toBe(result.rollup.dayLengthMs);
+
+    const expected = classifyDay({
+      tabletId: deviceA,
+      localDate,
+      timeZone: TIME_ZONE,
+      evaluatedAt: new Date(clockMs).toISOString(),
+      observations: [
+        {
+          eventId: randomUUID(),
+          occurredAt: "2026-03-28T22:59:00.000Z",
+          vehicleReady: false,
+          paused: false,
+          playback: "playing",
+          technicalFault: false,
+        },
+        {
+          eventId: randomUUID(),
+          occurredAt: "2026-03-29T01:30:00.000Z",
+          vehicleReady: true,
+          paused: false,
+          playback: "playing",
+          technicalFault: false,
+        },
+      ],
+      policy: policyA(),
+    });
+    expect(result.rollup.classes).toEqual(expected.classes);
+
+    const stored = await fetchRollup(deviceA, localDate, TIME_ZONE, "cx-047-p1");
+    expect(stored?.classes).toEqual(result.rollup.classes);
+    expect(stored?.day_start.toISOString()).toBe("2026-03-28T23:00:00.000Z");
+    expect(stored?.day_end.toISOString()).toBe("2026-03-29T22:00:00.000Z");
+  });
+
 });
