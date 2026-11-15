@@ -14,6 +14,10 @@ import {
   registerAdminAuthRoutes,
 } from "../modules/adminAuth/routes.js";
 import { registerAdminOperatorRoutes } from "../modules/adminAuth/operatorRoutes.js";
+import {
+  deriveAdminTotpEncryptionKey,
+  registerAdminTotpSetupConfirmRoutes,
+} from "../modules/adminAuth/totpSetupConfirm.js";
 import { DevicesService } from "../modules/devices/service.js";
 import { registerAdminDeviceRoutes } from "../modules/devices/routes.js";
 import { RegistrationService } from "../modules/registration/service.js";
@@ -91,6 +95,12 @@ export interface ApiServerOptions {
    * CX-030-Speicher verwendet; es gibt keinen Testschalter im Laufzeitpfad.
    */
   mediaUpload?: MediaUploadDeps;
+  /**
+   * Nur fuer Tests/explizite Verdrahtung: 32-Byte-Schluessel des CX-106-
+   * Einrichtungsspeichers. Ohne Angabe wird er domaenenspezifisch aus dem
+   * vorhandenen Servergeheimnis abgeleitet.
+   */
+  mfaTotpEncryptionKey?: Buffer | Uint8Array;
 }
 
 function defaultLogger(config: AppConfig): FastifyServerOptions["logger"] {
@@ -272,10 +282,25 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   registerRegistrationRoutes(app, { service, limiter, config });
 
   // Admin-Sitzung und Dashboard-Routen (U6).
+  const adminLoginLimiter = createAdminLoginRateLimiter(config, () =>
+    now().getTime(),
+  );
   registerAdminAuthRoutes(app, {
     service: adminAuthService,
-    loginLimiter: createAdminLoginRateLimiter(config, () => now().getTime()),
+    loginLimiter: adminLoginLimiter,
     config,
+  });
+  // CX-108 / R-605: Abschluss der TOTP-Einrichtung unter derselben
+  // Admin-Sitzung und demselben Fehlversuchszaehler.
+  registerAdminTotpSetupConfirmRoutes(app, {
+    pool,
+    adminAuth: adminAuthService,
+    config,
+    loginLimiter: adminLoginLimiter,
+    totpEncryptionKey:
+      options.mfaTotpEncryptionKey ??
+      deriveAdminTotpEncryptionKey(config.registrationCodePepper),
+    now,
   });
   // CX-057 / R-602: Operatorverwaltung bleibt ausschliesslich Admin.
   registerAdminOperatorRoutes(app, { service: adminAuthService });
