@@ -5,11 +5,17 @@
  * Aktivzustand und Audit entstehen auf demselben Transaktionsclient.
  * Aktivierung verlangt genau zwei unterschiedliche, exklusiv zugeordnete,
  * administrativ aktive und nicht widerrufene Tablets; Deaktivierung erhaelt
- * alle Zuordnungen. Die vorausgesetzten CX-Strukturen werden idempotent
- * bereitgestellt, weil dieses Paket keine Migration einfuehren darf.
+ * alle Zuordnungen.
+ *
+ * Die bestehenden CX-Strukturen (taxis, device_taxi_assignments, devices)
+ * werden vorausgesetzt und hier nicht angelegt. Fehlen Tabellen oder
+ * benoetigte Spalten, blockiert der Aufruf mit einer konkreten Meldung;
+ * eine Ersatzstruktur entsteht nicht.
  */
 import type { Pool, PoolClient } from "pg";
 import { AuditService } from "../audit/service.js";
+
+export { ensureTaxiActivationSchema } from "./schemaBootstrap.js";
 
 export const TAXI_ACTIVATION_AUDIT_ACTION = "taxi.activation.changed";
 export const TAXI_ACTIVATION_AUDIT_TARGET_TYPE = "taxi";
@@ -33,7 +39,8 @@ export type TaxiActivationErrorCode =
   | "invalid_request"
   | "not_found"
   | "revision_conflict"
-  | "invalid_pair";
+  | "invalid_pair"
+  | "missing_schema";
 
 export class TaxiActivationError extends Error {
   readonly code: TaxiActivationErrorCode;
@@ -47,36 +54,58 @@ export class TaxiActivationError extends Error {
 type TaxiRow = { id: string; active: boolean; revision: string };
 type AssignmentRow = { device_id: string; taxi_id: string; active: boolean };
 type DeviceRow = { id: string; state: "active" | "revoked" };
+type RequiredStructure = { table: string; columns: readonly string[] };
 
-const SCHEMA_SQL = `
-create table if not exists taxis (
-  id text primary key, display_name text not null default '',
-  active boolean not null default false,
-  revision bigint not null default 1 check (revision >= 1)
-);
-create table if not exists device_taxi_assignments (
-  device_id uuid not null references devices(id) on delete cascade,
-  taxi_id text not null, active boolean not null default true,
-  updated_at timestamptz not null default now(),
-  primary key (device_id, taxi_id)
-);`;
-const schemaReady = new WeakMap<Pool, Promise<void>>();
-
-/** Legt fehlende CX-Strukturen genau einmal je Pool an; Wiederholung ist folgenlos. */
-export function ensureTaxiActivationSchema(pool: Pool): Promise<void> {
-  const pending = schemaReady.get(pool);
-  if (pending !== undefined) return pending;
-  const created = pool.query(SCHEMA_SQL).then(() => undefined);
-  schemaReady.set(pool, created);
-  created.catch(() => {
-    if (schemaReady.get(pool) === created) schemaReady.delete(pool);
-  });
-  return created;
-}
+const REQUIRED_STRUCTURE: readonly RequiredStructure[] = [
+  { table: "taxis", columns: ["id", "active", "revision"] },
+  {
+    table: "device_taxi_assignments",
+    columns: ["device_id", "taxi_id", "active"],
+  },
+  { table: "devices", columns: ["id", "state"] },
+];
 
 function fail(code: TaxiActivationErrorCode, message: string): never {
   throw new TaxiActivationError(code, message);
 }
+
+/**
+ * Prueft die Felder einer vorausgesetzten CX-Tabelle, ohne Strukturen
+ * anzulegen. Fehlt etwas, ist die Umsetzung blockiert; die Meldung nennt
+ * die fehlenden Felder.
+ */
+async function assertStructure(
+  executor: Pool | PoolClient,
+  table: string,
+): Promise<void> {
+  const required = REQUIRED_STRUCTURE.find((entry) => entry.table === table);
+  if (required === undefined) {
+    throw new Error("Unbekannte CX-Struktur: " + table);
+  }
+  const rows = (
+    await executor.query<{ column_name: string }>(
+      `select column_name
+         from information_schema.columns
+        where table_schema = current_schema()
+          and table_name = $1`,
+      [table],
+    )
+  ).rows;
+  const available = new Set(rows.map((row) => row.column_name));
+  const missing = required.columns
+    .filter((column) => !available.has(column))
+    .map((column) => table + "." + column);
+  if (missing.length > 0) {
+    fail(
+      "missing_schema",
+      "Die bestehende CX-Struktur ist unvollstaendig; es fehlen: " +
+        missing.join(", ") +
+        ". Der Taxi-Aktivzustand ist blockiert, bis die Migration die " +
+        "Felder bereitstellt.",
+    );
+  }
+}
+
 function normalizeTaxiId(value: unknown): string {
   if (typeof value !== "string") fail("invalid_request", "Die Taxi-ID muss ein Text sein.");
   const id = value.trim();
@@ -136,7 +165,7 @@ export class TaxiActivationService {
       throw new Error("Die Serveruhr liefert keinen gueltigen Zeitpunkt.");
     }
 
-    await ensureTaxiActivationSchema(this.pool);
+    await assertStructure(this.pool, "taxis");
     const client = await this.pool.connect();
     try {
       await client.query("begin");
@@ -151,16 +180,21 @@ export class TaxiActivationService {
       const currentRevision = readRevision(taxi.revision);
       if (currentRevision !== expectedRevision) conflict();
 
+      // Ein unveraenderter Sollzustand ist nach der Revisionspruefung ein
+      // No-op und verlangt weder Zuordnungen noch Aktivierungsvoraussetzungen.
+      if (taxi.active === desiredActive) {
+        await client.query("commit");
+        return { taxiId, active: desiredActive, revision: currentRevision, changed: false };
+      }
+
+      await assertStructure(client, "device_taxi_assignments");
+      await assertStructure(client, "devices");
       const assignments = await this.lockAssignments(client, taxiId);
       const devices = await this.lockDevices(
         client,
         [...new Set(assignments.map((row) => row.device_id))],
       );
       if (desiredActive) this.assertActivePair(taxiId, assignments, devices);
-      if (taxi.active === desiredActive) {
-        await client.query("commit");
-        return { taxiId, active: desiredActive, revision: currentRevision, changed: false };
-      }
 
       const updated = (
         await client.query<{ active: boolean; revision: string }>(

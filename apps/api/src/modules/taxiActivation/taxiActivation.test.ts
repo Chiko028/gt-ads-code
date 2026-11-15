@@ -1,9 +1,10 @@
 /**
  * CX-124 / R-104: vier colocated Vitest-Faelle gegen echtes PostgreSQL.
  *
- * Die vorausgesetzten CX-Strukturen (taxis, device_taxi_assignments) werden
- * ueber den produktiven, idempotenten Schemahelfer bereitgestellt. Alle
- * Geraete, Taxis und Akteure sind synthetisch; es gibt keinen Netzwerkzugriff.
+ * Die vorausgesetzten CX-Strukturen (taxis, device_taxi_assignments) legt
+ * ausschliesslich das Testfixture in der isolierten Testdatenbank an; der
+ * Dienst selbst erzeugt keine Tabellen. Alle Geraete, Taxis und Akteure sind
+ * synthetisch; es gibt keinen Netzwerkzugriff.
  */
 import { randomUUID } from "node:crypto";
 import { Client, Pool } from "pg";
@@ -20,7 +21,6 @@ import {
   TAXI_ACTIVATION_AUDIT_ACTION,
   TaxiActivationError,
   TaxiActivationService,
-  ensureTaxiActivationSchema,
   type SetTaxiActiveStateInput,
 } from "./service.js";
 
@@ -236,7 +236,23 @@ beforeAll(async () => {
     max: 4,
   });
   await migrateUp(pool);
-  await ensureTaxiActivationSchema(pool);
+  // Testfixture: Die isolierte Testdatenbank erhaelt die im Integrationsstand
+  // vorausgesetzten CX-Strukturen. Der Dienst legt sie nicht selbst an.
+  await pool.query(
+    [
+      "create table taxis (",
+      "  id text primary key, display_name text not null default '',",
+      "  active boolean not null default false,",
+      "  revision bigint not null default 1 check (revision >= 1)",
+      ");",
+      "create table device_taxi_assignments (",
+      "  device_id uuid not null references devices(id) on delete cascade,",
+      "  taxi_id text not null, active boolean not null default true,",
+      "  updated_at timestamptz not null default now(),",
+      "  primary key (device_id, taxi_id)",
+      ");",
+    ].join("\n"),
+  );
 }, 60_000);
 
 beforeEach(async () => {
@@ -499,6 +515,109 @@ describe("CX-124 Taxi-Aktivzustand", () => {
     });
     expect(await taxiRow(taxiId)).toEqual({ active: false, revision: 1 });
     expect(await auditCount()).toBe(0);
+  });
+
+  it("behandelt identischen aktiven Sollzustand als No-op, auch wenn das Paar ungueltig ist", async () => {
+    const taxiId = "SYN-CX124-NOOP-ACTIVE";
+    await insertTaxi(taxiId, true, 1);
+    const activeDevice = await insertDevice();
+    const revokedDevice = await insertDevice("revoked");
+    await assign(taxiId, activeDevice);
+    await assign(taxiId, revokedDevice);
+    const assignmentsBefore = await assignmentRows(taxiId);
+
+    const result = await newService().setActiveState({
+      taxiId,
+      expectedRevision: 1,
+      active: true,
+      actorId: ACTOR,
+    });
+
+    expect(result).toEqual({
+      taxiId,
+      active: true,
+      revision: 1,
+      changed: false,
+    });
+    expect(await taxiRow(taxiId)).toEqual({ active: true, revision: 1 });
+    expect(await assignmentRows(taxiId)).toEqual(assignmentsBefore);
+    expect(await auditCount()).toBe(0);
+  });
+
+  it("behandelt einen bereits aktiven Sollzustand auch ohne Zuordnungen als No-op", async () => {
+    const taxiId = "SYN-CX124-NOOP-EMPTY";
+    await insertTaxi(taxiId, true, 1);
+
+    const result = await newService().setActiveState({
+      taxiId,
+      expectedRevision: 1,
+      active: true,
+      actorId: ACTOR,
+    });
+
+    expect(result).toEqual({
+      taxiId,
+      active: true,
+      revision: 1,
+      changed: false,
+    });
+    expect(await taxiRow(taxiId)).toEqual({ active: true, revision: 1 });
+    expect(await assignmentRows(taxiId)).toEqual([]);
+    expect(await auditCount()).toBe(0);
+  });
+
+  it("meldet bei veralteter Revision auch fuer einen unveraenderten Sollzustand einen Revisionskonflikt", async () => {
+    const taxiId = "SYN-CX124-NOOP-STALE";
+    await insertTaxi(taxiId, true, 2);
+
+    await expect(
+      newService().setActiveState({
+        taxiId,
+        expectedRevision: 1,
+        active: true,
+        actorId: ACTOR,
+      }),
+    ).rejects.toMatchObject({
+      name: "TaxiActivationError",
+      code: "revision_conflict",
+    });
+    expect(await taxiRow(taxiId)).toEqual({ active: true, revision: 2 });
+    expect(await auditCount()).toBe(0);
+  });
+
+  it("meldet fehlende CX-Felder als blockiert und legt keine Ersatztabellen an", async () => {
+    const emptyPool = new Pool({
+      ...baseConnection(),
+      database: databaseName,
+      options: "-c search_path=cx124_empty",
+      max: 2,
+    });
+    try {
+      await emptyPool.query("create schema cx124_empty");
+      const service = new TaxiActivationService({
+        pool: emptyPool,
+        now: () => FIXED_NOW,
+      });
+
+      const attempt = service.setActiveState({
+        taxiId: "SYN-CX124-EMPTY",
+        expectedRevision: 0,
+        active: true,
+        actorId: ACTOR,
+      });
+      await expect(attempt).rejects.toMatchObject({
+        name: "TaxiActivationError",
+        code: "missing_schema",
+      });
+      await expect(attempt).rejects.toThrow("blockiert");
+
+      const created = await emptyPool.query<{ present: boolean }>(
+        "select to_regclass('cx124_empty.taxis') is not null as present",
+      );
+      expect(created.rows[0]?.present).toBe(false);
+    } finally {
+      await emptyPool.end();
+    }
   });
 });
 
