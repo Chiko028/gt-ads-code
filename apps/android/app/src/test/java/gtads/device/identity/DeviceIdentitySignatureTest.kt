@@ -1,11 +1,15 @@
 package gtads.device.identity
 
 import java.security.KeyFactory
+import java.security.KeyPair
+import java.security.KeyPairGenerator
 import java.security.PublicKey
 import java.security.Signature
 import java.security.spec.X509EncodedKeySpec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,6 +33,30 @@ class DeviceIdentitySignatureTest {
         assertFalse("veraendertes Byte", verify(publicKey, flipped, signature))
         assertFalse("anderer oeffentlicher Schluessel", verify(newP256KeyPair().getPublic(), payload, signature))
     }
+
+    @Test
+    fun reportsSignatureFailureWhenTheSigningStepFailsAfterSuccessfulVerification() {
+        val pair = newP256KeyPair()
+        var privateKeyReads = 0
+        val store = TestIdentityKeyStore(
+            mapOf(TEST_ALIAS to pair),
+            privateKeyOverride = {
+                privateKeyReads += 1
+                if (privateKeyReads == 1) pair.private else rsaKeyPair().private
+            },
+        )
+
+        val thrown = assertThrows(DeviceIdentityException::class.java) {
+            DeviceIdentity(store).sign(byteArrayOf(0x01))
+        }
+
+        assertEquals("Signaturfehler getrennt von der Schluesselpruefung", IdentityFailure.SIGNATURE_FAILURE, thrown.failure)
+        assertEquals("keine Erzeugung beim Signieren", 0, store.createCalls)
+        assertSame("kein Ersatz und keine Loeschung", pair, store.keyPair(TEST_ALIAS))
+    }
+
+    private fun rsaKeyPair(): KeyPair =
+        KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
 
     private fun verify(publicKey: PublicKey, bytes: ByteArray, signature: ByteArray): Boolean =
         Signature.getInstance("SHA256withECDSA").run {

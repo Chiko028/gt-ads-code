@@ -104,21 +104,58 @@ class DeviceIdentity internal constructor(private val store: IdentityKeyStore) {
         throw DeviceIdentityException(IdentityFailure.KEYSTORE_FAILURE, cause)
     }
 
+    /**
+     * Prueft oeffentlichen und privaten Identitaetsschluessel gemeinsam:
+     * P-256-Eignung beider Teile und ihre Zuordnung zueinander. Der private
+     * Schluessel wird dabei weder exportiert noch ersetzt oder geloescht.
+     */
     private fun readVerifiedSpki(): ByteArray {
         val spki = try {
             store.publicKeySpki(ALIAS)
         } catch (cause: Exception) {
             throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
         }
-        val key = try {
+        val publicKey = try {
             KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(spki)) as ECPublicKey
         } catch (cause: Exception) {
             throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
         }
-        if (!isP256(key.params)) {
+        if (!isP256(publicKey.params)) {
             throw DeviceIdentityException(IdentityFailure.INVALID_KEY)
         }
+        requireMatchingPrivateKey(publicKey)
         return spki.copyOf()
+    }
+
+    /**
+     * Belegt per verworfener Probe-Signatur, dass der gespeicherte private
+     * Schluessel vorhanden, lesbar, P-256-tauglich und dem veroeffentlichten
+     * Schluessel zugeordnet ist. Fehlt er oder passt er nicht, bleibt der
+     * Eintrag unveraendert; es entsteht kein Ersatz.
+     */
+    private fun requireMatchingPrivateKey(publicKey: ECPublicKey) {
+        val privateKey = try {
+            store.privateKey(ALIAS)
+        } catch (cause: Exception) {
+            throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
+        }
+        val probeSignature = try {
+            signBytes(privateKey, PROBE_BYTES)
+        } catch (cause: Exception) {
+            throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
+        }
+        val matches = try {
+            Signature.getInstance("SHA256withECDSA").run {
+                initVerify(publicKey)
+                update(PROBE_BYTES)
+                verify(probeSignature)
+            }
+        } catch (cause: Exception) {
+            throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
+        }
+        if (!matches) {
+            throw DeviceIdentityException(IdentityFailure.INVALID_KEY)
+        }
     }
 
     private fun isP256(params: ECParameterSpec): Boolean = try {
@@ -137,6 +174,9 @@ class DeviceIdentity internal constructor(private val store: IdentityKeyStore) {
     private companion object {
         /** Komponentenuebergreifende Prozesssperre fuer Pruefung und Erzeugung. */
         val PROCESS_LOCK = Any()
+
+        /** Feste Probe-Bytes der Schluesselpruefung; keine Nutzdaten, keine Geheimnisse. */
+        val PROBE_BYTES: ByteArray = "gt-ads-id-v1".toByteArray(Charsets.UTF_8)
 
         /** Produktiver Signaturpfad, den auch der Android-Adapter nutzt. */
         fun signBytes(key: PrivateKey, bytes: ByteArray): ByteArray =
