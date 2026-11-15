@@ -70,3 +70,12 @@ export {
   type CampaignTransitionOptions,
   type CampaignTransitionResult,
 } from "./transition.js";
+
+export {
+  CAMPAIGN_DRAFT_AUDIT_FIELDS,
+  CAMPAIGN_DRAFT_CREATED_ACTION,
+  CAMPAIGN_DRAFT_STATUS,
+  saveCampaignDraft,
+  type CampaignDraft,
+  type SaveCampaignDraftOptions,
+} from "./drafts.js";

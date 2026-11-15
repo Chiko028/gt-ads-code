@@ -3,8 +3,10 @@
 -- Betreiber- und Auditdaten bleiben unveraendert; es entstehen keine
 -- parallelen Stammdatentabellen. Das Medium wird bewusst nicht per
 -- Fremdschluessel gebunden, weil vorhandene, bereits geloeschte Medien
--- historische Kampagnen nicht ungueltig machen duerfen. Der Service prueft
--- Status und Loeschmarkierung beim Anlegen eines Entwurfs.
+-- historische Kampagnen nicht ungueltig machen duerfen. saveCampaignDraft
+-- (modules/campaigns/drafts.ts) prueft Kunde, Mediumsstatus und
+-- Loeschmarkierung sowie die Laufzeit vor dem transaktionsgebundenen
+-- Einfuegen samt bereinigtem U3-Audit.
 
 create table if not exists campaigns (
   id uuid primary key,
