@@ -5,6 +5,12 @@ export interface AdminSessionRow {
   id: string;
   expires_at: Date;
   /**
+   * Zeitpunkt des abgeschlossenen zweiten Faktors dieser Sitzung. NULL
+   * kennzeichnet die reine Passwort-Vorsitzung. Das Feld wird ueber to_jsonb
+   * gelesen, damit bestehende Datenbanken ohne die additive Spalte laufen.
+   */
+  mfa_verified_at: string | null;
+  /**
    * Stabile Actor-ID der Sitzung. NULL kennzeichnet die bisherige
    * konfigurierte Administrationsidentitaet (legacy-admin); Operator-
    * Sitzungen tragen hier ihre persistente actor_id.
@@ -19,6 +25,12 @@ export interface InsertAdminSessionInput {
   expiresAt: Date;
   /** Nur fuer persistente Operatorkonten; Legacy-Sitzungen lassen ihn weg. */
   actorId?: string | null;
+  /**
+   * Wird nur nach abgeschlossenem zweitem Faktor gesetzt. Ohne Angabe bleibt
+   * die Spalte aus dem INSERT, damit Datenbanken ohne additive
+   * mfa_verified_at-Spalte weiter funktionieren.
+   */
+  mfaVerifiedAt?: Date | null;
 }
 
 /**
@@ -31,22 +43,61 @@ export async function insertAdminSession(
   executor: SqlQueryable,
   input: InsertAdminSessionInput,
 ): Promise<void> {
+  const hasMfaState =
+    input.mfaVerifiedAt !== undefined && input.mfaVerifiedAt !== null;
+  const mfaVerifiedAt = input.mfaVerifiedAt ?? null;
+
   if (input.actorId === undefined || input.actorId === null) {
+    if (!hasMfaState) {
+      await executor.query(
+        [
+          "insert into admin_sessions",
+          "  (id, token_hash, created_at, expires_at)",
+          "values ($1, $2, $3, $4)",
+        ].join("\n"),
+        [input.id, input.tokenHash, input.createdAt, input.expiresAt],
+      );
+      return;
+    }
     await executor.query(
       [
         "insert into admin_sessions",
-        "  (id, token_hash, created_at, expires_at)",
-        "values ($1, $2, $3, $4)",
+        "  (id, token_hash, created_at, expires_at, mfa_verified_at)",
+        "values ($1, $2, $3, $4, $5)",
       ].join("\n"),
-      [input.id, input.tokenHash, input.createdAt, input.expiresAt],
+      [
+        input.id,
+        input.tokenHash,
+        input.createdAt,
+        input.expiresAt,
+        mfaVerifiedAt,
+      ],
+    );
+    return;
+  }
+
+  if (!hasMfaState) {
+    await executor.query(
+      [
+        "insert into admin_sessions",
+        "  (id, token_hash, created_at, expires_at, actor_id)",
+        "values ($1, $2, $3, $4, $5::uuid)",
+      ].join("\n"),
+      [
+        input.id,
+        input.tokenHash,
+        input.createdAt,
+        input.expiresAt,
+        input.actorId,
+      ],
     );
     return;
   }
   await executor.query(
     [
       "insert into admin_sessions",
-      "  (id, token_hash, created_at, expires_at, actor_id)",
-      "values ($1, $2, $3, $4, $5::uuid)",
+      "  (id, token_hash, created_at, expires_at, actor_id, mfa_verified_at)",
+      "values ($1, $2, $3, $4, $5::uuid, $6)",
     ].join("\n"),
     [
       input.id,
@@ -54,6 +105,7 @@ export async function insertAdminSession(
       input.createdAt,
       input.expiresAt,
       input.actorId,
+      mfaVerifiedAt,
     ],
   );
 }
@@ -70,7 +122,8 @@ export async function findAdminSessionByTokenHash(
   const result = await executor.query<AdminSessionRow>(
     [
       "select s.id::text as id, s.expires_at,",
-      "       to_jsonb(s) ->> 'actor_id' as actor_id",
+      "       to_jsonb(s) ->> 'actor_id' as actor_id,",
+      "       to_jsonb(s) ->> 'mfa_verified_at' as mfa_verified_at",
       "  from admin_sessions s",
       " where s.token_hash = $1",
     ].join("\n"),
@@ -210,7 +263,8 @@ export async function findAdminSessionByIdForUpdate(
   const result = await executor.query<AdminSessionRow>(
     [
       "select s.id::text as id, s.expires_at,",
-      "       to_jsonb(s) ->> 'actor_id' as actor_id",
+      "       to_jsonb(s) ->> 'actor_id' as actor_id,",
+      "       to_jsonb(s) ->> 'mfa_verified_at' as mfa_verified_at",
       "  from admin_sessions s",
       " where s.id = $1::uuid",
       "   for update",

@@ -109,10 +109,16 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/admin/operations/backup-check": PUBLIC,
 
   // CX-066 / R-605: Wiederherstellung als zweiter Faktor und Codesatz-Ausgabe.
-  // Beide Routen sind ausdrueckliche Katalogeintraege der bestehenden
-  // Sicherheitsverwaltung (nur Admin); es gibt keine Pfadpraefix-Ausnahme.
+  // Die beiden Wiederherstellungsrouten sind ausdrueckliche Katalogeintraege
+  // der bestehenden Sicherheitsverwaltung (nur Admin); es gibt keine
+  // Pfadpraefix-Ausnahme.
   "POST /v1/admin/auth/recovery/verify": human("security.manage"),
   "POST /v1/admin/auth/recovery-codes": human("security.manage"),
+
+  // CX-066 Review-Korrektur: TOTP als eigentlicher zweiter Anmeldefaktor.
+  // Dieselbe Login-Challenge und derselbe Fehlversuchszaehler wie die
+  // Wiederherstellung; die Route prueft Sitzung und Adminrolle selbst.
+  "POST /v1/admin/auth/totp/verify": human("security.manage"),
 
   // CX-107 / R-605: Beginn der TOTP-Einrichtung. Die Route prueft
   // Admin-Sitzung, Adminrolle, Passwort und JSON-Schreibschutz selbst.

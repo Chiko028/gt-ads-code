@@ -13,20 +13,23 @@
  *
  * - POST /v1/admin/auth/recovery-codes
  *   Erzeugt oder ersetzt den Codesatz. Voraussetzung ist eine vollstaendige
- *   Admin-Sitzung plus ein erneut eingegebener, frischer TOTP-Code. Die
- *   Replay-Sperre wird in derselben Transaktion fortgeschrieben. Die neuen
- *   Klartextcodes erscheinen genau einmal in der Antwort (Cache-Control:
- *   no-store); es gibt keine lesende Code-API.
+ *   MFA-Sitzung (mfa_verified_at gesetzt) plus ein erneut eingegebener,
+ *   frischer TOTP-Code aus dem bestaetigten aktiven TOTP-Zustand des
+ *   MFA-Kerns. Die Replay-Sperre wird in derselben Transaktion
+ *   fortgeschrieben. Die neuen Klartextcodes erscheinen genau einmal in der
+ *   Antwort (Cache-Control: no-store); es gibt keine lesende Code-API.
  *
  * Bewusst nicht enthalten: Secret-Austausch, MFA-Deaktivierung,
  * Bootstrap-Bypass, Passwort-/TOTP-Reset und eine Produktionsaktivierung
  * (die Routen werden von server.ts nicht registriert).
  *
  * Persistenz: Der Kern CX-065 besitzt bereits Codesaetze und Codes. Fuer die
- * HTTP-Integration fehlen zwei additive, modul-eigene Tabellen (Challenge und
- * TOTP-Replay-Zustand). Sie werden wie die uebrigen modul-eigenen Schemata
- * idempotent beim ersten Zugriff angelegt; es entsteht keine Migration und
- * keine Aenderung bestehender Tabellen.
+ * HTTP-Integration kommen zwei additive, modul-eigene Tabellen (Challenge und
+ * TOTP-Replay-Zustand) sowie die additive Spalte admin_sessions.mfa_verified_at
+ * hinzu. Sie werden wie die uebrigen modul-eigenen Schemata idempotent beim
+ * ersten Zugriff angelegt; es entsteht keine Migration und keine Aenderung
+ * bestehender Spalten. Nur eine Sitzung mit gesetztem mfa_verified_at gilt als
+ * vollstaendige MFA-Sitzung.
  */
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -42,10 +45,13 @@ import {
   createAdminSessionMiddleware,
   requireAdminWrite,
 } from "./middleware.js";
+import { readActiveTotpCredential } from "./activeTotpCredential.js";
 import {
-  PENDING_TOTP_ENROLLMENT_TTL_MS,
-  PendingTotpEnrollmentStore,
-} from "./pendingTotpEnrollment.js";
+  consumeLoginChallenge,
+  isLoginChallengeUsable,
+  lockLoginChallenge,
+  recordLoginChallengeFailure,
+} from "./loginChallenge.js";
 import {
   createRecoveryCodeService,
   issueRecoveryCodeSetInTransaction,
@@ -114,6 +120,8 @@ const MODULE_SCHEMA_SQL = [
   "  last_accepted_step bigint not null check (last_accepted_step >= 0),",
   "  updated_at timestamptz not null",
   ");",
+  "alter table admin_sessions",
+  "  add column if not exists mfa_verified_at timestamptz null;",
 ].join("\n");
 
 export interface AdminMfaRecoveryRoutesDeps {
@@ -211,6 +219,17 @@ function requireAdminSession(request: FastifyRequest): AdminSessionContext {
   return session;
 }
 
+/**
+ * Sicherheitskritische Routen verlangen eine vollstaendige MFA-Sitzung.
+ * Eine reine Passwort-Vorsitzung (mfa_verified_at is null) wird abgelehnt.
+ */
+function requireMfaSession(session: AdminSessionContext): AdminSessionContext {
+  if (session.mfaVerifiedAt === null) {
+    throw ApiError.forbidden();
+  }
+  return session;
+}
+
 interface AttemptReservation {
   /** Zaehlt den Versuch als Fehlversuch (Quelle und Konto). */
   commitFailure(): void;
@@ -278,14 +297,6 @@ async function withTransaction<T>(
   }
 }
 
-interface ChallengeRow {
-  id: string;
-  expires_at: Date;
-  failed_attempts: number;
-  consumed_at: Date | null;
-  locked_at: Date | null;
-}
-
 interface RotatedSession {
   token: string;
   expiresAt: Date;
@@ -344,43 +355,18 @@ export function registerAdminMfaRecoveryRoutes(
             return null;
           }
 
-          // 2) Genau eine Challenge je Vorsitzung; die vorhandene Zeile wird
-          //    gesperrt.
-          const expiresAt = new Date(
-            Math.min(
-              at.getTime() + PENDING_TOTP_ENROLLMENT_TTL_MS,
-              session.expiresAt.getTime(),
-            ),
+          // 2) Dieselbe persistente Login-Challenge wie der TOTP-Zweig;
+          //    die vorhandene Zeile wird gesperrt.
+          const challenge = await lockLoginChallenge(
+            client,
+            session.sessionId,
+            session.actorId,
+            at,
+            session.expiresAt,
           );
-          await client.query(
-            [
-              "insert into admin_mfa_recovery_challenges",
-              "  (id, session_id, actor_id, created_at, expires_at,",
-              "   failed_attempts, consumed_at, locked_at)",
-              "values ($1, $2::uuid, $3, $4, $5, 0, null, null)",
-              "on conflict (session_id) do nothing",
-            ].join("\n"),
-            [randomUUID(), session.sessionId, session.actorId, at, expiresAt],
-          );
-          const challengeResult = await client.query<ChallengeRow>(
-            [
-              "select id::text as id, expires_at, failed_attempts,",
-              "       consumed_at, locked_at",
-              "  from admin_mfa_recovery_challenges",
-              " where session_id = $1::uuid",
-              "   for update",
-            ].join("\n"),
-            [session.sessionId],
-          );
-          const challenge = challengeResult.rows[0];
-          if (challenge === undefined) {
-            return null;
-          }
           if (
-            challenge.consumed_at !== null ||
-            challenge.locked_at !== null ||
-            at.getTime() >= challenge.expires_at.getTime() ||
-            challenge.failed_attempts >= maxAttempts
+            challenge === null ||
+            !isLoginChallengeUsable(challenge, at, maxAttempts)
           ) {
             return null;
           }
@@ -405,19 +391,11 @@ export function registerAdminMfaRecoveryRoutes(
           }
 
           if (!consumption.consumed) {
-            await client.query(
-              [
-                "update admin_mfa_recovery_challenges",
-                "   set failed_attempts = failed_attempts + 1,",
-                "       locked_at = case",
-                "         when failed_attempts + 1 >= $2 then $3",
-                "         else locked_at",
-                "       end",
-                " where id = $1::uuid",
-                "   and consumed_at is null",
-                "   and locked_at is null",
-              ].join("\n"),
-              [challenge.id, maxAttempts, at],
+            await recordLoginChallengeFailure(
+              client,
+              challenge.id,
+              maxAttempts,
+              at,
             );
             // Der Fehlversuch bleibt bestehen; der Aufrufer wirft 401.
             return null;
@@ -425,18 +403,7 @@ export function registerAdminMfaRecoveryRoutes(
 
           // 4) Challenge verbrauchen, Vorsitzung ersetzen, Audit schreiben.
           //    Alles im selben Commit; das Cookie folgt erst danach.
-          const consumedChallenge = await client.query(
-            [
-              "update admin_mfa_recovery_challenges",
-              "   set consumed_at = $2",
-              " where id = $1::uuid",
-              "   and consumed_at is null",
-              "   and locked_at is null",
-              "returning id::text as id",
-            ].join("\n"),
-            [challenge.id, at],
-          );
-          if ((consumedChallenge.rowCount ?? 0) !== 1) {
+          if (!(await consumeLoginChallenge(client, challenge.id, at))) {
             throw new Error("Challenge konnte nicht verbraucht werden");
           }
 
@@ -457,6 +424,7 @@ export function registerAdminMfaRecoveryRoutes(
             tokenHash: hashToken(token),
             createdAt: at,
             expiresAt: sessionExpiresAt,
+            mfaVerifiedAt: at,
             // Legacy-Sitzungen bleiben ohne actor_id; Operator-Sitzungen
             // tragen ihre persistente UUID.
             actorId:
@@ -514,8 +482,12 @@ export function registerAdminMfaRecoveryRoutes(
       if (!hasValidKey(key)) {
         throw mfaUnavailable();
       }
-      const session = requireAdminSession(request);
+      const session = requireMfaSession(requireAdminSession(request));
       await ensureAdminMfaRecoverySchema(deps.pool);
+
+      // Format vor der Reservierung validieren: ein ungueltiger Wert darf
+      // keine Limiter-Tickets belegen.
+      const totpCode = parseTotpCodeBody(request.body);
 
       const attempt = beginAttempt(
         deps.loginLimiter,
@@ -523,91 +495,119 @@ export function registerAdminMfaRecoveryRoutes(
         ADMIN_MFA_ACCOUNT_LIMIT_PREFIX + session.actorId,
       );
 
-      const totpCode = parseTotpCodeBody(request.body);
+      type CodesOutcome =
+        | { kind: "issued"; set: RecoveryCodeSet }
+        | { kind: "wrong" }
+        | { kind: "blocked" };
 
-      let issued: RecoveryCodeSet | null;
+      let outcome: CodesOutcome;
       try {
-        issued = await withTransaction(deps.pool, async (client) => {
-          const at = now();
+        outcome = await withTransaction<CodesOutcome>(
+          deps.pool,
+          async (client) => {
+            const at = now();
 
-          // 1) Replay-Zustand sperren. Existiert noch keine Zeile, wirkt die
-          //    Sperre erst ueber den bedingten Upsert (Schritt 3).
-          const replay = await client.query<{ last_accepted_step: string }>(
-            [
-              "select last_accepted_step",
-              "  from admin_mfa_totp_replay_state",
-              " where actor_id = $1",
-              "   for update",
-            ].join("\n"),
-            [session.actorId],
-          );
-          const lastAcceptedStep =
-            replay.rows[0] === undefined
-              ? null
-              : Number(replay.rows[0].last_accepted_step);
+            // 1) Dieselbe persistente Login-Challenge wie der
+            //    Wiederherstellungszweig; Sperre und Fehlversuchszaehler
+            //    gelten damit fuer beide zweiten Faktoren gemeinsam.
+            const challenge = await lockLoginChallenge(
+              client,
+              session.sessionId,
+              session.actorId,
+              at,
+              session.expiresAt,
+            );
+            if (
+              challenge === null ||
+              !isLoginChallengeUsable(challenge, at, maxAttempts)
+            ) {
+              return { kind: "blocked" };
+            }
 
-          // 2) TOTP-Geheimnis kommt aus dem vorhandenen CX-106-Speicher; es
-          //    wird nie geloggt oder auditiert.
-          const store = new PendingTotpEnrollmentStore({
-            client,
-            key,
-            now: () => at,
-          });
-          const credential = await store.readForActor(session.actorId);
-          if (credential === null) {
-            return null;
-          }
-          const step = matchTotpStep(
-            credential.secret,
-            totpCode,
-            at.getTime(),
-            lastAcceptedStep,
-          );
-          if (step === null) {
-            return null;
-          }
+            // 2) Ausschliesslich der bestaetigte aktive TOTP-Zustand des
+            //    MFA-Kerns; eine ausstehende Einrichtung ist kein Nachweis.
+            const credential = await readActiveTotpCredential(
+              client,
+              key,
+              session.actorId,
+            );
+            if (credential === null) {
+              return { kind: "blocked" };
+            }
+            const step = matchTotpStep(
+              credential.secret,
+              totpCode,
+              at.getTime(),
+              credential.lastAcceptedStep,
+            );
+            if (step === null) {
+              await recordLoginChallengeFailure(
+                client,
+                challenge.id,
+                maxAttempts,
+                at,
+              );
+              return { kind: "wrong" };
+            }
 
-          // 3) Replay-Sperre fortschreiben. Der bedingte Upsert akzeptiert nur
-          //    einen echt groesseren Schritt; dadurch bleibt auch bei
-          //    parallelen Anfragen genau ein frischer Code wirksam.
-          const advanced = await client.query(
-            [
-              "insert into admin_mfa_totp_replay_state",
-              "  (actor_id, last_accepted_step, updated_at)",
-              "values ($1, $2, $3)",
-              "on conflict (actor_id) do update",
-              "   set last_accepted_step = excluded.last_accepted_step,",
-              "       updated_at = excluded.updated_at",
-              " where admin_mfa_totp_replay_state.last_accepted_step",
-              "       < excluded.last_accepted_step",
-              "returning last_accepted_step",
-            ].join("\n"),
-            [session.actorId, step, at],
-          );
-          if ((advanced.rowCount ?? 0) !== 1) {
-            return null;
-          }
+            // 3) Replay-Sperre fortschreiben. Der bedingte Upsert akzeptiert
+            //    nur einen echt groesseren Schritt; ein Replay ist ebenfalls
+            //    ein Fehlversuch auf derselben Challenge.
+            const advanced = await client.query(
+              [
+                "insert into admin_mfa_totp_replay_state",
+                "  (actor_id, last_accepted_step, updated_at)",
+                "values ($1, $2, $3)",
+                "on conflict (actor_id) do update",
+                "   set last_accepted_step = excluded.last_accepted_step,",
+                "       updated_at = excluded.updated_at",
+                " where admin_mfa_totp_replay_state.last_accepted_step",
+                "       < excluded.last_accepted_step",
+                "returning last_accepted_step",
+              ].join("\n"),
+              [session.actorId, step, at],
+            );
+            if ((advanced.rowCount ?? 0) !== 1) {
+              await recordLoginChallengeFailure(
+                client,
+                challenge.id,
+                maxAttempts,
+                at,
+              );
+              return { kind: "wrong" };
+            }
 
-          // 4) Codesatz erzeugen/ersetzen und Audit in derselben Transaktion.
-          return issueRecoveryCodeSetInTransaction(client, session.actorId, {
-            now: () => at,
-          });
-        });
+            // 4) Codesatz erzeugen/ersetzen und Audit in derselben
+            //    Transaktion.
+            return {
+              kind: "issued",
+              set: await issueRecoveryCodeSetInTransaction(
+                client,
+                session.actorId,
+                { now: () => at },
+              ),
+            };
+          },
+        );
       } catch (error) {
         attempt.release();
         throw error;
       }
 
-      if (issued === null) {
-        attempt.commitFailure();
+      if (outcome.kind !== "issued") {
+        if (outcome.kind === "wrong") {
+          attempt.commitFailure();
+        } else {
+          attempt.release();
+        }
         throw ApiError.unauthorized();
       }
 
       attempt.release();
       reply.header("Cache-Control", "no-store");
       reply.code(200).send({
-        codes: issued.codes,
-        created_at: issued.createdAt.toISOString(),
+        codes: outcome.set.codes,
+        created_at: outcome.set.createdAt.toISOString(),
       });
     },
   });

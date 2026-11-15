@@ -31,6 +31,12 @@ export interface AdminSessionContext {
   /** Klartext-Token; nur zum Loeschen beim Logout benoetigt. */
   token: string;
   expiresAt: Date;
+  /**
+   * Zeitpunkt des abgeschlossenen zweiten Faktors. NULL kennzeichnet eine
+   * reine Passwort-Vorsitzung; sicherheitskritische Routen verlangen eine
+   * vollstaendige MFA-Sitzung.
+   */
+  mfaVerifiedAt: Date | null;
   /** Stabile Actor-ID der Sitzung (Operator-UUID oder legacy-admin). */
   actorId: string;
   role: AdminSessionRole;
@@ -296,11 +302,20 @@ export class AdminAuthService {
       return null;
     }
 
+    const parsedMfaVerifiedAt =
+      row.mfa_verified_at === null ? null : new Date(row.mfa_verified_at);
+    const mfaVerifiedAt =
+      parsedMfaVerifiedAt !== null &&
+      !Number.isNaN(parsedMfaVerifiedAt.getTime())
+        ? parsedMfaVerifiedAt
+        : null;
+
     if (row.actor_id === null) {
       return {
         sessionId: row.id,
         token,
         expiresAt,
+        mfaVerifiedAt,
         actorId: LEGACY_ADMIN_ACTOR_ID,
         role: "Admin",
       };
@@ -310,6 +325,7 @@ export class AdminAuthService {
         sessionId: row.id,
         token,
         expiresAt,
+        mfaVerifiedAt,
         actorId: LEGACY_ADMIN_ACTOR_ID,
         role: "Admin",
       };
@@ -323,6 +339,7 @@ export class AdminAuthService {
       sessionId: row.id,
       token,
       expiresAt,
+      mfaVerifiedAt,
       actorId: row.actor_id,
       role: "Operator",
     };

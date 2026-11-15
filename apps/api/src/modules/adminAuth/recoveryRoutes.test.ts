@@ -33,7 +33,7 @@ import { redactUrl } from "../../http/logging.js";
 import { createLegacyAdminPrincipalResolver } from "../../http/principal.js";
 import { RateLimiter } from "../../http/rateLimit.js";
 import { ADMIN_SESSION_COOKIE } from "./middleware.js";
-import { PendingTotpEnrollmentStore } from "./pendingTotpEnrollment.js";
+import { encryptActiveTotpSecret } from "./activeTotpCredential.js";
 import {
   RECOVERY_CODE_SET_CREATED_ACTION,
   RECOVERY_CODE_SET_REPLACED_ACTION,
@@ -59,6 +59,11 @@ import {
   OPERATOR_SCRYPT_PARAMS,
 } from "./service.js";
 import { generateTotpSecret } from "./totp.js";
+import { ensureAdminTotpConfirmSchema } from "./totpSetupConfirm.js";
+import {
+  ADMIN_MFA_TOTP_LOGIN_URL,
+  registerAdminTotpLoginRoutes,
+} from "./totpLogin.js";
 
 const BASE_TIME = Date.parse("2026-11-15T09:00:00.000Z");
 const TOTP_STEP_MS = 30_000;
@@ -134,8 +139,10 @@ function baseConnection(): {
   return { host, port: Number(process.env.PGPORT ?? "5432"), user, database };
 }
 
+let currentTimeMs = BASE_TIME;
+
 function clock(): Date {
-  return new Date(BASE_TIME);
+  return new Date(currentTimeMs);
 }
 
 beforeAll(async () => {
@@ -162,6 +169,7 @@ beforeAll(async () => {
     await pool.query(await readFile(join(MIGRATIONS_DIR, file), "utf8"));
   }
   await ensureAdminMfaRecoverySchema(pool);
+  await ensureAdminTotpConfirmSchema(pool);
 
   config = {
     ...CONFIG_DEFAULTS,
@@ -190,6 +198,7 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
+  currentTimeMs = BASE_TIME;
   logLines.length = 0;
   await pool.query("drop trigger if exists cx066_fail_session_audit on audit_events");
   await pool.query("drop function if exists cx066_fail_session_audit() cascade");
@@ -250,6 +259,14 @@ async function buildApp(): Promise<BuiltApp> {
   const limiter = createAdminLoginRateLimiter(config, () => clock().getTime());
   registerAdminAuthRoutes(app, { service: adminAuth, loginLimiter: limiter, config });
   registerAdminMfaRecoveryRoutes(app, {
+    pool,
+    adminAuth,
+    config,
+    loginLimiter: limiter,
+    totpEncryptionKey: TOTP_KEY,
+    now: clock,
+  });
+  registerAdminTotpLoginRoutes(app, {
     pool,
     adminAuth,
     config,
@@ -348,6 +365,67 @@ async function codesRequest(
     headers: response.headers as Record<string, unknown>,
     body: response.body,
   };
+}
+
+async function totpLoginRequest(
+  app: FastifyInstance,
+  totpCode: string,
+  options: RequestOptions = {},
+): Promise<{ statusCode: number; headers: Record<string, unknown>; body: string }> {
+  const response = await app.inject({
+    method: "POST",
+    url: ADMIN_MFA_TOTP_LOGIN_URL,
+    headers: adminHeaders(options),
+    payload: { totp_code: totpCode },
+    remoteAddress: options.remoteAddress ?? "192.0.2.13",
+  });
+  return {
+    statusCode: response.statusCode,
+    headers: response.headers as Record<string, unknown>,
+    body: response.body,
+  };
+}
+
+/**
+ * Legt den bestaetigten aktiven TOTP-Zustand direkt in derselben
+ * Verschluesselung ab, die CX-108 beim Abschluss der Einrichtung verwendet.
+ */
+async function activateTotpDirectly(
+  secret: string,
+  lastAcceptedStep: number,
+): Promise<void> {
+  const enrollmentId = randomUUID();
+  const encrypted = encryptActiveTotpSecret(
+    TOTP_KEY,
+    LEGACY_ADMIN_ACTOR_ID,
+    enrollmentId,
+    secret,
+  );
+  await pool.query(
+    [
+      "insert into admin_mfa_totp_replay_state",
+      "  (actor_id, last_accepted_step, updated_at, enrollment_id,",
+      "   nonce, ciphertext, tag, activated_at)",
+      "values ($1, $2, $3, $4::uuid, $5, $6, $7, $3)",
+      "on conflict (actor_id) do update",
+      "   set last_accepted_step = excluded.last_accepted_step,",
+      "       updated_at = excluded.updated_at,",
+      "       enrollment_id = excluded.enrollment_id,",
+      "       nonce = excluded.nonce,",
+      "       ciphertext = excluded.ciphertext,",
+      "       tag = excluded.tag,",
+      "       activated_at = excluded.activated_at",
+    ].join("\n"),
+    [
+      LEGACY_ADMIN_ACTOR_ID,
+      lastAcceptedStep,
+      clock(),
+      enrollmentId,
+      encrypted.nonce,
+      encrypted.ciphertext,
+      encrypted.tag,
+    ],
+  );
 }
 
 async function issueSetDirectly(actorId: string = LEGACY_ADMIN_ACTOR_ID): Promise<string[]> {
@@ -576,13 +654,18 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
     ).toBe(1);
   });
 
-  it("Fünf Fehlversuche sperren die Challenge; bestehende konto- und quellenbezogene Limits gelten auch bei Wechsel zwischen TOTP und Wiederherstellung, mit Retry-After bei Begrenzung.", async () => {
+  it("Fünf Fehlversuche sperren die gemeinsame Challenge; TOTP- und Wiederherstellungsfehler teilen Zähler und konto-/quellenbezogene Limits.", async () => {
     const { app } = await buildApp();
     const codes = await issueSetDirectly();
+    const secret = generateTotpSecret();
+    const step = Math.floor(BASE_TIME / TOTP_STEP_MS);
+    await activateTotpDirectly(secret, step - 1);
+    const wrongTotpCode = referenceTotpStep(secret, step + 10);
     const cookie = await login(app, { remoteAddress: "192.0.2.41" });
 
-    // Zwei Fehlversuche ueber die Wiederherstellung, drei ueber TOTP: derselbe
-    // Zaehler und dieselben Schluessel.
+    // Zwei Fehlversuche ueber die Wiederherstellung, drei ueber die
+    // tatsaechliche TOTP-Anmelderoute: dieselbe Challenge, derselbe Zaehler
+    // und dieselben Schluessel.
     for (let index = 0; index < 2; index += 1) {
       const response = await verifyRequest(app, badRecoveryCode(), {
         cookie,
@@ -591,15 +674,15 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
       expect(response.statusCode).toBe(401);
     }
     for (let index = 0; index < 3; index += 1) {
-      const response = await codesRequest(app, "000000", {
+      const response = await totpLoginRequest(app, wrongTotpCode, {
         cookie,
         remoteAddress: "192.0.2.41",
       });
-      expect(response.statusCode).toBe(401);
+      expect(response.statusCode, response.body).toBe(401);
     }
 
     // Der sechste Versuch ist begrenzt; Retry-After stammt aus dem Fenster.
-    const limited = await codesRequest(app, "000000", {
+    const limited = await totpLoginRequest(app, wrongTotpCode, {
       cookie,
       remoteAddress: "192.0.2.41",
     });
@@ -609,14 +692,18 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
     expect(Number.isInteger(retryAfter)).toBe(true);
     expect(retryAfter).toBeGreaterThan(0);
 
-    // Die TOTP-Fehlversuche haben die Wiederherstellungs-Challenge nicht
-    // gesperrt; sie stehen bei 2.
+    // Genau fuenf Fehlversuche, verteilt auf beide zweiten Faktoren, haben
+    // die eine Challenge gesperrt.
     expect(
-      await numberValue(
-        "select failed_attempts from admin_mfa_recovery_challenges where consumed_at is null",
-        "failed_attempts",
+      await scalar(
+        "select count(*) from admin_mfa_recovery_challenges where locked_at is not null and failed_attempts = 5",
       ),
-    ).toBe(2);
+    ).toBe(1);
+    expect(
+      await scalar(
+        "select count(*) from admin_mfa_recovery_challenges where locked_at is null",
+      ),
+    ).toBe(0);
 
     // Fuenf Fehlversuche ueber die Wiederherstellung sperren die Challenge.
     // Frischer Limiter (neue App), damit die Sperre aus der Datenbank kommt.
@@ -633,7 +720,7 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
       await scalar(
         "select count(*) from admin_mfa_recovery_challenges where locked_at is not null and failed_attempts = 5",
       ),
-    ).toBe(1);
+    ).toBe(2);
 
     // Auch mit frischem Limiter bleibt die gesperrte Challenge derselben
     // Vorsitzung gesperrt; der gueltige Code bleibt unverbraucht. Ein neues
@@ -657,28 +744,17 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
     ).toBe(1);
   });
 
-  it("Codesatz-Ausgabe verlangt vollständige Admin-Sitzung und frischen, replaygeschützten TOTP-Code; fremder Origin scheitert, Erfolg ist no-store und Geheimnisse fehlen in Logs und Audit.", async () => {
+  it("Codesatz-Ausgabe verlangt vollständige MFA-Sitzung und frischen, replaygeschützten TOTP-Code; reine Passwort-Vorsitzung mit gültigem TOTP wird abgelehnt.", async () => {
     const { app } = await buildApp();
     const secret = generateTotpSecret();
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      const store = new PendingTotpEnrollmentStore({
-        client,
-        key: TOTP_KEY,
-        now: clock,
-      });
-      await store.replace(LEGACY_ADMIN_ACTOR_ID, secret);
-      await client.query("commit");
-    } finally {
-      client.release();
-    }
-
     const step = Math.floor(BASE_TIME / TOTP_STEP_MS);
+    await activateTotpDirectly(secret, step - 1);
+
     const freshCode = referenceTotpStep(secret, step);
+    const nextCode = referenceTotpStep(secret, step + 1);
     const wrongCode = referenceTotpStep(secret, step + 10);
 
-    // Ohne Sitzung, als Operator und mit falschem TOTP-Code wird verweigert.
+    // Ohne Sitzung und als Operator wird verweigert.
     const anonymous = await codesRequest(app, freshCode, { remoteAddress: "192.0.2.71" });
     expect(anonymous.statusCode).toBe(401);
 
@@ -694,8 +770,42 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
     });
     expect(asOperator.statusCode).toBe(403);
 
-    const wrong = await codesRequest(app, wrongCode, {
+    // Review #2: Eine reine Passwort-Vorsitzung mit gueltigem frischem
+    // TOTP-Code ist noch keine vollstaendige MFA-Sitzung und darf keinen
+    // Codesatz ausgeben.
+    const passwordOnly = await codesRequest(app, freshCode, {
       cookie,
+      remoteAddress: "192.0.2.72",
+    });
+    expect(passwordOnly.statusCode).toBe(403);
+    expect(
+      await scalar("select count(*) from admin_mfa_recovery_code_sets"),
+    ).toBe(0);
+    expect(
+      await scalar("select count(*) from admin_mfa_recovery_challenges"),
+    ).toBe(0);
+
+    // Vollstaendige MFA-Sitzung ueber die tatsaechliche TOTP-Anmelderoute.
+    const loggedIn = await totpLoginRequest(app, freshCode, {
+      cookie,
+      remoteAddress: "192.0.2.72",
+    });
+    expect(loggedIn.statusCode, loggedIn.body).toBe(204);
+    expect(loggedIn.headers["cache-control"]).toBe("no-store");
+    const mfaCookie = cookieValue(cookiesOf(loggedIn.headers));
+    expect(mfaCookie).not.toBe(cookie);
+    expect(
+      await scalar("select count(*) from admin_sessions where mfa_verified_at is not null"),
+    ).toBe(1);
+    // Die Legacy-Vorsitzung wurde ersetzt; die Operator-Sitzung aus dem
+    // vorherigen Negativtest bleibt bestehen und hat keinen MFA-Nachweis.
+    expect(
+      await scalar("select count(*) from admin_sessions where actor_id is null"),
+    ).toBe(1);
+    expect(await scalar("select count(*) from admin_sessions")).toBe(2);
+
+    const wrong = await codesRequest(app, wrongCode, {
+      cookie: mfaCookie,
       remoteAddress: "192.0.2.72",
     });
     expect(wrong.statusCode).toBe(401);
@@ -704,23 +814,23 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
     ).toBe(0);
 
     // Fremder Origin scheitert vor der Fachlogik.
-    const foreign = await codesRequest(app, freshCode, {
-      cookie,
+    const foreign = await codesRequest(app, nextCode, {
+      cookie: mfaCookie,
       origin: FOREIGN_ORIGIN,
       remoteAddress: "192.0.2.72",
     });
     expect(foreign.statusCode).toBe(403);
     // Eigener Origin ist erlaubt.
     const ownOrigin = await codesRequest(app, wrongCode, {
-      cookie,
+      cookie: mfaCookie,
       origin: ORIGIN,
       remoteAddress: "192.0.2.72",
     });
     expect(ownOrigin.statusCode).toBe(401);
 
     // Erfolg: genau einmal Klartext, no-store.
-    const issued = await codesRequest(app, freshCode, {
-      cookie,
+    const issued = await codesRequest(app, nextCode, {
+      cookie: mfaCookie,
       remoteAddress: "192.0.2.72",
     });
     expect(issued.statusCode, issued.body).toBe(200);
@@ -744,7 +854,7 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
       ).toBe(true);
     }
 
-    // Audit enthaelt weder Klartextcode noch TOTP-Code.
+    // Audit enthaelt weder Klartextcode noch TOTP-Code noch Secret.
     const auditRows = await pool.query<{ action: string; details: Record<string, unknown> }>(
       "select action, details from audit_events",
     );
@@ -753,6 +863,8 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
       expect(auditText).not.toContain(bareCode(displayed));
     }
     expect(auditText).not.toContain(freshCode);
+    expect(auditText).not.toContain(nextCode);
+    expect(auditText).not.toContain(secret);
     expect(
       await scalar("select count(*) from audit_events where action = $1", [
         RECOVERY_CODE_SET_CREATED_ACTION,
@@ -767,11 +879,14 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
       expect(logText).not.toContain(bareCode(displayed));
     }
     expect(logText).not.toContain(freshCode);
+    expect(logText).not.toContain(nextCode);
     expect(logText).not.toContain(secret);
+    expect(logText).not.toContain(mfaCookie);
 
-    // Replay desselben TOTP-Codes scheitert; Replay-Sperre steht auf step.
-    const replay = await codesRequest(app, freshCode, {
-      cookie,
+    // Replay desselben TOTP-Codes scheitert; Replay-Sperre steht auf dem
+    // bereits verbrauchten Schritt.
+    const replay = await codesRequest(app, nextCode, {
+      cookie: mfaCookie,
       remoteAddress: "192.0.2.72",
     });
     expect(replay.statusCode).toBe(401);
@@ -782,12 +897,15 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
         "last_accepted_step",
         [LEGACY_ADMIN_ACTOR_ID],
       ),
-    ).toBe(step);
+    ).toBe(step + 1);
 
     // Ein frischer Schritt wird akzeptiert und ersetzt den Codesatz atomar.
-    const nextCode = referenceTotpStep(secret, step + 1);
-    const replaced = await codesRequest(app, nextCode, {
-      cookie,
+    // Die Serveruhr rueckt dafuer einen Schritt weiter; step + 2 liegt sonst
+    // ausserhalb des TOTP-Fensters.
+    currentTimeMs = BASE_TIME + 2 * TOTP_STEP_MS;
+    const replacedCode = referenceTotpStep(secret, step + 2);
+    const replaced = await codesRequest(app, replacedCode, {
+      cookie: mfaCookie,
       remoteAddress: "192.0.2.72",
     });
     expect(replaced.statusCode, replaced.body).toBe(200);
@@ -808,7 +926,7 @@ describe("CX-066 Wiederherstellung als zweiter Faktor", () => {
     const read = await app.inject({
       method: "GET",
       url: ADMIN_MFA_RECOVERY_CODES_URL,
-      headers: adminHeaders({ cookie }),
+      headers: adminHeaders({ cookie: mfaCookie }),
       remoteAddress: "192.0.2.72",
     });
     expect(read.statusCode).toBe(404);
