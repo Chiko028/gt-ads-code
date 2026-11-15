@@ -26,9 +26,27 @@ create table if not exists device_taxi_assignments (
 );`;
 
 const schemaReady = new WeakMap<Pool, Promise<void>>();
+const errorGuarded = new WeakSet<Pool>();
+
+/**
+ * pg-pool meldet Fehler bereits beendeter Verbindungen am Pool. Ohne
+ * Listener beendet Node den Prozess. Waehrend pool.end() sind solche
+ * Fehler erwartbar; ausserhalb bleiben sie sichtbar.
+ */
+function guardPoolShutdown(pool: Pool): void {
+  if (errorGuarded.has(pool)) return;
+  errorGuarded.add(pool);
+  pool.on("error", (error: Error) => {
+    if (pool.ending) return;
+    queueMicrotask(() => {
+      throw error;
+    });
+  });
+}
 
 /** Legt fehlende Uebergangsstrukturen genau einmal je Pool an; Wiederholung ist folgenlos. */
 export function ensureTaxiActivationSchema(pool: Pool): Promise<void> {
+  guardPoolShutdown(pool);
   const pending = schemaReady.get(pool);
   if (pending !== undefined) return pending;
   const created = pool.query(SCHEMA_SQL).then(() => undefined);

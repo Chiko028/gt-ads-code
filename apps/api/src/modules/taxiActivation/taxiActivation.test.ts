@@ -585,21 +585,42 @@ describe("CX-124 Taxi-Aktivzustand", () => {
     expect(await auditCount()).toBe(0);
   });
 
-  it("meldet fehlende CX-Felder als blockiert und legt keine Ersatztabellen an", async () => {
-    const emptyPool = new Pool({
-      ...baseConnection(),
-      database: databaseName,
-      options: "-c search_path=cx124_empty",
-      max: 2,
-    });
+  it("blockiert bei fehlender Zustandsspalte konkret, statt sie zu ergaenzen", async () => {
+    await pool.query(
+      "alter table taxis rename column revision to revision_cx124_backup",
+    );
     try {
-      await emptyPool.query("create schema cx124_empty");
-      const service = new TaxiActivationService({
-        pool: emptyPool,
-        now: () => FIXED_NOW,
+      const attempt = newService().setActiveState({
+        taxiId: "SYN-CX124-COLUMN",
+        expectedRevision: 0,
+        active: true,
+        actorId: ACTOR,
       });
+      await expect(attempt).rejects.toMatchObject({
+        name: "TaxiActivationError",
+        code: "missing_schema",
+      });
+      await expect(attempt).rejects.toThrow("taxis.revision");
 
-      const attempt = service.setActiveState({
+      const added = await pool.query<{ column_name: string }>(
+        [
+          "select column_name from information_schema.columns",
+          " where table_schema = current_schema()",
+          "   and table_name = 'taxis' and column_name = 'revision'",
+        ].join("\n"),
+      );
+      expect(added.rows).toHaveLength(0);
+    } finally {
+      await pool.query(
+        "alter table taxis rename column revision_cx124_backup to revision",
+      );
+    }
+  });
+
+  it("meldet fehlende CX-Felder als blockiert und legt keine Ersatztabellen an", async () => {
+    await pool.query("alter table taxis rename to taxis_cx124_backup");
+    try {
+      const attempt = newService().setActiveState({
         taxiId: "SYN-CX124-EMPTY",
         expectedRevision: 0,
         active: true,
@@ -611,13 +632,14 @@ describe("CX-124 Taxi-Aktivzustand", () => {
       });
       await expect(attempt).rejects.toThrow("blockiert");
 
-      const created = await emptyPool.query<{ present: boolean }>(
-        "select to_regclass('cx124_empty.taxis') is not null as present",
+      const created = await pool.query<{ present: boolean }>(
+        "select to_regclass('taxis') is not null as present",
       );
       expect(created.rows[0]?.present).toBe(false);
     } finally {
-      await emptyPool.end();
+      await pool.query("alter table taxis_cx124_backup rename to taxis");
     }
   });
+
 });
 
