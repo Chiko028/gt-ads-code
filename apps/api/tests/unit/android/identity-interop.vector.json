@@ -1,0 +1,9 @@
+{
+  "provenance": "Synthetisch aus U7: contracts/gt-ads-001/examples/device-register.request.valid.json (public_key) und device-auth-token.request.valid.json (device_id, nonce, signature). Kein privater Schluessel eingecheckt.",
+  "device_id": "00000000-0000-4000-8000-0000000000d1",
+  "nonce": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+  "input_bytes_utf8": "gt-ads-auth-v1\n00000000-0000-4000-8000-0000000000d1\nBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+  "public_key_spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2R2q1wIzVgEnT3JpNsEz0HiI2qziB55JFlyXMIwnrWcAg3Bo0e8w7Y+iKF4B5v6eGk5hPQNHnzWiGiRB0pRccA==",
+  "signature": "MEUCIQDCvxdRVn4tZqrjmcMuaV5ENyOhqGmaBZPYkOtOhP8k/gIgRY2Aie9Czchvj6PsKnimNgYjefEA0t1J53AHmyHplmU=",
+  "other_public_key_spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEvWTGlwztV6dnnkBb8Ss1mgCWnld0r4fiw+Z272hsaUz4xzh1HGYclFOOnqQ2OotR8lqYZVlDKCKb3NTRwGxEMA=="
+}
