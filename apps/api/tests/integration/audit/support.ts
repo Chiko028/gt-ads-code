@@ -12,6 +12,7 @@ import { CONFIG_DEFAULTS, type AppConfig } from "../../../src/config.js";
 import { hashPassword } from "../../../src/crypto/password.js";
 import { migrateUp } from "../../../src/db/migrate.js";
 import { createServer } from "../../../src/http/server.js";
+import type { MediaUploadDeps } from "../../../src/http/mediaUpload.js";
 import { ADMIN_SESSION_COOKIE } from "../../../src/modules/adminAuth/middleware.js";
 
 export const BASE_TIME = Date.parse("2026-05-01T10:00:00.000Z");
@@ -24,7 +25,10 @@ export type AuditTestRole = "Admin" | "Operator" | null;
 export interface AuditTestContext {
   readonly pool: Pool;
   readonly config: AppConfig;
-  buildApp(role: AuditTestRole): Promise<FastifyInstance>;
+  buildApp(
+    role: AuditTestRole,
+    overrides?: { mediaUpload?: MediaUploadDeps },
+  ): Promise<FastifyInstance>;
   loginCookie(app: FastifyInstance): Promise<string>;
   close(): Promise<void>;
 }
@@ -121,11 +125,15 @@ export async function createAuditTestContext(): Promise<AuditTestContext> {
   const context: AuditTestContext = {
     pool,
     config,
-    async buildApp(role: AuditTestRole): Promise<FastifyInstance> {
+    async buildApp(
+      role: AuditTestRole,
+      overrides: { mediaUpload?: MediaUploadDeps } = {},
+    ): Promise<FastifyInstance> {
       const app = createServer({
         config,
         pool,
         now: () => new Date(BASE_TIME),
+        mediaUpload: overrides.mediaUpload,
         resolvePrincipal: async (request: FastifyRequest) => {
           if (role === null) {
             return null;

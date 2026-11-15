@@ -138,4 +138,90 @@ describe("CX-058 kombinierte Audit-Filter und Cursor-Pagination", () => {
     expect(collected).toEqual(matchingIds);
     expect(new Set(collected).size).toBe(matchingIds.length);
   });
+
+  it("behaelt Sekundenbruchteile unter einer Millisekunde und wendet [from,to) exakt an", async () => {
+    async function insertAtTimestamp(at: string, targetId: string): Promise<string> {
+      const result = await context.pool.query<{ id: string }>(
+        [
+          "insert into audit_events",
+          "  (at, actor_type, actor_id, action, target_type, target_id, details)",
+          "values ($1::timestamptz, 'system', 'SYN-CX058-Sub', 'SYN-CX058.sub', 'device', $2, '{}'::jsonb)",
+          "returning id::text as id",
+        ].join("\n"),
+        [at, targetId],
+      );
+      const row = result.rows[0];
+      if (row === undefined) {
+        throw new Error("Audit-Eintrag wurde nicht angelegt");
+      }
+      return row.id;
+    }
+
+    const beforeId = await insertAtTimestamp(
+      "2026-05-01T10:00:00.000050Z",
+      "before",
+    );
+    const fromId = await insertAtTimestamp(
+      "2026-05-01T10:00:00.000100Z",
+      "from",
+    );
+    const middleId = await insertAtTimestamp(
+      "2026-05-01T10:00:00.000500Z",
+      "middle",
+    );
+    const toId = await insertAtTimestamp(
+      "2026-05-01T10:00:00.000900Z",
+      "to",
+    );
+
+    const app = await context.buildApp("Admin");
+    const cookie = await context.loginCookie(app);
+
+    async function idsFor(query: string): Promise<string[]> {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/admin/audit?" + query + "&action=" + encodeURIComponent("SYN-CX058.sub"),
+        headers: adminHeaders(cookie),
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const body = response.json() as { items: AuditItem[] };
+      return body.items.map((item) => item.id);
+    }
+
+    const from = "2026-05-01T10:00:00.000100Z";
+    const to = "2026-05-01T10:00:00.000900Z";
+
+    // from ist inklusiv, to ist exklusiv.
+    expect(
+      await idsFor(
+        "from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to),
+      ),
+    ).toEqual([fromId, middleId]);
+
+    // Einzelne from-Grenze: 100 Mikrosekunden werden nicht auf 0 ms gekuerzt.
+    expect(await idsFor("from=" + encodeURIComponent(from))).toEqual([
+      fromId,
+      middleId,
+      toId,
+    ]);
+
+    // Einzelne to-Grenze: 900 Mikrosekunden sind exklusiv.
+    expect(await idsFor("to=" + encodeURIComponent(to))).toEqual([
+      beforeId,
+      fromId,
+      middleId,
+    ]);
+
+    // Ein verdrehtes Submillisekundenintervall bleibt ungueltig.
+    const inverted = await app.inject({
+      method: "GET",
+      url:
+        "/v1/admin/audit?from=" +
+        encodeURIComponent(to) +
+        "&to=" +
+        encodeURIComponent(from),
+      headers: adminHeaders(cookie),
+    });
+    expect(inverted.statusCode).toBe(400);
+  });
 });

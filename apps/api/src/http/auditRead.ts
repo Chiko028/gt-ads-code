@@ -132,7 +132,7 @@ function daysInMonth(year: number, month: number): number {
  * unmoeglicher Kalendertag oder eine ungueltige Uhrzeit ergibt 400. Die
  * Umrechnung erfolgt ohne lokale Zeitzone des Servers.
  */
-function parseTimestamp(raw: unknown): Date | null {
+function parseTimestamp(raw: unknown): string | null {
   if (raw === undefined) {
     return null;
   }
@@ -161,11 +161,13 @@ function parseTimestamp(raw: unknown): Date | null {
     throw ApiError.invalidRequest();
   }
 
-  const fraction = match[7] ?? "";
-  const millis = Number((fraction + "000").slice(0, 3));
+  // Neun Nachkommastellen bleiben erhalten. Eine Kuerzung auf Millisekunden
+  // wuerde gueltige Submillisekundenintervalle zu einem gleichen Zeitpunkt
+  // machen und einzelne Grenzen veraendert an PostgreSQL uebergeben.
+  const fractionNanos = ((match[7] ?? "") + "000000000").slice(0, 9);
   const instant = new Date(0);
   instant.setUTCFullYear(year, month - 1, day);
-  instant.setUTCHours(hour, minute, second, millis);
+  instant.setUTCHours(hour, minute, second, 0);
   let time = instant.getTime();
 
   if (match[8] === undefined) {
@@ -180,7 +182,37 @@ function parseTimestamp(raw: unknown): Date | null {
   if (!Number.isFinite(time)) {
     throw ApiError.invalidRequest();
   }
-  return new Date(time);
+
+  // Exakter UTC-Zeitpunkt mit vollstaendiger Bruchsekunde. Das feste Format
+  // (vierstelliges Jahr, neun Nachkommastellen, Z) erlaubt den exakten
+  // lexikographischen Vergleich; PostgreSQL rundet beim Cast auf
+  // timestamptz hoechstens auf Mikrosekunden, nicht auf Millisekunden.
+  const utc = new Date(time);
+  if (Number.isNaN(utc.getTime())) {
+    throw ApiError.invalidRequest();
+  }
+  const utcYear = utc.getUTCFullYear();
+  if (utcYear < 0 || utcYear > 9999) {
+    throw ApiError.invalidRequest();
+  }
+  const pad = (value: number, length: number): string =>
+    String(value).padStart(length, "0");
+  return (
+    pad(utcYear, 4) +
+    "-" +
+    pad(utc.getUTCMonth() + 1, 2) +
+    "-" +
+    pad(utc.getUTCDate(), 2) +
+    "T" +
+    pad(utc.getUTCHours(), 2) +
+    ":" +
+    pad(utc.getUTCMinutes(), 2) +
+    ":" +
+    pad(utc.getUTCSeconds(), 2) +
+    "." +
+    fractionNanos +
+    "Z"
+  );
 }
 
 /** Exakter Textfilter; keine Suche, keine Trimung, keine SQL-Interpretation. */
@@ -202,8 +234,8 @@ function parseExactFilter(raw: unknown): string | null {
 interface ParsedAuditQuery {
   cursor: string | null;
   limit: number;
-  from: Date | null;
-  to: Date | null;
+  from: string | null;
+  to: string | null;
   actorId: string | null;
   action: string | null;
 }
@@ -224,7 +256,9 @@ function parseQuery(query: unknown): ParsedAuditQuery {
   }
   const from = parseTimestamp(record.from);
   const to = parseTimestamp(record.to);
-  if (from !== null && to !== null && from.getTime() >= to.getTime()) {
+  // Beide Grenzen liegen im selben festbreiten UTC-Format mit neun
+  // Nachkommastellen; der lexikographische Vergleich ist damit exakt.
+  if (from !== null && to !== null && from >= to) {
     throw ApiError.invalidRequest();
   }
   return {
@@ -265,7 +299,7 @@ export function registerAuditReadRoutes(
       // Parametrisierte Abfrage. Alle Filter wirken vor LIMIT; der Cursor
       // bezeichnet die zuletzt ausgegebene ID und wird aufsteigend fortgesetzt.
       const conditions: string[] = [];
-      const params: Array<string | number | Date> = [];
+      const params: Array<string | number> = [];
       if (parsed.cursor !== null) {
         params.push(parsed.cursor);
         conditions.push("id > $" + params.length + "::bigint");
