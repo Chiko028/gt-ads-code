@@ -215,7 +215,6 @@ async function insertReady(options: {
     [
       id,
       options.displayName,
-      4096,
       "b".repeat(64),
       PROFILE.container,
       PROFILE.videoCodec,
