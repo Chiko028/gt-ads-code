@@ -102,6 +102,8 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   // Menschliche Verwaltung: Geraete.
   "GET /v1/admin/devices": human("devices.read"),
   "GET /v1/admin/devices/:id": human("devices.read"),
+  // CX-048 / R-403: lesender Taxi-/Tabletstatus einschliesslich Tagesauswertung.
+  "GET /v1/admin/status": human("devices.read"),
   "POST /v1/admin/devices/:id/revoke": human("devices.revoke"),
 
   // Inventarliste (CX-129 / R-106): ausschliesslich lesend unter devices.read.

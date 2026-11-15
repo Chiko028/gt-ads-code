@@ -320,6 +320,7 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     mediaUpload,
     mediaList,
     telemetryIngest,
+    onlineThresholdSeconds: config.onlineThresholdSeconds,
     now,
   });
   app.decorate("adminAuthService", adminAuthService);

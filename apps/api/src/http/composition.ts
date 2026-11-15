@@ -61,6 +61,7 @@ import { registerInventoryWriteRoute } from "./inventoryWrite.js";
 import { DeviceInventoryService } from "../modules/inventory/service.js";
 import { registerTaxiPauseRoutes } from "./taxiPauseRoutes.js";
 import { registerDeviceCommandRoutes } from "./deviceCommands.js";
+import { registerStatusRoute } from "./statusRoute.js";
 import { createSqlTaxiDirectory } from "../modules/pause/index.js";
 import { createRemoteControlService } from "../modules/remoteControl/index.js";
 
@@ -72,6 +73,8 @@ export interface HttpCompositionDeps {
   mediaList: MediaListDeps;
   /** CX-046: vorhandener CX-009-Kern als schmale Speichergrenze. */
   telemetryIngest: DeviceEventIngest;
+  /** CX-048: vorhandene Online-Schwelle aus der Laufzeitkonfiguration. */
+  onlineThresholdSeconds: number;
   /** Injizierbare Serveruhr; ohne Angabe gilt die reale Uhr. */
   now?: () => Date;
 }
@@ -214,6 +217,15 @@ export function registerHttpComposition(
     registerPlayoutPreviewRoute(scope, {
       getCurrentArtifact: (taxiId) => manifestReader.getCurrentArtifact(taxiId),
       taxiExists: createSqlTaxiExists(deps.pool),
+    });
+
+    // CX-048 / R-403: lesender Status je Taxi und Tablet. Der Adapter liest
+    // ausschliesslich vorhandene CX-035-, U5-, CX-009- und CX-011-Daten.
+    registerStatusRoute(scope, {
+      pool: deps.pool,
+      adminAuth: deps.adminAuth,
+      onlineThresholdSeconds: deps.onlineThresholdSeconds,
+      now: deps.now,
     });
 
     // CX-046 / R-401: authentifizierter, idempotenter Ereigniseingang.
