@@ -7,7 +7,12 @@
  * Listener und keinen externen Dienst; Authentifizierung, Rechtepruefung,
  * Persistenz und Audit werden nicht gemockt. Alle Kennungen sind synthetisch.
  */
-import { randomUUID } from "node:crypto";
+import {
+  generateKeyPairSync,
+  randomUUID,
+  sign,
+  type KeyObject,
+} from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
 import {
@@ -18,15 +23,19 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 import { CONFIG_DEFAULTS, type AppConfig } from "../../src/config.js";
 import { hashPassword } from "../../src/crypto/password.js";
 import { migrateUp } from "../../src/db/migrate.js";
 import type { Principal } from "../../src/http/principal.js";
 import { createServer } from "../../src/http/server.js";
+import { buildSignatureMessage } from "../../src/crypto/deviceSignature.js";
+import { DeviceAuthService } from "../../src/modules/deviceAuth/service.js";
 import {
   ensureTabletActivationSchema,
   TABLET_ACTIVATION_AUDIT_ACTION,
+  TabletActivationService,
 } from "../../src/modules/tabletActivation/index.js";
 import { ensureTaxiActivationSchema } from "../../src/modules/taxiActivation/index.js";
 import { ADMIN_SESSION_COOKIE } from "../../src/modules/adminAuth/middleware.js";
@@ -36,7 +45,6 @@ const ADMIN_PASSWORD = "SYN-CX127-Aktivierungs-Passwort";
 const HOST = "127.0.0.1:8080";
 const ADMIN_ID = "SYN-CX127-ADMIN";
 const OPERATOR_ID = "SYN-CX127-OPERATOR";
-const READONLY_ID = "SYN-CX127-LESEND";
 const JSON_HEADERS = { "content-type": "application/json" };
 
 let maintenancePool: Pool;
@@ -66,9 +74,14 @@ function baseConnection(): {
 
 /**
  * Testresolver fuer die Rolle. Das Sitzungscookie bleibt echt und wird von
- * der vorhandenen Sitzungspruefung verifiziert. Ein Bearer-Nachweis wird nie
- * zu einer menschlichen Identitaet; eine ausdruecklich lesende Rolle ist
- * keine gueltige Rolle des Rechtekerns.
+ * der vorhandenen Sitzungspruefung verifiziert. Ein Bearer-Nachweis einer
+ * Geraeteauthentifizierung wird nie zu einer menschlichen Identitaet.
+ *
+ * Das Rollenmodell des Rechtekerns kennt ausschliesslich Admin und Operator;
+ * eine eigene lesende Rolle existiert nicht. Eine gueltige lesende Identitaet
+ * steht daher nicht zur Verfuegung. Die Abgrenzung zu authentifizierten
+ * Identitaeten ohne "tablet.activation" erfolgt ueber die gueltige
+ * Operatorrolle.
  */
 function resolveTestPrincipal(request: {
   headers: Record<string, string | string[] | undefined>;
@@ -83,12 +96,6 @@ function resolveTestPrincipal(request: {
   }
   if (role === "Operator") {
     return Promise.resolve({ id: OPERATOR_ID, role: "Operator" });
-  }
-  if (role === "Lesend") {
-    return Promise.resolve({
-      id: READONLY_ID,
-      role: "Lesend" as unknown as Principal["role"],
-    });
   }
   return Promise.resolve(null);
 }
@@ -135,6 +142,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const app of openApps.splice(0)) {
     await app.close();
   }
@@ -181,7 +189,7 @@ async function loginCookie(app: FastifyInstance): Promise<string> {
 }
 
 function headers(
-  role: "Admin" | "Operator" | "Lesend" | null,
+  role: "Admin" | "Operator" | null,
   cookie: string | null,
   extra: Record<string, string> = {},
 ): Record<string, string> {
@@ -201,6 +209,7 @@ function headers(
 
 async function insertDevice(
   state: "active" | "revoked" = "active",
+  publicKeySpki?: Buffer,
 ): Promise<string> {
   const registrationCodeId = randomUUID();
   const deviceId = randomUUID();
@@ -231,7 +240,7 @@ async function insertDevice(
     [
       deviceId,
       "SYN-CX127-Tablet",
-      Buffer.from("SYN-CX127-Key-" + deviceId),
+      publicKeySpki ?? Buffer.from("SYN-CX127-Key-" + deviceId),
       "SYN-CX127-FP-" + deviceId,
       state,
       "SYN-Hersteller",
@@ -247,6 +256,55 @@ async function insertDevice(
     ],
   );
   return deviceId;
+}
+
+/**
+ * Fuehrt die echte Geraeteauthentifizierung der laufenden App aus
+ * (Challenge, ECDSA-P-256-Signatur, Tokenausgabe) und belegt mit dem
+ * serverseitigen Pruefer, dass das Token eine gueltige Geraeteidentitaet
+ * repraesentiert. Damit ist der Geraetefall der Abweisungspruefung keine
+ * blosse fehlende Authentifizierung.
+ */
+async function authenticateDevice(
+  app: FastifyInstance,
+  deviceId: string,
+  privateKey: KeyObject,
+): Promise<string> {
+  const challenge = await app.inject({
+    method: "POST",
+    url: "/v1/device/auth/challenge",
+    headers: { host: HOST, ...JSON_HEADERS, "x-gt-ads-api-version": "1" },
+    payload: { device_id: deviceId },
+  });
+  expect(challenge.statusCode).toBe(200);
+  const nonce = challenge.json().nonce as string;
+  expect(typeof nonce).toBe("string");
+
+  const signature = sign(
+    "sha256",
+    Buffer.from(buildSignatureMessage(deviceId, nonce), "utf8"),
+    { key: privateKey, dsaEncoding: "der" },
+  ).toString("base64");
+
+  const issued = await app.inject({
+    method: "POST",
+    url: "/v1/device/auth/token",
+    headers: { host: HOST, ...JSON_HEADERS, "x-gt-ads-api-version": "1" },
+    payload: { device_id: deviceId, nonce, signature },
+  });
+  expect(issued.statusCode).toBe(200);
+  const accessToken = issued.json().access_token as string;
+  expect(typeof accessToken).toBe("string");
+
+  const verifier = new DeviceAuthService({
+    pool,
+    config,
+    now: () => new Date(BASE_TIME),
+  });
+  const verified = await verifier.authenticateToken(accessToken);
+  expect(verified.deviceId).toBe(deviceId);
+
+  return accessToken;
 }
 
 async function insertTaxi(
@@ -428,50 +486,87 @@ describe("CX-127 geschuetzte Tablet-Aktivierungsroute", () => {
     });
   });
 
-  it("verweigert ohne Sitzung, mit Geraeteauthentifizierung und mit lesender Rolle vor dem Dienstaufruf", async () => {
+  it("verweigert ohne Sitzung und mit authentifiziertem Geraet vor dem Dienstaufruf; eine gueltige, nicht berechtigte Operatorrolle erhaelt 403", async () => {
+    // Direkte Beobachtung der Dienstgrenze: CX-126 darf in keinem
+    // Abweisungsfall aufgerufen werden.
+    const setActiveState = vi.spyOn(
+      TabletActivationService.prototype,
+      "setActiveState",
+    );
+
+    // Es gibt keine lesende Rolle im Rechtekern (nur Admin und Operator).
+    // Eine gueltige lesende Identitaet ist daher nicht vorhanden; die
+    // Abgrenzung zu authentifizierten Identitaeten ohne "tablet.activation"
+    // prueft die gueltige Operatorrolle mit 403. Der Geraetefall verwendet
+    // ein tatsaechlich ausgestelltes und serverseitig verifiziertes
+    // Geraetetoken, nicht nur einen fehlenden Nachweis.
     const cases: Array<{
       name: string;
-      role: "Admin" | "Lesend" | null;
+      role: "Admin" | "Operator" | null;
       cookie: boolean;
-      extra: Record<string, string>;
+      authenticatedDevice: boolean;
+      expectedStatus: number;
     }> = [
       {
         name: "ohne Sitzung",
         role: "Admin" as const,
         cookie: false,
-        extra: {},
+        authenticatedDevice: false,
+        expectedStatus: 401,
       },
       {
-        name: "Geraeteauthentifizierung",
+        name: "authentifiziertes Geraet",
         role: null,
         cookie: false,
-        extra: { authorization: "Bearer SYN-CX127-GERAET" },
+        authenticatedDevice: true,
+        expectedStatus: 401,
       },
       {
-        name: "lesende Rolle",
-        role: "Lesend" as const,
+        name: "gueltige Operatorrolle",
+        role: "Operator" as const,
         cookie: true,
-        extra: {},
+        authenticatedDevice: false,
+        expectedStatus: 403,
       },
     ];
 
     for (const testCase of cases) {
-      const deviceId = await insertDevice();
+      let privateKey: KeyObject | undefined;
+      let publicKeySpki: Buffer | undefined;
+      if (testCase.authenticatedDevice) {
+        const keyPair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+        privateKey = keyPair.privateKey;
+        publicKeySpki = keyPair.publicKey.export({
+          format: "der",
+          type: "spki",
+        }) as Buffer;
+      }
+
+      const deviceId = await insertDevice("active", publicKeySpki);
       const taxiId = "SYN-CX127-DENY-" + randomUUID().slice(0, 8);
       await insertTaxi(taxiId, true, 1);
       await assign(taxiId, deviceId, true);
       const app = await buildApp();
       const cookie = testCase.cookie ? await loginCookie(app) : null;
 
+      let extra: Record<string, string> = {};
+      if (privateKey !== undefined) {
+        const accessToken = await authenticateDevice(app, deviceId, privateKey);
+        extra = { authorization: "Bearer " + accessToken };
+      }
+
       const response = await patchActivation(
         app,
-        headers(testCase.role, cookie, testCase.extra),
+        headers(testCase.role, cookie, extra),
         deviceId,
         { active: false, expectedRevision: 0 },
       );
-      expect(response.statusCode, testCase.name).toBe(401);
-      expect(response.json().error.code, testCase.name).toBe("unauthorized");
+      expect(response.statusCode, testCase.name).toBe(testCase.expectedStatus);
+      expect(response.json().error.code, testCase.name).toBe(
+        testCase.expectedStatus === 401 ? "unauthorized" : "forbidden",
+      );
 
+      expect(setActiveState, testCase.name).not.toHaveBeenCalled();
       expect(await tabletRow(deviceId), testCase.name).toBeNull();
       expect(await taxiRow(taxiId), testCase.name).toEqual({
         active: true,
