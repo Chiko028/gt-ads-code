@@ -198,6 +198,17 @@ describe("CX-037 Tablet-Paar und Aktivierung", () => {
     fireEvent.click(activateWithoutPair);
     expect(server.count("POST", PATHS.taxiActivation("t-empty"))).toBe(0);
 
+    // Die bloße Auswahl zweier Tablets ersetzt keine bestätigte
+    // Paarzuordnung und schaltet die Aktivierung nicht frei.
+    await user.selectOptions(screen.getByLabelText("Tablet 1"), "a");
+    await user.selectOptions(screen.getByLabelText("Tablet 2"), "b");
+    const stillBlocked = screen.getByRole("button", {
+      name: "Taxi aktivieren",
+    }) as HTMLButtonElement;
+    expect(stillBlocked.disabled).toBe(true);
+    fireEvent.click(stillBlocked);
+    expect(server.count("POST", PATHS.taxiActivation("t-empty"))).toBe(0);
+
     // Ein aktives Taxi bietet gar keine Paarzuordnung an.
     openTaxi("t-active");
     expect(screen.getByText(/Einem aktiven Taxi kann kein neues Tablet-Paar/)).toBeTruthy();

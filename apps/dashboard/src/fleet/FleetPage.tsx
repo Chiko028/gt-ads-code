@@ -127,6 +127,16 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   const mountedRef = useRef(true);
   const generationRef = useRef(0);
   const loadSeqRef = useRef(0);
+  /**
+   * Nach einem unklaren Schreibausgang bleibt jede Schreibaktion gesperrt,
+   * bis ein danach gestarteter Ladevorgang erfolgreich bestaetigt wurde.
+   * Die Refs spiegeln den Zustand synchron, damit auch zwei unmittelbar
+   * aufeinanderfolgende Klicks nicht an einer veralteten Renderphase
+   * vorbeikommen.
+   */
+  const unclearWriteRef = useRef(false);
+  const reconcileOnReloadRef = useRef(false);
+  const unlockMinSeqRef = useRef(0);
 
   const [taxis, setTaxis] = useState<FleetTaxi[] | null>(null);
   const [groups, setGroups] = useState<FleetGroup[] | null>(null);
@@ -155,6 +165,9 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   const groupBusyRef = useRef(false);
 
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const taxiFormRef = useRef<TaxiFormState | null>(null);
+  const selectedDeviceIdRef = useRef<string | null>(null);
+  const inventoryRequestSeqRef = useRef(0);
   const [inventorySerial, setInventorySerial] = useState("");
   const [inventoryType, setInventoryType] = useState("");
   const [inventoryNote, setInventoryNote] = useState("");
@@ -165,6 +178,14 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   );
   const inventoryBusyRef = useRef(false);
   const deactivatingRef = useRef(false);
+
+  useEffect(() => {
+    taxiFormRef.current = taxiForm;
+  }, [taxiForm]);
+
+  useEffect(() => {
+    selectedDeviceIdRef.current = selectedDeviceId;
+  }, [selectedDeviceId]);
 
   const expireSession = useCallback(() => {
     generationRef.current += 1;
@@ -193,6 +214,57 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     [],
   );
 
+  /**
+   * Ein unklarer Ausgang sperrt saemtliche Schreibwege. Nur ein Ladevorgang,
+   * der nach dieser Sperre gestartet wurde, darf sie wieder aufheben.
+   */
+  function lockUnclearWrite(): void {
+    unclearWriteRef.current = true;
+    reconcileOnReloadRef.current = true;
+    unlockMinSeqRef.current = loadSeqRef.current + 1;
+    setUnclearWrite(true);
+    setActionError(UNCLEAR_WRITE_MESSAGE);
+  }
+
+  /**
+   * Nach bestaetigtem Nachladen werden bearbeitete Formulare aus den
+   * bestaetigten Daten neu befuellt. Ein Entwurf ohne Serverbezug
+   * (Neuanlage) wird geschlossen, weil sein Ausgang ungeklaert ist.
+   */
+  function reconcileFromConfirmed(
+    nextTaxis: readonly FleetTaxi[],
+    nextInventory: readonly FleetInventoryItem[],
+  ): void {
+    const form = taxiFormRef.current;
+    if (form !== null) {
+      const confirmed =
+        form.mode === "edit"
+          ? nextTaxis.find((item) => item.id === form.id) ?? null
+          : null;
+      if (confirmed === null) {
+        setTaxiForm(null);
+        setPairFirst(null);
+        setPairSecond(null);
+      } else {
+        setTaxiForm(fromTaxi(confirmed));
+        setPairFirst(confirmed.tabletIds[0]);
+        setPairSecond(confirmed.tabletIds[1]);
+      }
+    }
+    const deviceId = selectedDeviceIdRef.current;
+    if (deviceId !== null) {
+      const item =
+        nextInventory.find((entry) => entry.deviceId === deviceId) ?? null;
+      if (item === null) {
+        closeInventoryEdit();
+      } else {
+        setInventorySerial(item.serialNumber ?? "");
+        setInventoryType(item.deviceType ?? "");
+        setInventoryNote(item.replacementNote ?? "");
+      }
+    }
+  }
+
   const loadAll = useCallback(
     async (generation: number): Promise<boolean> => {
       const seq = ++loadSeqRef.current;
@@ -213,6 +285,16 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         setGroups(nextGroups);
         setTablets(nextTablets);
         setInventory(nextInventory);
+        if (seq >= unlockMinSeqRef.current) {
+          const wasLocked = unclearWriteRef.current;
+          unclearWriteRef.current = false;
+          setUnclearWrite(false);
+          if (wasLocked && reconcileOnReloadRef.current) {
+            reconcileOnReloadRef.current = false;
+            reconcileFromConfirmed(nextTaxis, nextInventory);
+            setActionError(null);
+          }
+        }
         return true;
       } catch (error) {
         if (!isAlive(generation) || seq !== loadSeqRef.current) {
@@ -245,6 +327,9 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   }, [loadAll]);
 
   function startCreateTaxi(): void {
+    if (unclearWriteRef.current) {
+      return;
+    }
     setTaxiForm({
       mode: "create",
       id: "",
@@ -256,16 +341,17 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     setPairFirst(null);
     setPairSecond(null);
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
   }
 
   function startEditTaxi(taxi: FleetTaxi): void {
+    if (unclearWriteRef.current) {
+      return;
+    }
     setTaxiForm(fromTaxi(taxi));
     setPairFirst(taxi.tabletIds[0]);
     setPairSecond(taxi.tabletIds[1]);
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
   }
 
@@ -289,7 +375,11 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   ): Promise<void> {
     event.preventDefault();
     const form = taxiForm;
-    if (form === null || taxiSavingRef.current) {
+    if (
+      form === null ||
+      taxiSavingRef.current ||
+      unclearWriteRef.current
+    ) {
       return;
     }
     const generation = generationRef.current;
@@ -303,7 +393,6 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     taxiSavingRef.current = true;
     setTaxiSaving(true);
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
     try {
       const saved =
@@ -340,8 +429,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isUnclearWriteOutcome(error)) {
-        setUnclearWrite(true);
-        setActionError(UNCLEAR_WRITE_MESSAGE);
+        lockUnclearWrite();
         return;
       }
       setActionError(messageFor(error));
@@ -362,7 +450,8 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
       form === null ||
       form.mode !== "edit" ||
       form.revision === null ||
-      pairingRef.current
+      pairingRef.current ||
+      unclearWriteRef.current
     ) {
       return;
     }
@@ -388,7 +477,6 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     pairingRef.current = true;
     setPairing(true);
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
     try {
       const saved = await client.assignTablets(
@@ -418,8 +506,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isUnclearWriteOutcome(error)) {
-        setUnclearWrite(true);
-        setActionError(UNCLEAR_WRITE_MESSAGE);
+        lockUnclearWrite();
         return;
       }
       setActionError(messageFor(error));
@@ -437,16 +524,20 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
       form === null ||
       form.mode !== "edit" ||
       form.revision === null ||
-      taxiActivatingRef.current
+      taxiActivatingRef.current ||
+      unclearWriteRef.current
     ) {
       return;
     }
     const nextActive = !form.active;
+    // Massgeblich ist ausschliesslich das zuletzt serverbestaetigte Paar,
+    // nicht die noch ungespeicherte Auswahl der Formularfelder.
+    const confirmed =
+      (taxis ?? []).find((item) => item.id === form.id) ?? null;
     if (
       nextActive &&
-      (!hasCompletePair(pairFirst, pairSecond) ||
-        pairFirst === null ||
-        pairSecond === null)
+      (confirmed === null ||
+        !hasCompletePair(confirmed.tabletIds[0], confirmed.tabletIds[1]))
     ) {
       setActionError(ACTIVATION_PAIR_MESSAGE);
       return;
@@ -456,7 +547,6 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     taxiActivatingRef.current = true;
     setTaxiActivating(true);
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
     try {
       const saved = await client.setTaxiActive(
@@ -488,8 +578,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isUnclearWriteOutcome(error)) {
-        setUnclearWrite(true);
-        setActionError(UNCLEAR_WRITE_MESSAGE);
+        lockUnclearWrite();
         return;
       }
       setActionError(messageFor(error));
@@ -505,7 +594,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     event: FormEvent<HTMLFormElement>,
   ): Promise<void> {
     event.preventDefault();
-    if (groupBusyRef.current) {
+    if (groupBusyRef.current || unclearWriteRef.current) {
       return;
     }
     const name = newGroupName.trim();
@@ -517,7 +606,6 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     groupBusyRef.current = true;
     setGroupBusy(true);
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
     try {
       const created = await client.createGroup(name);
@@ -540,8 +628,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isUnclearWriteOutcome(error)) {
-        setUnclearWrite(true);
-        setActionError(UNCLEAR_WRITE_MESSAGE);
+        lockUnclearWrite();
         return;
       }
       setActionError(messageFor(error));
@@ -558,7 +645,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     group: FleetGroup,
   ): Promise<void> {
     event.preventDefault();
-    if (groupBusyRef.current) {
+    if (groupBusyRef.current || unclearWriteRef.current) {
       return;
     }
     const name = renameDraft.trim();
@@ -570,7 +657,6 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     groupBusyRef.current = true;
     setGroupBusy(true);
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
     try {
       const saved = await client.renameGroup(
@@ -600,8 +686,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isUnclearWriteOutcome(error)) {
-        setUnclearWrite(true);
-        setActionError(UNCLEAR_WRITE_MESSAGE);
+        lockUnclearWrite();
         return;
       }
       setActionError(messageFor(error));
@@ -614,12 +699,16 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   }
 
   function startInventoryEdit(item: FleetInventoryItem): void {
+    // Waehrend eines laufenden Inventarschreibvorgangs und solange ein
+    // Ausgang unklar ist, darf das bearbeitete Geraet nicht wechseln.
+    if (inventoryBusyRef.current || unclearWriteRef.current) {
+      return;
+    }
     setSelectedDeviceId(item.deviceId);
     setInventorySerial(item.serialNumber ?? "");
     setInventoryType(item.deviceType ?? "");
     setInventoryNote(item.replacementNote ?? "");
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
     setConfirmDeactivateId(null);
   }
@@ -667,7 +756,8 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     if (
       item === undefined ||
       selectedDeviceId === null ||
-      inventoryBusyRef.current
+      inventoryBusyRef.current ||
+      unclearWriteRef.current
     ) {
       return;
     }
@@ -678,13 +768,14 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     }
 
     const generation = generationRef.current;
+    const deviceId = selectedDeviceId;
+    const requestSeq = ++inventoryRequestSeqRef.current;
     inventoryBusyRef.current = true;
     setInventoryBusy(true);
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
     try {
-      const saved = await client.updateInventoryItem(selectedDeviceId, {
+      const saved = await client.updateInventoryItem(deviceId, {
         serialNumber:
           inventorySerial.trim() === "" ? null : inventorySerial,
         deviceType: inventoryType.trim() === "" ? null : inventoryType,
@@ -692,7 +783,13 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
           inventoryNote.trim() === "" ? null : inventoryNote,
         revision: item.revision,
       });
-      if (!isAlive(generation)) {
+      // Die Antwort gilt nur fuer genau dieses Geraet und diesen
+      // Schreibvorgang; ein inzwischen anderes Formular bleibt unberuehrt.
+      if (
+        !isAlive(generation) ||
+        inventoryRequestSeqRef.current !== requestSeq ||
+        selectedDeviceIdRef.current !== deviceId
+      ) {
         return;
       }
       setInventory((current) =>
@@ -716,8 +813,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isUnclearWriteOutcome(error)) {
-        setUnclearWrite(true);
-        setActionError(UNCLEAR_WRITE_MESSAGE);
+        lockUnclearWrite();
         return;
       }
       setActionError(messageFor(error));
@@ -733,7 +829,11 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     item: FleetInventoryItem,
     active: boolean,
   ): Promise<void> {
-    if (inventoryBusyRef.current || deactivatingRef.current) {
+    if (
+      inventoryBusyRef.current ||
+      deactivatingRef.current ||
+      unclearWriteRef.current
+    ) {
       return;
     }
     const generation = generationRef.current;
@@ -745,7 +845,6 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
       setDeactivating(true);
     }
     setActionError(null);
-    setUnclearWrite(false);
     setNotice(null);
     try {
       const saved = await client.updateInventoryItem(item.deviceId, {
@@ -786,8 +885,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isUnclearWriteOutcome(error)) {
-        setUnclearWrite(true);
-        setActionError(UNCLEAR_WRITE_MESSAGE);
+        lockUnclearWrite();
         return;
       }
       setActionError(messageFor(error));
@@ -808,9 +906,12 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
 
   function refresh(): void {
     const generation = generationRef.current;
-    setActionError(null);
-    setUnclearWrite(false);
-    setNotice(null);
+    // Waehrend einer offenen Unklarheit bleiben Meldung und Sperre stehen;
+    // erst ein erfolgreich bestaetigter Ladevorgang hebt beides auf.
+    if (!unclearWriteRef.current) {
+      setActionError(null);
+      setNotice(null);
+    }
     void loadAll(generation);
   }
 
@@ -821,6 +922,13 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
       : (inventory ?? []).find(
           (item) => item.deviceId === selectedDeviceId,
         ) ?? null;
+  const confirmedTaxi =
+    taxiForm === null
+      ? null
+      : (taxis ?? []).find((item) => item.id === taxiForm.id) ?? null;
+  const confirmedPairComplete =
+    confirmedTaxi !== null &&
+    hasCompletePair(confirmedTaxi.tabletIds[0], confirmedTaxi.tabletIds[1]);
 
   function groupNames(ids: readonly string[]): string {
     if (ids.length === 0) {
@@ -843,7 +951,11 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         <button type="button" onClick={refresh} disabled={loading}>
           Aktualisieren
         </button>
-        <button type="button" onClick={startCreateTaxi}>
+        <button
+          type="button"
+          onClick={startCreateTaxi}
+          disabled={unclearWrite}
+        >
           Taxi anlegen
         </button>
       </div>
@@ -895,6 +1007,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                   <button
                     type="button"
                     onClick={() => startEditTaxi(taxi)}
+                    disabled={unclearWrite}
                   >
                     Bearbeiten
                   </button>
@@ -961,7 +1074,10 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
               )}
             </fieldset>
 
-            <button type="submit" disabled={taxiSaving}>
+            <button
+              type="submit"
+              disabled={taxiSaving || unclearWrite}
+            >
               Speichern
             </button>
             <button
@@ -1034,7 +1150,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
 
                 <button
                   type="submit"
-                  disabled={pairing || taxiForm.active}
+                  disabled={pairing || taxiForm.active || unclearWrite}
                 >
                   Paar zuordnen
                 </button>
@@ -1045,8 +1161,8 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                 onClick={() => void handleActivation()}
                 disabled={
                   taxiActivating ||
-                  (!taxiForm.active &&
-                    !hasCompletePair(pairFirst, pairSecond))
+                  unclearWrite ||
+                  (!taxiForm.active && !confirmedPairComplete)
                 }
               >
                 {taxiForm.active ? "Taxi deaktivieren" : "Taxi aktivieren"}
@@ -1078,7 +1194,10 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
             disabled={groupBusy}
             onChange={(event) => setNewGroupName(event.target.value)}
           />
-          <button type="submit" disabled={groupBusy}>
+          <button
+            type="submit"
+            disabled={groupBusy || unclearWrite}
+          >
             Gruppe anlegen
           </button>
         </form>
@@ -1118,7 +1237,10 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                             setRenameDraft(event.target.value)
                           }
                         />
-                        <button type="submit" disabled={groupBusy}>
+                        <button
+                          type="submit"
+                          disabled={groupBusy || unclearWrite}
+                        >
                           Speichern
                         </button>
                         <button
@@ -1144,8 +1266,8 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                           setRenamingGroupId(group.id);
                           setRenameDraft(group.name);
                           setActionError(null);
-                          setUnclearWrite(false);
                         }}
+                        disabled={groupBusy || unclearWrite}
                       >
                         Umbenennen
                       </button>
@@ -1193,6 +1315,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                     <button
                       type="button"
                       onClick={() => startInventoryEdit(item)}
+                      disabled={inventoryBusy || unclearWrite}
                     >
                       Bearbeiten
                     </button>
@@ -1202,8 +1325,10 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                         onClick={() => {
                           setConfirmDeactivateId(item.deviceId);
                           setActionError(null);
-                          setUnclearWrite(false);
                         }}
+                        disabled={
+                          inventoryBusy || deactivating || unclearWrite
+                        }
                       >
                         Tablet deaktivieren
                       </button>
@@ -1211,7 +1336,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                       <button
                         type="button"
                         onClick={() => void setTabletActivation(item, true)}
-                        disabled={inventoryBusy}
+                        disabled={inventoryBusy || unclearWrite}
                       >
                         Tablet aktivieren
                       </button>
@@ -1235,7 +1360,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
             </p>
             <button
               type="button"
-              disabled={deactivating}
+              disabled={deactivating || unclearWrite}
               onClick={() => {
                 const item = (inventory ?? []).find(
                   (entry) => entry.deviceId === confirmDeactivateId,
@@ -1293,7 +1418,10 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                 disabled={inventoryBusy}
                 onChange={(event) => setInventoryNote(event.target.value)}
               />
-              <button type="submit" disabled={inventoryBusy}>
+              <button
+                type="submit"
+                disabled={inventoryBusy || unclearWrite}
+              >
                 Speichern
               </button>
               <button

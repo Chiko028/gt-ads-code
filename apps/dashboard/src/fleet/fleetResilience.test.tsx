@@ -162,12 +162,36 @@ describe("CX-037 Konflikt, unklarer Ausgang und Sitzungsablauf", () => {
     expect(server.count("PATCH", PATHS.taxi("t-1"))).toBe(2);
     expect(screen.queryByText("Taxi gespeichert.")).toBeNull();
 
+    // Solange der Ausgang unklar ist, sind alle Schreibaktionen gesperrt.
+    const saveWhileUnclear = screen.getByRole("button", {
+      name: "Speichern",
+    }) as HTMLButtonElement;
+    expect(saveWhileUnclear.disabled).toBe(true);
+    fireEvent.click(saveWhileUnclear);
+    expect(server.count("PATCH", PATHS.taxi("t-1"))).toBe(2);
+    expect(
+      (screen.getByRole("button", { name: "Taxi anlegen" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
     await user.click(screen.getByRole("button", { name: "Neu laden" }));
     await waitFor(() => {
       expect(server.count("GET", PATHS.taxis)).toBe(3);
     });
     expect(server.count("PATCH", PATHS.taxi("t-1"))).toBe(2);
     expect(screen.queryByText("Taxi gespeichert.")).toBeNull();
+
+    // Erst das erfolgreiche Nachladen hebt die Sperre auf und stellt das
+    // Formular auf die bestätigten Daten zurück.
+    await waitFor(() => {
+      expect(
+        (screen.getByLabelText("Anzeigename") as HTMLInputElement).value,
+      ).toBe("Alt");
+    });
+    expect(
+      (screen.getByRole("button", { name: "Speichern" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
 
     // 3. Sitzungsablauf: waehrend vier Listenabrufe haengen, liefert das
     // Anlegen einer Gruppe eine 401. Danach duerfen die verspaeteten
