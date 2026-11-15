@@ -2,10 +2,11 @@
  * CX-103 / R-204 (Teil 4): rein lesende Kampagnenabfrage.
  *
  * Eine einzige SQL-Anweisung liefert Stammdaten und Ziele aus demselben
- * Anweisungs-Snapshot. Die Betreiberbindung gilt fuer die Kampagne selbst;
- * Gruppenmitgliedschaften werden ausschliesslich ueber die bereits
- * betreibergebundenen Gruppenziele aufgeloest. Es gibt keine Schreibwirkung,
- * kein Audit, keine Statusableitung aus der Uhr und keine Manifestberechnung.
+ * Anweisungs-Snapshot. Saemtliche Zielreferenzen werden ueber die jeweiligen
+ * Ressourcentabellen (taxis, taxi_groups) gegen den Kampagnenbetreiber
+ * geprueft; betreiberfremde oder unbekannte Referenzen erscheinen nicht in
+ * den Zielaufloesungen. Es gibt keine Schreibwirkung, kein Audit, keine
+ * Statusableitung aus der Uhr und keine Manifestberechnung.
  */
 import { ApiError } from "../../http/errors.js";
 import type { SqlQueryable } from "../audit/repository.js";
@@ -103,26 +104,36 @@ const CAMPAIGN_QUERY_COLUMNS = [
 
 const TARGET_JOINS = [
   "left join lateral (",
-  "  select array_agg(distinct target_id order by target_id) as taxi_ids",
-  "    from campaign_targets",
-  "   where campaign_id = c.id and kind = 'taxi'",
+  "  select array_agg(distinct tx.id order by tx.id) as taxi_ids",
+  "    from campaign_targets ct",
+  "    join taxis tx on tx.id = ct.target_id",
+  "   where ct.campaign_id = c.id and ct.kind = 'taxi'",
+  "     and tx.owner_id = c.owner_id",
   ") t on true",
   "left join lateral (",
-  "  select array_agg(distinct target_id order by target_id) as group_ids",
-  "    from campaign_targets",
-  "   where campaign_id = c.id and kind = 'group'",
+  "  select array_agg(distinct tg.id::text order by tg.id::text) as group_ids",
+  "    from campaign_targets ct",
+  "    join taxi_groups tg on tg.id::text = ct.target_id",
+  "   where ct.campaign_id = c.id and ct.kind = 'group'",
+  "     and tg.owner_id = c.owner_id",
   ") g on true",
   "left join lateral (",
   "  select array_agg(distinct resolved.taxi_id order by resolved.taxi_id) as taxi_ids",
   "    from (",
-  "      select target_id as taxi_id",
-  "        from campaign_targets",
-  "       where campaign_id = c.id and kind = 'taxi'",
-  "      union",
-  "      select gm.taxi_id",
+  "      select tx.id as taxi_id",
   "        from campaign_targets ct",
-  "        join taxi_group_memberships gm on gm.group_id = ct.target_id",
+  "        join taxis tx on tx.id = ct.target_id",
+  "       where ct.campaign_id = c.id and ct.kind = 'taxi'",
+  "         and tx.owner_id = c.owner_id",
+  "      union",
+  "      select tx.id",
+  "        from campaign_targets ct",
+  "        join taxi_groups tg on tg.id::text = ct.target_id",
+  "        join taxi_group_memberships gm on gm.group_id = tg.id::text",
+  "        join taxis tx on tx.id = gm.taxi_id",
   "       where ct.campaign_id = c.id and ct.kind = 'group'",
+  "         and tg.owner_id = c.owner_id",
+  "         and tx.owner_id = c.owner_id",
   "    ) resolved",
   ") e on true",
 ].join("\n");
