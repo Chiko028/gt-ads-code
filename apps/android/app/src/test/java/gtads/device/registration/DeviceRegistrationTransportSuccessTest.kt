@@ -53,6 +53,8 @@ class DeviceRegistrationTransportSuccessTest {
         assertEquals(10_000, fake.connectTimeout)
         assertEquals(15_000, fake.readTimeout)
         assertFalse(fake.instanceFollowRedirects)
+        assertEquals(fixture.size.toLong(), fake.fixedLengthMode ?: -1L)
+        assertTrue(fake.streamingModeSetBeforeOutputStream)
         assertTrue(fake.outputClosed)
         assertTrue(fake.inputStreamOpened)
         assertTrue(fake.inputClosed)

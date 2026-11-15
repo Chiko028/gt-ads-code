@@ -19,6 +19,10 @@ internal class FakeRegistrationConnection(url: URL) : HttpURLConnection(url) {
     var errorBody: ByteArray? = null
     var timeoutOnResponse: Boolean = false
     var ioFailureOnResponse: Boolean = false
+    var timeoutOnWrite: Boolean = false
+    var ioFailureOnWrite: Boolean = false
+    var timeoutOnRead: Boolean = false
+    var ioFailureOnRead: Boolean = false
 
     val requestBytes = ByteArrayOutputStream()
     var outputStreamCalls: Int = 0
@@ -35,7 +39,15 @@ internal class FakeRegistrationConnection(url: URL) : HttpURLConnection(url) {
         private set
     var inputBytesRead: Int = 0
         private set
+    var responseCodeCalls: Int = 0
+        private set
     var disconnected: Boolean = false
+        private set
+
+    /** Aufgezeichneter Streaming-Modus; die Basisklasse oeffnet keinen Socket. */
+    var fixedLengthMode: Long? = null
+        private set
+    var streamingModeSetBeforeOutputStream: Boolean = false
         private set
 
     override fun connect() = Unit
@@ -46,14 +58,25 @@ internal class FakeRegistrationConnection(url: URL) : HttpURLConnection(url) {
 
     override fun usingProxy(): Boolean = false
 
+    override fun setFixedLengthStreamingMode(contentLength: Int) {
+        fixedLengthMode = contentLength.toLong()
+    }
+
+    override fun setFixedLengthStreamingMode(contentLength: Long) {
+        fixedLengthMode = contentLength
+    }
+
     override fun getOutputStream(): OutputStream {
         outputStreamCalls += 1
+        streamingModeSetBeforeOutputStream = fixedLengthMode != null
         return object : OutputStream() {
             override fun write(value: Int) {
+                failWriteIfConfigured()
                 requestBytes.write(value)
             }
 
             override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                failWriteIfConfigured()
                 requestBytes.write(buffer, offset, length)
             }
 
@@ -67,6 +90,7 @@ internal class FakeRegistrationConnection(url: URL) : HttpURLConnection(url) {
         inputStreamOpened = true
         return object : ByteArrayInputStream(body) {
             override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                failReadIfConfigured()
                 val read = super.read(buffer, offset, length)
                 if (read > 0) inputBytesRead += read
                 return read
@@ -84,6 +108,7 @@ internal class FakeRegistrationConnection(url: URL) : HttpURLConnection(url) {
         errorStreamOpened = true
         return object : ByteArrayInputStream(payload) {
             override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                failReadIfConfigured()
                 val read = super.read(buffer, offset, length)
                 if (read > 0) inputBytesRead += read
                 return read
@@ -97,9 +122,20 @@ internal class FakeRegistrationConnection(url: URL) : HttpURLConnection(url) {
     }
 
     override fun getResponseCode(): Int {
+        responseCodeCalls += 1
         if (timeoutOnResponse) throw SocketTimeoutException("synthetic timeout")
         if (ioFailureOnResponse) throw IOException("synthetic failure")
         return status
+    }
+
+    private fun failWriteIfConfigured() {
+        if (timeoutOnWrite) throw SocketTimeoutException("synthetic write timeout")
+        if (ioFailureOnWrite) throw IOException("synthetic write failure")
+    }
+
+    private fun failReadIfConfigured() {
+        if (timeoutOnRead) throw SocketTimeoutException("synthetic read timeout")
+        if (ioFailureOnRead) throw IOException("synthetic read failure")
     }
 }
 

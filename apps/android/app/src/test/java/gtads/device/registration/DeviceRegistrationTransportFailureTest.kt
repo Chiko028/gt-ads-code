@@ -2,6 +2,7 @@ package gtads.device.registration
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -11,6 +12,10 @@ import org.robolectric.annotation.Config
 enum class TransportScenario {
     TIMEOUT,
     IO_FAILURE,
+    TIMEOUT_ON_WRITE,
+    IO_FAILURE_ON_WRITE,
+    TIMEOUT_ON_READ,
+    IO_FAILURE_ON_READ,
     STATUS_302,
     STATUS_401,
     STATUS_429,
@@ -33,6 +38,10 @@ class DeviceRegistrationTransportFailureTest(private val scenario: TransportScen
         when (scenario) {
             TransportScenario.TIMEOUT -> fake.timeoutOnResponse = true
             TransportScenario.IO_FAILURE -> fake.ioFailureOnResponse = true
+            TransportScenario.TIMEOUT_ON_WRITE -> fake.timeoutOnWrite = true
+            TransportScenario.IO_FAILURE_ON_WRITE -> fake.ioFailureOnWrite = true
+            TransportScenario.TIMEOUT_ON_READ -> fake.timeoutOnRead = true
+            TransportScenario.IO_FAILURE_ON_READ -> fake.ioFailureOnRead = true
             TransportScenario.STATUS_302 -> fake.status = 302
             TransportScenario.STATUS_401 -> {
                 fake.status = 401
@@ -62,8 +71,13 @@ class DeviceRegistrationTransportFailureTest(private val scenario: TransportScen
 
         val result = runOnBackground { transport.send(byteArrayOf(1, 2, 3)) }
 
+        // Genau ein Verbindungsaufbau, genau ein Body und kein zweiter POST.
         assertEquals(1, opened)
         assertEquals(1, fake.outputStreamCalls)
+        // Body-Laenge vor dem Oeffnen des Ausgabestreams festgelegt: kein
+        // gepufferter, wiederholbarer Request.
+        assertEquals(3L, fake.fixedLengthMode ?: -1L)
+        assertTrue(fake.streamingModeSetBeforeOutputStream)
         assertTrue(fake.outputClosed)
         assertTrue(fake.disconnected)
         assertTrue(fake.inputBytesRead <= DeviceRegistrationTransport.MAX_RESPONSE_BYTES + 1)
@@ -71,9 +85,37 @@ class DeviceRegistrationTransportFailureTest(private val scenario: TransportScen
         when (scenario) {
             TransportScenario.TIMEOUT -> {
                 assertEquals(TransportResult.Failure(ErrorCode.TIMEOUT), result)
+                assertEquals(0, fake.responseCodeCalls)
             }
             TransportScenario.IO_FAILURE -> {
                 assertEquals(TransportResult.Failure(ErrorCode.NETWORK), result)
+                assertEquals(0, fake.responseCodeCalls)
+            }
+            TransportScenario.TIMEOUT_ON_WRITE -> {
+                assertEquals(TransportResult.Failure(ErrorCode.TIMEOUT), result)
+                assertEquals(0, fake.responseCodeCalls)
+                assertFalse(fake.inputStreamOpened)
+                assertFalse(fake.errorStreamOpened)
+            }
+            TransportScenario.IO_FAILURE_ON_WRITE -> {
+                assertEquals(TransportResult.Failure(ErrorCode.NETWORK), result)
+                assertEquals(0, fake.responseCodeCalls)
+                assertFalse(fake.inputStreamOpened)
+                assertFalse(fake.errorStreamOpened)
+            }
+            TransportScenario.TIMEOUT_ON_READ -> {
+                assertEquals(TransportResult.Failure(ErrorCode.TIMEOUT), result)
+                assertEquals(1, fake.responseCodeCalls)
+                assertTrue(fake.inputStreamOpened)
+                assertTrue(fake.inputClosed)
+                assertFalse(fake.errorStreamOpened)
+            }
+            TransportScenario.IO_FAILURE_ON_READ -> {
+                assertEquals(TransportResult.Failure(ErrorCode.NETWORK), result)
+                assertEquals(1, fake.responseCodeCalls)
+                assertTrue(fake.inputStreamOpened)
+                assertTrue(fake.inputClosed)
+                assertFalse(fake.errorStreamOpened)
             }
             TransportScenario.SIZE_262145 -> {
                 assertEquals(TransportResult.Failure(ErrorCode.RESPONSE_TOO_LARGE), result)

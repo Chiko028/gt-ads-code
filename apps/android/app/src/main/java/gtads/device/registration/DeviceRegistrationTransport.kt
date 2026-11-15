@@ -54,6 +54,10 @@ class DeviceRegistrationTransport(
             opened.readTimeout = READ_TIMEOUT_MS
             opened.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
             opened.setRequestProperty("X-GT-Ads-Api-Version", API_VERSION)
+            // Feste Laenge statt gepufferter Body: Der Android-HTTP-Stack darf einen
+            // Streaming-Request bei Verbindungsfehlern nicht still wiederholen. Der
+            // Modus muss vor dem Oeffnen des Ausgabestreams gesetzt sein.
+            opened.setFixedLengthStreamingMode(requestBytes.size)
             opened.outputStream.use { it.write(requestBytes) }
 
             val status = opened.responseCode
