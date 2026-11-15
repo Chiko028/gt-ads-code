@@ -217,7 +217,6 @@ export class RemoteControlService {
           desired_paused: normalized.desiredPaused,
           origin,
           target_device_ids: targetDeviceIds,
-          request_id: normalized.requestId ?? null,
         },
       });
 

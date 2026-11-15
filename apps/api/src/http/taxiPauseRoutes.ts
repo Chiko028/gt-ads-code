@@ -10,6 +10,14 @@
  * Die Aktion ist im zentralen Routenkatalog (CX-015) als "taxi.pause"
  * eingetragen. Damit kann CX-015 Operatorrechte ergaenzen, ohne diese Route
  * umzubauen.
+ *
+ * PFADBLOCKER (CX-052): Der vorhandene CX-012-Kern muesste fuer eine
+ * Request-ID im Audit um SetDesiredPauseInput, Normalisierung und den
+ * Audit-Datensatz in apps/api/src/modules/remoteControl/ erweitert werden.
+ * Dieser Kern liegt ausserhalb der fuer CX-052 freigegebenen Pfade
+ * (apps/api/src/http/, apps/api/src/modules/pause/). Die Request-ID wird
+ * deshalb hier nicht an den Kern uebergeben; die Anbindung bleibt bis zur
+ * ausdruecklichen Freigabe des tatsaechlichen Kernpfads blockiert.
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ApiError } from "./errors.js";
@@ -130,7 +138,6 @@ function registerAction(
           commandId: body.command_id,
           expectedRevision: body.expected_revision,
           desiredPaused,
-          requestId: request.id,
         });
       } catch (error) {
         mapPauseError(error);

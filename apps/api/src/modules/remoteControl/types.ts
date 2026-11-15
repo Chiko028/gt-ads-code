@@ -20,8 +20,6 @@ export interface SetDesiredPauseInput {
   commandId: string;
   expectedRevision: number;
   desiredPaused: boolean;
-  /** Request-ID des ausloesenden HTTP-Aufrufs; nur fuer den Audit-Datensatz. */
-  requestId?: string;
 }
 
 export interface SetDesiredPauseResult {
