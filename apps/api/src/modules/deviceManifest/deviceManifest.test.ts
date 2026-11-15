@@ -6,6 +6,7 @@
  * externen Netzwerkzugriff; alle Schluessel und Kennungen sind synthetisch.
  */
 import {
+  createHash,
   generateKeyPairSync,
   randomUUID,
   sign as signWithKey,
@@ -31,12 +32,14 @@ import { generateOpaqueToken, hashToken } from "../../crypto/tokens.js";
 import { createServer } from "../../http/server.js";
 import { ADMIN_SESSION_COOKIE } from "../adminAuth/middleware.js";
 import {
+  MANIFEST_SCHEMA_VERSION,
   createSignedManifest,
   verifySignedManifest,
   type SignedManifestEnvelope,
 } from "../playout/manifest.js";
 import type { LoopPlan } from "../playout/types.js";
 import { RegistrationService } from "../registration/service.js";
+import { ensureTaxiActivationSchema } from "../taxiActivation/index.js";
 
 const BASE_TIME = Date.parse("2026-11-13T12:00:00.000Z");
 const START = "2026-12-01T08:00:00.000Z";
@@ -84,24 +87,6 @@ function requirePool(): Pool {
   return pool;
 }
 
-async function ensureAssignmentFixture(): Promise<void> {
-  // Synthetische Testfixture der vorhandenen CX-035-Leseflaeche. Der Adapter
-  // selbst legt keine Persistenz an.
-  await requirePool().query(
-    [
-      "create table if not exists device_taxi_assignments (",
-      "  device_id uuid primary key references devices(id) on delete cascade,",
-      "  taxi_id text not null,",
-      "  active boolean not null default true,",
-      "  updated_at timestamptz not null default now(),",
-      "  constraint device_taxi_assignments_taxi_id_length check (",
-      "    char_length(taxi_id) between 1 and 128",
-      "  )",
-      ");",
-    ].join("\n"),
-  );
-}
-
 function baseConnection(): {
   host: string;
   port: number;
@@ -136,7 +121,9 @@ beforeAll(async () => {
     const sql = await readFile(join(MIGRATIONS_DIR, name), "utf8");
     await requirePool().query(sql);
   }
-  await ensureAssignmentFixture();
+  // Reales CX-035-Schema ueber dessen eigene Persistenz initialisieren; der
+  // Test legt keine Ersatz-DDL an.
+  await ensureTaxiActivationSchema(requirePool());
 
   config = {
     ...CONFIG_DEFAULTS,
@@ -415,10 +402,52 @@ describe("CX-042 / R-302 authentifizierter Manifest-Abruf", () => {
 
     expect(responseFirst.statusCode).toBe(200);
     expect(responseSecond.statusCode).toBe(200);
+
+    // Massgeblich sind die von CX-041 veroeffentlichten Werte, nicht die
+    // Uebereinstimmung zweier Antworten: die Antwortbytes muessen exakt der
+    // gespeicherten Bytefolge entsprechen, der ETag deren SHA-256 sein.
+    const stored = (
+      await requirePool().query<{
+        version: string;
+        key_id: string;
+        environment: string;
+        payload_base64: string;
+        signature_base64: string;
+      }>(
+        [
+          "select version, key_id, environment, payload_base64,",
+          "       signature_base64",
+          "  from taxi_manifest_artifacts",
+          " where taxi_id = $1 and version = $2",
+        ].join("\n"),
+        ["taxi-A", envelopeA.version],
+      )
+    ).rows[0];
+    expect(stored).toBeDefined();
+    expect(stored.version).toBe(envelopeA.version);
+    expect(stored.key_id).toBe(envelopeA.keyId);
+    expect(stored.payload_base64).toBe(envelopeA.payloadBase64);
+    expect(stored.signature_base64).toBe(envelopeA.signatureBase64);
+    const publishedBytes = Buffer.from(
+      JSON.stringify({
+        schemaVersion: MANIFEST_SCHEMA_VERSION,
+        keyId: stored.key_id,
+        version: stored.version,
+        payloadBase64: stored.payload_base64,
+        signatureBase64: stored.signature_base64,
+      }),
+      "utf8",
+    );
+    const publishedEtag =
+      '"' + createHash("sha256").update(publishedBytes).digest("hex") + '"';
+
+    expect(responseFirst.rawPayload.equals(publishedBytes)).toBe(true);
+    expect(responseSecond.rawPayload.equals(publishedBytes)).toBe(true);
     expect(responseFirst.rawPayload.equals(responseSecond.rawPayload)).toBe(
       true,
     );
-    expect(responseFirst.headers.etag).toBe(responseSecond.headers.etag);
+    expect(responseFirst.headers.etag).toBe(publishedEtag);
+    expect(responseSecond.headers.etag).toBe(publishedEtag);
     expect(
       String(responseFirst.headers["content-type"]).startsWith(
         "application/json",
