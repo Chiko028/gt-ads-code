@@ -7,6 +7,7 @@ import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
+import java.security.PublicKey
 import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
@@ -83,19 +84,32 @@ class DeviceIdentity internal constructor(private val store: IdentityKeyStore) {
     /** Oeffentlicher SPKI-Schluessel ohne Erzeugung. */
     fun publicKeySpki(): ByteArray = openExisting()
 
-    /** Signiert die uebergebenen Bytes unveraendert (SHA-256, ASN.1-DER). */
+    /**
+     * Signiert die uebergebenen Bytes unveraendert (SHA-256, ASN.1-DER).
+     * Die Signatur wird gegen den veroeffentlichten Schluessel geprueft; eine
+     * nicht verifizierbare Signatur verlaesst die Methode nicht.
+     */
     fun sign(bytes: ByteArray): ByteArray {
-        openExisting()
+        val publicKey = synchronized(PROCESS_LOCK) { readVerifiedPublicKey() }
         val key = try {
             store.privateKey(ALIAS)
         } catch (cause: Exception) {
             throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
         }
-        return try {
+        val signature = try {
             signBytes(key, bytes)
         } catch (cause: Exception) {
             throw DeviceIdentityException(IdentityFailure.SIGNATURE_FAILURE, cause)
         }
+        val matches = try {
+            verifyBytes(publicKey, bytes, signature)
+        } catch (cause: Exception) {
+            throw DeviceIdentityException(IdentityFailure.SIGNATURE_FAILURE, cause)
+        }
+        if (!matches) {
+            throw DeviceIdentityException(IdentityFailure.SIGNATURE_FAILURE)
+        }
+        return signature
     }
 
     private fun containsAlias(): Boolean = try {
@@ -105,26 +119,43 @@ class DeviceIdentity internal constructor(private val store: IdentityKeyStore) {
     }
 
     /**
+     * Liefert den oeffentlichen P-256-Schluessel einer vorhandenen Identitaet
+     * ohne Erzeugung.
+     */
+    private fun readVerifiedPublicKey(): ECPublicKey {
+        if (!containsAlias()) {
+            throw DeviceIdentityException(IdentityFailure.MISSING_ALIAS)
+        }
+        return parseP256(readSpkiBytes())
+    }
+
+    /**
      * Prueft oeffentlichen und privaten Identitaetsschluessel gemeinsam:
      * P-256-Eignung beider Teile und ihre Zuordnung zueinander. Der private
      * Schluessel wird dabei weder exportiert noch ersetzt oder geloescht.
      */
     private fun readVerifiedSpki(): ByteArray {
-        val spki = try {
-            store.publicKeySpki(ALIAS)
-        } catch (cause: Exception) {
-            throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
-        }
-        val publicKey = try {
+        val spki = readSpkiBytes()
+        requireMatchingPrivateKey(parseP256(spki))
+        return spki.copyOf()
+    }
+
+    private fun readSpkiBytes(): ByteArray = try {
+        store.publicKeySpki(ALIAS)
+    } catch (cause: Exception) {
+        throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
+    }
+
+    private fun parseP256(spki: ByteArray): ECPublicKey {
+        val key = try {
             KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(spki)) as ECPublicKey
         } catch (cause: Exception) {
             throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
         }
-        if (!isP256(publicKey.params)) {
+        if (!isP256(key.params)) {
             throw DeviceIdentityException(IdentityFailure.INVALID_KEY)
         }
-        requireMatchingPrivateKey(publicKey)
-        return spki.copyOf()
+        return key
     }
 
     /**
@@ -145,11 +176,7 @@ class DeviceIdentity internal constructor(private val store: IdentityKeyStore) {
             throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
         }
         val matches = try {
-            Signature.getInstance("SHA256withECDSA").run {
-                initVerify(publicKey)
-                update(PROBE_BYTES)
-                verify(probeSignature)
-            }
+            verifyBytes(publicKey, PROBE_BYTES, probeSignature)
         } catch (cause: Exception) {
             throw DeviceIdentityException(IdentityFailure.INVALID_KEY, cause)
         }
@@ -184,6 +211,14 @@ class DeviceIdentity internal constructor(private val store: IdentityKeyStore) {
                 initSign(key)
                 update(bytes)
                 sign()
+            }
+
+        /** Pruefpfad zur Signatur; belegt die Zuordnung zum oeffentlichen Schluessel. */
+        fun verifyBytes(publicKey: PublicKey, bytes: ByteArray, signature: ByteArray): Boolean =
+            Signature.getInstance("SHA256withECDSA").run {
+                initVerify(publicKey)
+                update(bytes)
+                verify(signature)
             }
     }
 }

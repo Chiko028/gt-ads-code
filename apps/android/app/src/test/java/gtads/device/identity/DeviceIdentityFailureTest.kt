@@ -45,7 +45,7 @@ class DeviceIdentityFailureTest(
             arrayOf("RSA statt EC", Kind.RSA_SPKI, IdentityFailure.INVALID_KEY),
             arrayOf("P-384 statt P-256", Kind.P384_SPKI, IdentityFailure.INVALID_KEY),
             arrayOf("nicht lesbarer Eintrag", Kind.UNREADABLE_ENTRY, IdentityFailure.INVALID_KEY),
-            arrayOf("ungeeigneter privater Schluessel beim Signieren", Kind.SIGNING_KEY, IdentityFailure.INVALID_KEY),
+            arrayOf("Signatur mit ungeeignetem Schluessel", Kind.SIGNING_KEY, IdentityFailure.SIGNATURE_FAILURE),
             arrayOf("privater Schluessel nicht lesbar", Kind.UNREADABLE_PRIVATE, IdentityFailure.INVALID_KEY),
         )
     }
