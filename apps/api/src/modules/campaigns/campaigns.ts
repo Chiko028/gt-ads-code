@@ -642,12 +642,23 @@ export class CampaignService {
     if (customer.rowCount !== 1) {
       throw ApiError.invalidRequest();
     }
-    const media = await executor.query<{ status: string }>(
-      "select status from media_objects where id = $1::uuid",
+    // Gemeinsame Zeilensperre mit Aktivierung und Loeschung: Eine Zuordnung
+    // darf weder an einem geloeschten Medium haengen noch parallel zu dessen
+    // Markierung entstehen.
+    const media = await executor.query<{
+      status: string;
+      deleted_at: Date | null;
+    }>(
+      [
+        "select status, deleted_at",
+        "  from media_objects",
+        " where id = $1::uuid",
+        "   for share",
+      ].join("\n"),
       [mediaId],
     );
     const row = media.rows[0];
-    if (row === undefined) {
+    if (row === undefined || row.deleted_at !== null) {
       throw ApiError.invalidRequest();
     }
     return row.status === "ready";

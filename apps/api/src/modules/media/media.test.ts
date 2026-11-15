@@ -24,6 +24,7 @@ import type { AuditEventInput } from "../audit/repository.js";
 import { AuditService } from "../audit/service.js";
 import {
   MEDIA_CREATED_ACTION,
+  MEDIA_DELETED_ACTION,
   createMediaService,
   type MediaAuditWriter,
   type MediaProfileMetadata,
@@ -31,6 +32,8 @@ import {
   type MediaServiceOptions,
   type MediaSqlPool,
 } from "./index.js";
+import { CampaignService } from "../campaigns/campaigns.js";
+import { ensureCampaignSchema } from "../campaigns/schema.js";
 
 const BASE_TIME = Date.parse("2026-09-01T08:00:00.000Z");
 const MIGRATIONS_DIR = join(
@@ -45,6 +48,8 @@ const MIGRATIONS = [
   "0005_cx_013_control_config.up.sql",
   "0006_cx_028_technical_alarms.up.sql",
   "0007_cx_030_media.up.sql",
+  "0009_campaign_customers.up.sql",
+  "0010_cx_041_manifest_refresh.up.sql",
   "0011_cx_078_media_deletion.up.sql",
 ];
 const VALID_PROFILE: MediaProfileMetadata = {
@@ -173,6 +178,22 @@ async function auditCount(): Promise<number> {
   return Number(result.rows[0]?.count ?? "0");
 }
 
+async function deleteAuditCount(id: string): Promise<number> {
+  const result = await (pool as Pool).query<{ count: string }>(
+    "select count(*)::text as count from audit_events where action = $1 and target_id = $2",
+    [MEDIA_DELETED_ACTION, id],
+  );
+  return Number(result.rows[0]?.count ?? "0");
+}
+
+async function deletedAtOf(id: string): Promise<Date | null> {
+  const result = await (pool as Pool).query<{ deleted_at: Date | null }>(
+    "select deleted_at from media_objects where id = $1::uuid",
+    [id],
+  );
+  return result.rows[0]?.deleted_at ?? null;
+}
+
 async function insertStagingBase(
   id: string,
   displayName: string,
@@ -259,6 +280,7 @@ beforeAll(async () => {
     const sql = await readFile(join(MIGRATIONS_DIR, name), "utf8");
     await (pool as Pool).query(sql);
   }
+  await ensureCampaignSchema(pool as Pool);
 
   storageRoot = await mkdtemp(join(tmpdir(), "cx030-media-"));
 }, 60_000);
@@ -266,7 +288,10 @@ beforeAll(async () => {
 beforeEach(async () => {
   nowMs = BASE_TIME;
   await (pool as Pool).query(
-    "truncate table audit_events, media_objects restart identity cascade",
+    [
+      "truncate table campaign_targets, campaigns, customers,",
+      "  audit_events, media_objects restart identity cascade",
+    ].join(" "),
   );
   await rm(storageRoot, { recursive: true, force: true });
   await mkdir(storageRoot, { recursive: true, mode: 0o700 });
@@ -639,5 +664,210 @@ describe("CX-030 / R-201 Medienspeicher", () => {
     expect(again).toEqual({ completed: 0, cleaned: 0, failed: 0 });
     expect(await mediaCount("ready")).toBe(2);
     expect(await auditCount()).toBe(2);
+  }, 30_000);
+
+  it("markiert ein bereitgestelltes Medium transaktional mit genau einem media.deleted-Audit, ist idempotent und meldet unbekannte oder nicht bereite Medien als nicht gefunden", async () => {
+    const service = makeService();
+    const bytes = patternBytes(3072);
+    const media = await service.createMedia({
+      displayName: "SYN-CX078-Loeschung.mp4",
+      content: streamOf(bytes, 500),
+      metadata: metadata(),
+    });
+
+    // Das Audit gehoert zur selben Transaktion: schlaegt es fehl, bleibt die
+    // Markierung zurueckgerollt.
+    const failing = makeService({
+      auditWriter: async () => {
+        throw new Error("SYN-Audit nicht verfuegbar");
+      },
+    });
+    await expect(failing.deleteMedia(media.id)).rejects.toThrow(
+      "SYN-Audit nicht verfuegbar",
+    );
+    expect(await deletedAtOf(media.id)).toBeNull();
+    expect(await deleteAuditCount(media.id)).toBe(0);
+
+    nowMs += 5000;
+    const first = await service.deleteMedia(media.id, {
+      actorType: "admin",
+      actorId: "SYN-ADMIN",
+    });
+    expect(first.alreadyDeleted).toBe(false);
+    expect(first.deletedAt.getTime()).toBe(nowMs);
+    expect(await deletedAtOf(media.id)).not.toBeNull();
+
+    expect(await deleteAuditCount(media.id)).toBe(1);
+    const audit = await (pool as Pool).query<{
+      actor_type: string;
+      actor_id: string | null;
+      target_type: string;
+      details: Record<string, unknown>;
+    }>(
+      "select actor_type, actor_id, target_type, details from audit_events where action = $1 and target_id = $2",
+      [MEDIA_DELETED_ACTION, media.id],
+    );
+    expect(audit.rows[0]?.actor_type).toBe("admin");
+    expect(audit.rows[0]?.actor_id).toBe("SYN-ADMIN");
+    expect(audit.rows[0]?.target_type).toBe("media");
+    expect(audit.rows[0]?.details).toEqual({});
+    expect(
+      (await readFile(join(storageRoot, "objects", media.id))).equals(bytes),
+    ).toBe(true);
+
+    const second = await service.deleteMedia(media.id);
+    expect(second.alreadyDeleted).toBe(true);
+    expect(second.deletedAt.getTime()).toBe(first.deletedAt.getTime());
+    expect(await deleteAuditCount(media.id)).toBe(1);
+
+    await expect(service.deleteMedia(randomUUID())).rejects.toMatchObject({
+      code: "media_not_found",
+    });
+    const stagingId = randomUUID();
+    await insertStagingBase(stagingId, "SYN-CX078-Staging", new Date(nowMs));
+    await expect(service.deleteMedia(stagingId)).rejects.toMatchObject({
+      code: "media_not_found",
+    });
+    await expect(service.deleteMedia("kein-schluessel")).rejects.toMatchObject({
+      code: "invalid_media_id",
+    });
+  }, 30_000);
+
+  it("sperrt die Loeschung, solange eine aktive Kampagne auf das Medium verweist, und gibt sie nach dem Abschluss frei", async () => {
+    const service = makeService();
+    const media = await service.createMedia({
+      displayName: "SYN-CX078-Aktiv.mp4",
+      content: streamOf(patternBytes(1024)),
+      metadata: metadata(),
+    });
+    const customerId = randomUUID();
+    await (pool as Pool).query(
+      "insert into customers (id, display_name) values ($1::uuid, $2)",
+      [customerId, "SYN-CX078-Kunde"],
+    );
+    const campaignId = randomUUID();
+    await (pool as Pool).query(
+      [
+        "insert into campaigns",
+        "  (id, customer_id, media_id, owner_id, rule_type, status, archived,",
+        "   start_at, end_at, revision)",
+        "values ($1::uuid, $2::uuid, $3::uuid, 'SYN-OWNER', 'fixed_slot',",
+        "        'active', false, $4::timestamptz, $5::timestamptz, 1)",
+      ].join("\n"),
+      [
+        campaignId,
+        customerId,
+        media.id,
+        new Date(nowMs + 60_000),
+        new Date(nowMs + 3_600_000),
+      ],
+    );
+
+    await expect(service.deleteMedia(media.id)).rejects.toMatchObject({
+      code: "media_in_use",
+    });
+    expect(await deletedAtOf(media.id)).toBeNull();
+    expect(await deleteAuditCount(media.id)).toBe(0);
+
+    await (pool as Pool).query(
+      "update campaigns set status = 'finished' where id = $1::uuid",
+      [campaignId],
+    );
+    const result = await service.deleteMedia(media.id);
+    expect(result.alreadyDeleted).toBe(false);
+    expect(await deletedAtOf(media.id)).not.toBeNull();
+    expect(await deleteAuditCount(media.id)).toBe(1);
+  }, 30_000);
+
+  it("blendet geloeschte Medien aus der Liste aus, laesst aber den bestehenden Lese- und Downloadpfad samt Bytes lesbar", async () => {
+    const service = makeService();
+    const bytesA = patternBytes(2048);
+    const first = await service.createMedia({
+      displayName: "SYN-CX078-Liste-A.mp4",
+      content: streamOf(bytesA),
+      metadata: metadata(),
+    });
+    nowMs += 1000;
+    const second = await service.createMedia({
+      displayName: "SYN-CX078-Liste-B.mp4",
+      content: streamOf(patternBytes(1024)),
+      metadata: metadata(),
+    });
+
+    const before = await service.listReadyMedia();
+    expect(before.items.map((item) => item.id)).toEqual([first.id, second.id]);
+
+    await service.deleteMedia(first.id);
+
+    const after = await service.listReadyMedia();
+    expect(after.items.map((item) => item.id)).toEqual([second.id]);
+    expect(after.items.some((item) => item.id === first.id)).toBe(false);
+
+    const stillReadable = await service.getReadyMedia(first.id);
+    expect(stillReadable).not.toBeNull();
+    expect(
+      Buffer.from(await (stillReadable as NonNullable<typeof stillReadable>).read()).equals(
+        bytesA,
+      ),
+    ).toBe(true);
+  }, 30_000);
+
+  it("serialisiert Zuordnung und Loeschung ueber dieselbe Zeilensperre: die Loeschung wartet auf FOR SHARE und eine Zuordnung nach der Markierung wird abgelehnt", async () => {
+    const service = makeService();
+    const media = await service.createMedia({
+      displayName: "SYN-CX078-Sperre.mp4",
+      content: streamOf(patternBytes(1024)),
+      metadata: metadata(),
+    });
+    const customerId = randomUUID();
+    await (pool as Pool).query(
+      "insert into customers (id, display_name) values ($1::uuid, $2)",
+      [customerId, "SYN-CX078-Sperrkunde"],
+    );
+
+    const client = await (pool as Pool).connect();
+    let committed = false;
+    try {
+      await client.query("begin");
+      // Genau die Sperre, die die Zuordnung einer Kampagne haelt.
+      await client.query(
+        "select id from media_objects where id = $1::uuid for share",
+        [media.id],
+      );
+      let settled = false;
+      const pending = service.deleteMedia(media.id).then((value) => {
+        settled = true;
+        return value;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(settled).toBe(false);
+
+      await client.query("commit");
+      committed = true;
+      const result = await pending;
+      expect(result.alreadyDeleted).toBe(false);
+    } finally {
+      if (!committed) {
+        await client.query("rollback").catch(() => undefined);
+      }
+      client.release();
+    }
+
+    const campaigns = new CampaignService({ pool: pool as Pool });
+    await expect(
+      campaigns.createCampaign({
+        customerId,
+        mediaId: media.id,
+        startAt: new Date(nowMs + 60_000).toISOString(),
+        endAt: new Date(nowMs + 3_600_000).toISOString(),
+        taxiIds: ["taxi-1"],
+        status: "draft",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+
+    const count = await (pool as Pool).query<{ count: string }>(
+      "select count(*)::text as count from campaigns",
+    );
+    expect(Number(count.rows[0]?.count ?? "0")).toBe(0);
   }, 30_000);
 });

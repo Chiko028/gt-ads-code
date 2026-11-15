@@ -25,6 +25,7 @@ export const AUDIT_ACTIONS = Object.freeze({
   campaignUpdated: "campaign.updated",
   campaignTransitioned: "campaign.transitioned",
   mediaCreated: "media.created",
+  mediaDeleted: "media.deleted",
   taxiGroupCreated: "taxi_group.created",
   taxiGroupRenamed: "taxi_group.renamed",
   taxiGroupMembershipsReplaced: "taxi.group_memberships_replaced",

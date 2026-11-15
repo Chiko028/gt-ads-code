@@ -31,6 +31,12 @@ const COLUMNS = [
   "ready_at",
 ].join(", ");
 
+export interface MediaDeletionRow {
+  id: string;
+  status: "staging" | "ready";
+  deleted_at: Date | string | null;
+}
+
 export interface MediaRow {
   id: string;
   display_name: string;
@@ -321,6 +327,77 @@ export class MediaRepository {
     );
     const row = result.rows[0];
     return row === undefined ? null : mapReadyRow(row);
+  }
+
+  /**
+   * Sperrt die Zeile fuer die Loeschung exklusiv. Zuordnung und Aktivierung
+   * halten dieselbe Zeile mit FOR SHARE; dadurch sind Markierung und
+   * Referenzpruefung gemeinsam serialisiert.
+   */
+  async lockForDeletion(
+    executor: SqlQueryable,
+    id: string,
+  ): Promise<MediaDeletionRow | null> {
+    const result = await executor.query<MediaDeletionRow>(
+      [
+        "select id::text as id, status, deleted_at",
+        "  from media_objects",
+        " where id = $1::uuid",
+        "   for update",
+      ].join("\n"),
+      [id],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  /**
+   * Prueft eine aktive, nicht archivierte Kampagne. Das Kampagnenschema wird
+   * vom Kampagnenmodul additiv angelegt; fehlt es, gibt es keine Referenz.
+   */
+  async hasActiveCampaign(
+    executor: SqlQueryable,
+    id: string,
+  ): Promise<boolean> {
+    const table = await executor.query<{ present: boolean }>(
+      "select to_regclass('campaigns') is not null as present",
+    );
+    if (table.rows[0]?.present !== true) {
+      return false;
+    }
+    const result = await executor.query<{ active: boolean }>(
+      [
+        "select exists (",
+        "  select 1",
+        "    from campaigns",
+        "   where media_id = $1::uuid",
+        "     and status = 'active'",
+        "     and archived = false",
+        ") as active",
+      ].join("\n"),
+      [id],
+    );
+    return result.rows[0]?.active === true;
+  }
+
+  /** Setzt deleted_at genau einmal und liefert den gespeicherten Zeitpunkt. */
+  async markDeleted(
+    executor: SqlQueryable,
+    id: string,
+    at: Date,
+  ): Promise<Date | null> {
+    const result = await executor.query<{ deleted_at: Date | string }>(
+      [
+        "update media_objects",
+        "   set deleted_at = $2",
+        " where id = $1::uuid",
+        "   and status = 'ready'",
+        "   and deleted_at is null",
+        " returning deleted_at",
+      ].join("\n"),
+      [id, at],
+    );
+    const value = result.rows[0]?.deleted_at;
+    return value === undefined ? null : asDate(value);
   }
 
   async listStaging(): Promise<MediaRow[]> {

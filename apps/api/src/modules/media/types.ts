@@ -9,6 +9,8 @@ import type { ManifestRefreshTrigger } from "../manifestRefresh/index.js";
 
 /** Stabiler Auditname laut R-201/CX-030. */
 export const MEDIA_CREATED_ACTION = "media.created";
+/** Stabiler Auditname der logischen Loeschung laut R-203/CX-078. */
+export const MEDIA_DELETED_ACTION = "media.deleted";
 export const MEDIA_AUDIT_TARGET_TYPE = "media";
 
 export const MEDIA_MAX_LIST_LIMIT = 100;
@@ -60,6 +62,22 @@ export interface ReadyMedia extends MediaMetadata {
 export interface MediaListPage {
   items: MediaMetadata[];
   nextCursor: string | null;
+}
+
+/**
+ * Ergebnis der logischen Loeschung. alreadyDeleted kennzeichnet den
+ * idempotenten Wiederholungsfall: Es wurde kein zweites Audit geschrieben
+ * und deletedAt bleibt der urspruengliche Zeitpunkt.
+ */
+export interface MediaDeletionResult {
+  id: string;
+  deletedAt: Date;
+  alreadyDeleted: boolean;
+}
+
+export interface DeleteMediaOptions {
+  actorType?: AuditActorType;
+  actorId?: string | null;
 }
 
 export interface ListReadyMediaQuery {

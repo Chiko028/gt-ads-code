@@ -3,6 +3,8 @@ export type { ContentDigest } from "./contentDigest.js";
 export {
   MediaError,
   MediaInputError,
+  MediaInUseError,
+  MediaNotFoundError,
   MediaProfileRejectedError,
   MediaStorageError,
 } from "./errors.js";
@@ -22,6 +24,7 @@ export {
   MediaService,
   createMedia,
   createMediaService,
+  deleteMedia,
   getReadyMedia,
   listReadyMedia,
   normalizeDisplayName,
@@ -36,12 +39,15 @@ export {
   MEDIA_AUDIT_TARGET_TYPE,
   MEDIA_CREATED_ACTION,
   MEDIA_DEFAULT_LIST_LIMIT,
+  MEDIA_DELETED_ACTION,
   MEDIA_MAX_LIST_LIMIT,
 } from "./types.js";
 export type {
   CreateMediaInput,
+  DeleteMediaOptions,
   ListReadyMediaQuery,
   MediaAuditWriter,
+  MediaDeletionResult,
   MediaListPage,
   MediaMetadata,
   MediaProfileMetadata,

@@ -33,6 +33,31 @@ export class MediaProfileRejectedError extends MediaInputError {
   }
 }
 
+/** Das Medium existiert nicht, ist nicht bereit oder ist nicht sichtbar. */
+export class MediaNotFoundError extends MediaError {
+  constructor(id: string) {
+    super("media_not_found", "Das Medium wurde nicht gefunden.");
+    this.name = "MediaNotFoundError";
+    this.mediaId = id;
+  }
+
+  readonly mediaId: string;
+}
+
+/** Das Medium wird noch von einer aktiven Kampagne verwendet. */
+export class MediaInUseError extends MediaError {
+  constructor(id: string) {
+    super(
+      "media_in_use",
+      "Das Medium wird von einer aktiven Kampagne verwendet.",
+    );
+    this.name = "MediaInUseError";
+    this.mediaId = id;
+  }
+
+  readonly mediaId: string;
+}
+
 /** Dateisystem- oder Datenbankfehler; der Zustand ready wurde nicht gesetzt. */
 export class MediaStorageError extends MediaError {
   constructor(code: string, message: string, options?: { cause?: unknown }) {

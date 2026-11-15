@@ -5,6 +5,8 @@ import { insertAuditEvent } from "../audit/repository.js";
 import { computeContentDigest } from "./contentDigest.js";
 import {
   MediaInputError,
+  MediaInUseError,
+  MediaNotFoundError,
   MediaProfileRejectedError,
   MediaStorageError,
   MediaError,
@@ -19,9 +21,12 @@ import {
 import {
   MEDIA_AUDIT_TARGET_TYPE,
   MEDIA_CREATED_ACTION,
+  MEDIA_DELETED_ACTION,
   type CreateMediaInput,
+  type DeleteMediaOptions,
   type ListReadyMediaQuery,
   type MediaAuditWriter,
+  type MediaDeletionResult,
   type MediaListPage,
   type MediaMetadata,
   type MediaProfileMetadata,
@@ -166,6 +171,27 @@ function mediaCreatedEvent(input: {
   };
 }
 
+function mediaDeletedEvent(input: {
+  at: Date;
+  id: string;
+  actorType?: "admin" | "device" | "system";
+  actorId?: string | null;
+}): AuditEventInput {
+  return {
+    at: input.at,
+    actorType: input.actorType ?? "system",
+    actorId: input.actorId ?? null,
+    action: MEDIA_DELETED_ACTION,
+    targetType: MEDIA_AUDIT_TARGET_TYPE,
+    targetId: input.id,
+    details: {},
+  };
+}
+
+function asDate(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
 /**
  * R-201 / CX-030: lokaler Medienspeicher.
  *
@@ -308,6 +334,66 @@ export class MediaService {
 
     this.scheduleRefresh();
     return this.toReadyMedia(metadata);
+  }
+
+  /**
+   * R-203 / CX-078: logische Loeschung ohne Datei- oder Byteveraenderung.
+   *
+   * Die Zeile wird mit FOR UPDATE gesperrt; Zuordnung und Aktivierung halten
+   * dieselbe Zeile mit FOR SHARE. Markierung und media.deleted-Audit laufen in
+   * genau einer Transaktion. Aktive, nicht archivierte Kampagnen sperren die
+   * Loeschung. Ein bereits markiertes Medium liefert dasselbe Ergebnis ohne
+   * zweites Audit; unbekannte oder nicht bereite Medien gelten als nicht
+   * gefunden. Die Bytes bleiben lesbar, Listen blenden sie aus.
+   */
+  async deleteMedia(
+    id: string,
+    options: DeleteMediaOptions = {},
+  ): Promise<MediaDeletionResult> {
+    if (!isMediaId(id)) {
+      throw new MediaInputError(
+        "invalid_media_id",
+        "Der Medien-Schluessel ist keine gueltige UUID.",
+      );
+    }
+
+    return this.withTransaction(async (client) => {
+      const row = await this.repository.lockForDeletion(client, id);
+      if (row === null || row.status !== "ready") {
+        throw new MediaNotFoundError(id);
+      }
+      if (row.deleted_at !== null) {
+        return {
+          id: row.id,
+          deletedAt: asDate(row.deleted_at),
+          alreadyDeleted: true,
+        };
+      }
+      if (await this.repository.hasActiveCampaign(client, id)) {
+        throw new MediaInUseError(id);
+      }
+
+      const at = this.now();
+      const deletedAt = await this.repository.markDeleted(client, id, at);
+      if (deletedAt === null) {
+        // Unter der exklusiven Zeilensperre darf das nur eintreten, wenn ein
+        // anderer Weg die Zeile gleichzeitig veraendert hat.
+        throw new MediaStorageError(
+          "delete_conflict",
+          "Die Loeschmarkierung konnte nicht gesetzt werden.",
+        );
+      }
+      await this.writeAudit(
+        client,
+        mediaDeletedEvent({
+          at,
+          id,
+          actorType: options.actorType,
+          actorId: options.actorId,
+        }),
+      );
+      return { id, deletedAt, alreadyDeleted: false };
+    });
   }
 
   async getReadyMedia(id: string): Promise<ReadyMedia | null> {
@@ -552,6 +638,14 @@ export function createMedia(
   input: CreateMediaInput,
 ): Promise<ReadyMedia> {
   return new MediaService(options).createMedia(input);
+}
+
+export function deleteMedia(
+  options: MediaServiceOptions,
+  id: string,
+  deleteOptions: DeleteMediaOptions = {},
+): Promise<MediaDeletionResult> {
+  return new MediaService(options).deleteMedia(id, deleteOptions);
 }
 
 export function getReadyMedia(
