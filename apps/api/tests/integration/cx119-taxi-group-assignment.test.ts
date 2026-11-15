@@ -22,6 +22,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 import { CONFIG_DEFAULTS, type AppConfig } from "../../src/config.js";
 import { hashPassword } from "../../src/crypto/password.js";
@@ -31,6 +32,7 @@ import { createServer } from "../../src/http/server.js";
 import { ensureTaxiGroupSchema } from "../../src/http/taxiGroupRoutes.js";
 import {
   TAXI_GROUP_MEMBERSHIPS_REPLACED_ACTION,
+  TaxiGroupMembershipService,
   ensureTaxiGroupMembershipSchema,
 } from "../../src/modules/taxiGroupMemberships/service.js";
 import { ADMIN_SESSION_COOKIE } from "../../src/modules/adminAuth/middleware.js";
@@ -531,17 +533,38 @@ describe("CX-119 geschuetzte Gruppenzuordnungsroute", () => {
     });
     expect(await membershipAudits()).toHaveLength(1);
 
-    const stale = await putGroups(app, auth, taxiId, {
-      group_ids: [first],
-      revision: 1,
-    });
-    expect(stale.statusCode).toBe(409);
-    expect(stale.json().error.code).toBe("invalid_request");
-    expect(Object.keys(stale.json().error).sort()).toEqual([
-      "code",
-      "message",
-      "request_id",
-    ]);
+    // Direkte Beobachtung der Dienstgrenze mit durchleitendem Spy: der
+    // Konfliktfall muss den echten CX-118-Dienst genau einmal aufrufen. Eine
+    // Wiederholung mit derselben veralteten Revision wuerde sonst ebenfalls
+    // ohne Daten- und Audit-Aenderung scheitern und bliebe unbemerkt.
+    const replaceCall = vi.spyOn(
+      TaxiGroupMembershipService.prototype,
+      "replaceTaxiGroupMemberships",
+    );
+    try {
+      const stale = await putGroups(app, auth, taxiId, {
+        group_ids: [first],
+        revision: 1,
+      });
+      expect(stale.statusCode).toBe(409);
+      expect(stale.json().error.code).toBe("invalid_request");
+      expect(Object.keys(stale.json().error).sort()).toEqual([
+        "code",
+        "message",
+        "request_id",
+      ]);
+
+      expect(replaceCall).toHaveBeenCalledTimes(1);
+      expect(replaceCall.mock.calls[0]?.[0]).toEqual({
+        ownerId: ADMIN_ID,
+        actorId: ADMIN_ID,
+        taxiId,
+        expectedRevision: 1,
+        groupIds: [first],
+      });
+    } finally {
+      replaceCall.mockRestore();
+    }
 
     expect(await membershipIds(taxiId)).toEqual([second]);
     expect(await taxiRow(taxiId)).toEqual({ revision: 2, owner_id: ADMIN_ID });
