@@ -50,7 +50,9 @@ export type AccessAction =
   | "config.write"
   | "groups.write"
   | "groups.read"
-  | "operators.manage";
+  | "operators.manage"
+  | "operations.read"
+  | "operations.manage";
 
 export type RoutePolicy =
   | { readonly category: "human"; readonly action: AccessAction }
@@ -99,6 +101,12 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
 
   // Menschliche Verwaltung: Sitzung.
   "POST /v1/admin/logout": human("session.logout"),
+
+  // CX-061 R-702/R-703: Betriebsuebersicht und Backup-Pruefung.
+  // Die POST-Route prueft Adminrolle und Origin selbst; der explizite
+  // Katalogeintrag verhindert eine unklassifizierte Route.
+  "GET /v1/admin/operations": human("operations.read"),
+  "POST /v1/admin/operations/backup-check": PUBLIC,
 
   // CX-066 / R-605: Wiederherstellung als zweiter Faktor und Codesatz-Ausgabe.
   // Beide Routen sind ausdrueckliche Katalogeintraege der bestehenden
@@ -205,6 +213,8 @@ const ALL_ACTIONS: readonly AccessAction[] = [
   "groups.write",
   "groups.read",
   "operators.manage",
+  "operations.read",
+  "operations.manage",
 ];
 
 const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.freeze({

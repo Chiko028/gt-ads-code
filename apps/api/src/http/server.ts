@@ -59,6 +59,12 @@ import {
   type OperationsAlarmAdapterOptions,
 } from "./operationsAlarmAdapter.js";
 import {
+  registerOperationsBackupCheckRoutes,
+  type OperationsBackupCheckRouteOptions,
+  type BackupCheckTestConfiguration,
+} from "./operationsBackupCheck.js";
+import { registerOperationsOverviewRoutes } from "./operationsOverview.js";
+import {
   createRegistrationRateLimiter,
   type RegistrationRateLimiter,
 } from "./rateLimit.js";
@@ -71,6 +77,15 @@ export interface OperationsAlarmOptions {
   service?: OperationsAlarmAdapterOptions["alarmService"];
   sender?: OperationsAlarmAdapterOptions["sender"];
   reportTimeoutMs?: number;
+}
+
+/**
+ * CX-061: serverseitige Testkonfiguration und Auditgrenze fuer den
+ * Admin-Backup-Nachweis. Ohne configuration bleibt die Aktion deaktiviert.
+ */
+export interface OperationsBackupCheckOptions {
+  configuration?: BackupCheckTestConfiguration | null;
+  audit?: OperationsBackupCheckRouteOptions["audit"];
 }
 
 export interface ApiServerOptions {
@@ -86,6 +101,8 @@ export interface ApiServerOptions {
   operations?: OperationsOverrides;
   /** CX-060: Alarmverdrahtung fuer Readiness und Backup-Nachweise. */
   operationsAlarm?: OperationsAlarmOptions;
+  /** CX-061: nur mit expliziter Testkonfiguration aktiver Backup-Nachweis. */
+  operationsBackupCheck?: OperationsBackupCheckOptions;
   /**
    * Nur fuer Tests: injizierter serverseitiger Principal-Resolver. Ohne
    * Angabe gilt ausschliesslich die vorhandene Sitzungspruefung.
@@ -223,11 +240,10 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   // Routenregistrierung installiert; Identitaeten stammen ausschliesslich aus
   // der vorhandenen serverseitigen Sitzungspruefung.
   const adminAuthService = new AdminAuthService({ pool, config, now });
-  installAccessControl(app, {
-    resolvePrincipal:
-      options.resolvePrincipal ??
-      createLegacyAdminPrincipalResolver(adminAuthService),
-  });
+  const resolvePrincipal =
+    options.resolvePrincipal ??
+    createLegacyAdminPrincipalResolver(adminAuthService);
+  installAccessControl(app, { resolvePrincipal });
 
   // Abgelaufene Challenges/Tokens/Sitzungen: beim Start und stuendlich
   // bereinigen (ARCHITEKTUR.md Abschnitt 3).
@@ -386,6 +402,32 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     metrics,
     readinessTimeoutMs: options.operations?.readinessTimeoutMs,
     scheduler: options.operations?.scheduler,
+  });
+
+  // CX-061 / R-702: duenne HTTP-Komposition des vorhandenen CX-023-Nachweises.
+  // Ohne explizite serverseitige Testkonfiguration bleibt die Aktion vor
+  // jedem Prozessstart deaktiviert.
+  registerOperationsBackupCheckRoutes(app, {
+    pool,
+    environment: config.env,
+    configuration: options.operationsBackupCheck?.configuration ?? null,
+    resolvePrincipal,
+    alarm: operationsAlarm,
+    now,
+    ...(options.operationsBackupCheck?.audit === undefined
+      ? {}
+      : { audit: options.operationsBackupCheck.audit }),
+  });
+
+  // CX-061 / R-703: lesende Betriebsuebersicht ohne Backup-Ausloesung und
+  // ohne alarmierende Readiness-Seiteneffekte. Die Rohsonde wird direkt
+  // gelesen; der CX-060-Adapter bleibt hier absichtlich ungenutzt.
+  registerOperationsOverviewRoutes(app, {
+    pool,
+    readiness,
+    readinessTimeoutMs: options.operations?.readinessTimeoutMs,
+    scheduler: options.operations?.scheduler,
+    now,
   });
 
   return app;

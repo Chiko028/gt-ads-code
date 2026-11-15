@@ -72,7 +72,7 @@ function isWriteMethod(method: string): boolean {
  * ohne Content-Type-Pflicht, damit binaere Uploads mit vorhandenen erlaubten
  * Content-Types nicht an einer globalen JSON-Regel scheitern.
  */
-function assertSameOrigin(request: FastifyRequest): void {
+export function assertSameOriginForWrite(request: FastifyRequest): void {
   const origin = request.headers.origin;
   if (origin === undefined) {
     return;
@@ -93,7 +93,7 @@ async function enforceHumanPolicy(
   policy: RoutePolicy & { category: "human" },
 ): Promise<void> {
   if (isWriteMethod(request.method)) {
-    assertSameOrigin(request);
+    assertSameOriginForWrite(request);
   }
 
   const principal = await options.resolvePrincipal(request);
