@@ -21,8 +21,9 @@ class MainActivityTest {
 
     @Test
     fun showsExactlyNotRegistered() {
-        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val controller = Robolectric.buildActivity(MainActivity::class.java)
         try {
+            controller.setup()
             val children = controller.get().contentChildren()
             assertEquals(1, children.size)
             assertTrue(children.single() is TextView)
@@ -34,17 +35,19 @@ class MainActivityTest {
 
     @Test
     fun recreatesStaticStartScreenAfterDestruction() {
-        val first = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val first = Robolectric.buildActivity(MainActivity::class.java)
         val firstText: String
         try {
+            first.setup()
             firstText = (first.get().contentChildren().single() as TextView).text.toString()
             assertEquals("Nicht registriert", firstText)
         } finally {
             first.destroy()
         }
 
-        val second = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val second = Robolectric.buildActivity(MainActivity::class.java)
         try {
+            second.setup()
             val children = second.get().contentChildren()
             assertEquals(1, children.size)
             assertTrue(children.single() is TextView)
