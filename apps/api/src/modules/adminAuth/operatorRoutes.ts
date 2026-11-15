@@ -92,6 +92,7 @@ export function registerAdminOperatorRoutes(
         username: body.username,
         password: body.password,
         actorId: actorIdOf(request),
+        requestId: request.id,
       });
       reply.code(201).send(created);
     },
@@ -105,6 +106,7 @@ export function registerAdminOperatorRoutes(
       await deps.service.disableOperator({
         operatorId: operatorIdOf(request),
         actorId: actorIdOf(request),
+        requestId: request.id,
       });
       reply.code(204).send();
     },

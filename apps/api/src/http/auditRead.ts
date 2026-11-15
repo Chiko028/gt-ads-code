@@ -1,5 +1,5 @@
 /**
- * Geschuetzter lesender Audit-Zugriff (CX-016 / R-603).
+ * Geschuetzter lesender Audit-Zugriff (CX-016 / CX-058 / R-603).
  *
  * Der Adapter liest bestehende Audit-Ereignisse ausschliesslich ueber die
  * vorhandene Tabelle audit_events. Authentifizierung und Autorisierung
@@ -20,10 +20,27 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
 /** Einzige erlaubte Queryparameter. */
-const ALLOWED_QUERY_FIELDS: ReadonlySet<string> = new Set(["cursor", "limit"]);
+const ALLOWED_QUERY_FIELDS: ReadonlySet<string> = new Set([
+  "cursor",
+  "limit",
+  "from",
+  "to",
+  "actor_id",
+  "action",
+]);
 
 /** Groesster Wert des vorhandenen Typs bigint (signed 64 Bit). */
 const BIGINT_MAX = 9223372036854775807n;
+
+/** Obergrenze fuer die exakten Textfilter (keine Suche, nur Gleichheit). */
+const MAX_FILTER_LENGTH = 256;
+
+/**
+ * RFC 3339 mit expliziter Zeitzone. Sekundenbruchteile sind optional; die
+ * Zeitzone ist entweder Z/z oder ein numerischer Offset mit Doppelpunkt.
+ */
+const TIMESTAMP_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:([Zz])|([+-])(\d{2}):(\d{2}))$/;
 
 /**
  * Zeile der expliziten Projektion. id wird in SQL nach text konvertiert, damit
@@ -99,8 +116,103 @@ function parseCursor(raw: unknown): string | null {
   return raw;
 }
 
-/** Liest und validiert ausschliesslich cursor und limit. */
-function parseQuery(query: unknown): { cursor: string | null; limit: number } {
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    return leap ? 29 : 28;
+  }
+  if (month === 4 || month === 6 || month === 9 || month === 11) {
+    return 30;
+  }
+  return 31;
+}
+
+/**
+ * Parst einen optionalen RFC-3339-Zeitpunkt. Eine fehlende Zeitzone, ein
+ * unmoeglicher Kalendertag oder eine ungueltige Uhrzeit ergibt 400. Die
+ * Umrechnung erfolgt ohne lokale Zeitzone des Servers.
+ */
+function parseTimestamp(raw: unknown): Date | null {
+  if (raw === undefined) {
+    return null;
+  }
+  if (typeof raw !== "string") {
+    throw ApiError.invalidRequest();
+  }
+  const match = TIMESTAMP_PATTERN.exec(raw);
+  if (match === null) {
+    throw ApiError.invalidRequest();
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    throw ApiError.invalidRequest();
+  }
+
+  const fraction = match[7] ?? "";
+  const millis = Number((fraction + "000").slice(0, 3));
+  const instant = new Date(0);
+  instant.setUTCFullYear(year, month - 1, day);
+  instant.setUTCHours(hour, minute, second, millis);
+  let time = instant.getTime();
+
+  if (match[8] === undefined) {
+    const offsetHour = Number(match[10]);
+    const offsetMinute = Number(match[11]);
+    if (offsetHour > 23 || offsetMinute > 59) {
+      throw ApiError.invalidRequest();
+    }
+    const sign = match[9] === "+" ? 1 : -1;
+    time -= sign * (offsetHour * 60 + offsetMinute) * 60_000;
+  }
+  if (!Number.isFinite(time)) {
+    throw ApiError.invalidRequest();
+  }
+  return new Date(time);
+}
+
+/** Exakter Textfilter; keine Suche, keine Trimung, keine SQL-Interpretation. */
+function parseExactFilter(raw: unknown): string | null {
+  if (raw === undefined) {
+    return null;
+  }
+  if (
+    typeof raw !== "string" ||
+    raw.length === 0 ||
+    raw.length > MAX_FILTER_LENGTH ||
+    raw.includes("\u0000")
+  ) {
+    throw ApiError.invalidRequest();
+  }
+  return raw;
+}
+
+interface ParsedAuditQuery {
+  cursor: string | null;
+  limit: number;
+  from: Date | null;
+  to: Date | null;
+  actorId: string | null;
+  action: string | null;
+}
+
+/**
+ * Liest und validiert ausschliesslich die erlaubten Filter. Filter werden mit
+ * UND verknuepft; der Zeitraum ist [from, to).
+ */
+function parseQuery(query: unknown): ParsedAuditQuery {
   if (typeof query !== "object" || query === null || Array.isArray(query)) {
     throw ApiError.invalidRequest();
   }
@@ -110,9 +222,18 @@ function parseQuery(query: unknown): { cursor: string | null; limit: number } {
       throw ApiError.invalidRequest();
     }
   }
+  const from = parseTimestamp(record.from);
+  const to = parseTimestamp(record.to);
+  if (from !== null && to !== null && from.getTime() >= to.getTime()) {
+    throw ApiError.invalidRequest();
+  }
   return {
     cursor: parseCursor(record.cursor),
     limit: parseLimit(record.limit),
+    from,
+    to,
+    actorId: parseExactFilter(record.actor_id),
+    action: parseExactFilter(record.action),
   };
 }
 
@@ -139,28 +260,51 @@ export function registerAuditReadRoutes(
   app.get<{ Querystring: Record<string, unknown> }>(
     "/v1/admin/audit",
     async (request, reply) => {
-      const { cursor, limit } = parseQuery(request.query);
+      const parsed = parseQuery(request.query);
 
-      // Parametrisierte Abfrage; LIMIT limit+1 erkennt eine weitere Seite.
-      const conditions = cursor === null ? "" : " where id > $1::bigint";
-      const limitPlaceholder = cursor === null ? "$1" : "$2";
+      // Parametrisierte Abfrage. Alle Filter wirken vor LIMIT; der Cursor
+      // bezeichnet die zuletzt ausgegebene ID und wird aufsteigend fortgesetzt.
+      const conditions: string[] = [];
+      const params: Array<string | number | Date> = [];
+      if (parsed.cursor !== null) {
+        params.push(parsed.cursor);
+        conditions.push("id > $" + params.length + "::bigint");
+      }
+      if (parsed.from !== null) {
+        params.push(parsed.from);
+        conditions.push("at >= $" + params.length + "::timestamptz");
+      }
+      if (parsed.to !== null) {
+        params.push(parsed.to);
+        conditions.push("at < $" + params.length + "::timestamptz");
+      }
+      if (parsed.actorId !== null) {
+        params.push(parsed.actorId);
+        conditions.push("actor_id = $" + params.length);
+      }
+      if (parsed.action !== null) {
+        params.push(parsed.action);
+        conditions.push("action = $" + params.length);
+      }
+      const where =
+        conditions.length === 0 ? "" : " where " + conditions.join("\n  and ");
+      params.push(parsed.limit + 1);
+
       const sql = [
         "select id::text as id, at, actor_type, actor_id, action,",
         "       target_type, target_id",
         "  from audit_events",
-        conditions,
+        where,
         " order by audit_events.id asc",
-        " limit " + limitPlaceholder,
+        " limit $" + params.length,
       ]
         .filter((part) => part !== "")
         .join("\n");
-      const params: Array<string | number> =
-        cursor === null ? [limit + 1] : [cursor, limit + 1];
 
       const result = await deps.pool.query<AuditReadRow>(sql, params);
       const rows = result.rows;
-      const hasMore = rows.length > limit;
-      const page = hasMore ? rows.slice(0, limit) : rows;
+      const hasMore = rows.length > parsed.limit;
+      const page = hasMore ? rows.slice(0, parsed.limit) : rows;
       const items = page.map(toItem);
       const nextCursor =
         hasMore && items.length > 0
@@ -173,4 +317,3 @@ export function registerAuditReadRoutes(
     },
   );
 }
-

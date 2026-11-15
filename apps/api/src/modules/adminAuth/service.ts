@@ -79,9 +79,10 @@ const DUMMY_OPERATOR_PASSWORD_HASH =
   "scrypt$N=32768,r=8,p=1$fujMD_f0tRPutNj7VE2AaA$GYHIJqTIIDCp6zf6PXV_mdUnsJh3w18OEJbIFj7hbR57VCi0ZMnnfQvTSM_32oU4IsfNE66hP0D59JdBb9Y0rQ";
 
 export const OPERATOR_USERNAME_PATTERN = /^[a-z0-9._-]{3,64}$/;
+/** Katalogwerte; die Namen bleiben unveraendert. */
 export const OPERATOR_AUDIT_ACTIONS = Object.freeze({
-  created: "operator.created",
-  disabled: "operator.disabled",
+  created: AUDIT_ACTIONS.operatorCreated,
+  disabled: AUDIT_ACTIONS.operatorDisabled,
 });
 
 const UUID_PATTERN =
@@ -92,6 +93,8 @@ export interface CreateOperatorInput {
   password: unknown;
   /** Serverseitig aufgeloester Akteur der Admin-Sitzung. */
   actorId: unknown;
+  /** Fastify-Request-ID; wird nur als Korrelationswert im Audit abgelegt. */
+  requestId?: unknown;
 }
 
 export interface CreatedOperator {
@@ -103,6 +106,8 @@ export interface CreatedOperator {
 export interface DisableOperatorInput {
   operatorId: unknown;
   actorId: unknown;
+  /** Fastify-Request-ID; wird nur als Korrelationswert im Audit abgelegt. */
+  requestId?: unknown;
 }
 
 function isUniqueViolation(error: unknown): boolean {
@@ -156,6 +161,16 @@ function normalizeActorId(value: unknown): string {
     throw ApiError.unauthorized();
   }
   return actorId;
+}
+
+function normalizeRequestId(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || value.length === 0 || value.length > 128) {
+    throw ApiError.invalidRequest();
+  }
+  return value;
 }
 
 function normalizeOperatorId(value: unknown): string {
@@ -330,6 +345,7 @@ export class AdminAuthService {
     const username = normalizeOperatorUsername(input.username);
     const password = validateOperatorPassword(input.password);
     const actorId = normalizeActorId(input.actorId);
+    const requestId = normalizeRequestId(input.requestId);
     const at = this.now();
     const operatorId = randomUUID();
     const passwordHash = await hashPassword(password, {
@@ -350,10 +366,13 @@ export class AdminAuthService {
       await audit.record({
         actorType: "admin",
         actorId,
-        action: OPERATOR_AUDIT_ACTIONS.created,
+        action: AUDIT_ACTIONS.operatorCreated,
         targetType: "operator",
         targetId: operatorId,
-        details: { username },
+        details:
+          requestId === undefined
+            ? { username }
+            : { username, request_id: requestId },
       });
       await client.query("commit");
       return { operator_id: operatorId, username, status: "active" };
@@ -379,6 +398,7 @@ export class AdminAuthService {
   async disableOperator(input: DisableOperatorInput): Promise<void> {
     const operatorId = normalizeOperatorId(input.operatorId);
     const actorId = normalizeActorId(input.actorId);
+    const requestId = normalizeRequestId(input.requestId);
     const at = this.now();
 
     const client = await this.pool.connect();
@@ -399,10 +419,17 @@ export class AdminAuthService {
       await audit.record({
         actorType: "admin",
         actorId,
-        action: OPERATOR_AUDIT_ACTIONS.disabled,
+        action: AUDIT_ACTIONS.operatorDisabled,
         targetType: "operator",
         targetId: operatorId,
-        details: { username: operator.username, status: "disabled" },
+        details:
+          requestId === undefined
+            ? { username: operator.username, status: "disabled" }
+            : {
+                username: operator.username,
+                status: "disabled",
+                request_id: requestId,
+              },
       });
       await client.query("commit");
     } catch (error) {
