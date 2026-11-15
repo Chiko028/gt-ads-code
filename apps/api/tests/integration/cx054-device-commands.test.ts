@@ -701,6 +701,7 @@ describe("CX-054 geraetegebundener Befehlsabruf und Quittierung", () => {
     const taxiB = await setupTaxiWithTablets(app, "SYN-CX054-TAXI-E");
     const tokenA = await accessToken(app, taxiA.first);
     const tokenB = await accessToken(app, taxiB.first);
+    const tokenSecondA = await accessToken(app, taxiA.second);
     const cookie = await loginCookie(app);
 
     const commandA = randomUUID();
@@ -745,7 +746,7 @@ describe("CX-054 geraetegebundener Befehlsabruf und Quittierung", () => {
     expect(cookieOnly.statusCode).toBe(401);
     expect(cookieOnly.json().error.code).toBe("unauthorized");
 
-    // Fremdes Taxi/fremdes Tablet: Auftrag aus Taxi B mit Token von Tablet A1.
+    // Fremdes Taxi: Auftrag aus Taxi B mit Token von Tablet A1.
     const foreignTaxi = await ackCommand(app, tokenA, {
       command_id: commandB,
       revision: 1,
@@ -753,6 +754,7 @@ describe("CX-054 geraetegebundener Befehlsabruf und Quittierung", () => {
     expect(foreignTaxi.statusCode).toBe(409);
     expect(foreignTaxi.json().error.code).toBe("invalid_request");
 
+    // Gegenrichtung: Auftrag aus Taxi A mit Token von Tablet B1.
     const foreignTablet = await ackCommand(app, tokenB, {
       command_id: commandA,
       revision: 1,
@@ -761,6 +763,67 @@ describe("CX-054 geraetegebundener Befehlsabruf und Quittierung", () => {
     expect(foreignTablet.json().error.code).toBe("invalid_request");
 
     expect(await snapshot()).toBe(before);
+
+    // Das zweite Tablet desselben Taxis ist eine eigene Geraeteidentitaet.
+    // Der Eingabevertrag besteht ausschliesslich aus command_id und revision;
+    // eine mitgeschickte Geraete- oder Taxi-ID darf die Quittung nicht auf ein
+    // anderes Tablet umlenken und wird nicht stillschweigend ignoriert.
+    const beforeExtraFields = await snapshot();
+    const rejectsExtraIdentity = async (
+      token: string,
+      commandId: string,
+      extra: Record<string, string>,
+    ): Promise<void> => {
+      const rejected = await ackCommand(app, token, {
+        command_id: commandId,
+        revision: 1,
+        ...extra,
+      });
+      expect(rejected.statusCode, JSON.stringify(extra)).toBe(400);
+      expect(rejected.json().error.code).toBe("invalid_request");
+      expect(await snapshot()).toBe(beforeExtraFields);
+    };
+
+    // Tablet A1 versucht, seine Quittung auf das zweite Tablet A2 zu lenken.
+    await rejectsExtraIdentity(tokenA, commandA, {
+      device_id: taxiA.second.deviceId,
+    });
+    await rejectsExtraIdentity(tokenA, commandA, {
+      tablet_id: taxiA.second.deviceId,
+    });
+    // Auch die eigene Geraete- oder Taxi-ID ist kein erlaubtes Feld.
+    await rejectsExtraIdentity(tokenA, commandA, {
+      device_id: taxiA.first.deviceId,
+    });
+    await rejectsExtraIdentity(tokenA, commandA, { taxi_id: taxiA.taxiId });
+    await rejectsExtraIdentity(tokenA, commandB, { taxi_id: taxiB.taxiId });
+
+    // Tablet A2 versucht, die Quittung von Tablet A1 zu uebernehmen.
+    await rejectsExtraIdentity(tokenSecondA, commandA, {
+      device_id: taxiA.first.deviceId,
+    });
+    await rejectsExtraIdentity(tokenSecondA, commandA, {
+      tablet_id: taxiA.second.deviceId,
+    });
+    await rejectsExtraIdentity(tokenSecondA, commandA, {
+      taxi_id: taxiA.taxiId,
+    });
+
+    // Keine dieser Anfragen hat eine Zustellung oder den Sollzustand bewegt.
+    const untouchedA = await deliveries(taxiA.taxiId);
+    expect(untouchedA).toHaveLength(2);
+    expect(
+      untouchedA.every(
+        (row) => row.status === "pending" && row.acknowledged_at === null,
+      ),
+    ).toBe(true);
+    const untouchedB = await deliveries(taxiB.taxiId);
+    expect(untouchedB).toHaveLength(2);
+    expect(
+      untouchedB.every(
+        (row) => row.status === "pending" && row.acknowledged_at === null,
+      ),
+    ).toBe(true);
 
     // Widerruf wirkt vor dem Fachhandler und ohne Datenbezug.
     await pool.query("update devices set state = 'revoked' where id = $1", [
