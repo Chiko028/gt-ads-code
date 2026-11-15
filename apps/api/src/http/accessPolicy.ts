@@ -114,6 +114,10 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/admin/auth/recovery/verify": human("security.manage"),
   "POST /v1/admin/auth/recovery-codes": human("security.manage"),
 
+  // CX-107 / R-605: Beginn der TOTP-Einrichtung. Die Route prueft
+  // Admin-Sitzung, Adminrolle, Passwort und JSON-Schreibschutz selbst.
+  "POST /v1/admin/mfa/totp/setup": PUBLIC,
+
   // CX-108 / R-605: Abschluss der TOTP-Einrichtung. Die Route prueft die
   // Admin-Sitzung, die Adminrolle und den vorhandenen JSON-Schreibschutz selbst.
   "POST /v1/admin/mfa/totp/setup/confirm": PUBLIC,

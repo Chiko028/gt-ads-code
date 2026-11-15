@@ -19,6 +19,7 @@ import {
   registerAdminTotpSetupConfirmRoutes,
 } from "../modules/adminAuth/totpSetupConfirm.js";
 import { registerAdminTotpSetupCancelRoutes } from "../modules/adminAuth/totpSetupCancel.js";
+import { registerAdminTotpSetupRoutes } from "./adminTotpSetup.js";
 import { DevicesService } from "../modules/devices/service.js";
 import { registerAdminDeviceRoutes } from "../modules/devices/routes.js";
 import { RegistrationService } from "../modules/registration/service.js";
@@ -306,6 +307,18 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     service: adminAuthService,
     loginLimiter: adminLoginLimiter,
     config,
+  });
+  // CX-107 / R-605: Beginn der TOTP-Einrichtung unter derselben
+  // Admin-Sitzung und demselben Fehlversuchszaehler.
+  registerAdminTotpSetupRoutes(app, {
+    pool,
+    adminAuth: adminAuthService,
+    config,
+    loginLimiter: adminLoginLimiter,
+    encryptionKey:
+      options.mfaTotpEncryptionKey ??
+      deriveAdminTotpEncryptionKey(config.registrationCodePepper),
+    now,
   });
   // CX-108 / R-605: Abschluss der TOTP-Einrichtung unter derselben
   // Admin-Sitzung und demselben Fehlversuchszaehler.

@@ -1,22 +1,24 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { Pool, PoolClient } from "pg";
-import type { AppConfig } from "../../config.js";
-import { verifyPassword } from "../../crypto/password.js";
-import { ApiError } from "../../http/errors.js";
-import { registerJsonRoute } from "../../http/jsonContract.js";
-import type { Principal } from "../../http/principal.js";
-import type { RateLimiter } from "../../http/rateLimit.js";
-import { insertAuditEvent } from "../audit/repository.js";
+import type { AppConfig } from "../config.js";
+import { verifyPassword } from "../crypto/password.js";
+import { ApiError } from "./errors.js";
+import { registerJsonRoute } from "./jsonContract.js";
+import type { RateLimiter } from "./rateLimit.js";
+import { insertAuditEvent } from "../modules/audit/repository.js";
 import {
   createAdminSessionMiddleware,
   requireAdminWrite,
-} from "./middleware.js";
+} from "../modules/adminAuth/middleware.js";
 import {
   PENDING_TOTP_ENCRYPTION_KEY_BYTES,
   PendingTotpEnrollmentStore,
-} from "./pendingTotpEnrollment.js";
-import type { AdminAuthService } from "./service.js";
-import { generateTotpSecret } from "./totp.js";
+} from "../modules/adminAuth/pendingTotpEnrollment.js";
+import type {
+  AdminAuthService,
+  AdminSessionContext,
+} from "../modules/adminAuth/service.js";
+import { generateTotpSecret } from "../modules/adminAuth/totp.js";
 
 /**
  * CX-107 / R-605: Beginn einer TOTP-Einrichtung.
@@ -140,20 +142,26 @@ async function withTransaction<T>(
   }
 }
 
-function readPrincipal(request: FastifyRequest): Principal {
-  const principal = (
-    request as FastifyRequest & { accessPrincipal?: Principal }
-  ).accessPrincipal;
-  if (principal === undefined) {
+/**
+ * Sitzung und Rolle stammen ausschliesslich aus der serverseitigen
+ * Sitzungspruefung. Wie CX-108/CX-109 prueft die Route beides selbst; der
+ * oeffentliche Katalogeintrag fuegt keine Authentifizierung hinzu.
+ */
+function requireAdminSession(request: FastifyRequest): AdminSessionContext {
+  const session = request.adminSession;
+  if (session === undefined) {
     throw ApiError.unauthorized();
   }
-  return principal;
+  if (session.role !== "Admin") {
+    throw ApiError.forbidden();
+  }
+  return session;
 }
 
 /**
- * Registriert genau POST /v1/admin/mfa/totp/setup. Der Rechtekern
- * (security.manage, nur Admin) laeuft als globaler onRequest-Hook; hier
- * kommen der vorhandene JSON-Schreibschutz und die Sitzungspruefung hinzu.
+ * Registriert genau POST /v1/admin/mfa/totp/setup. Der vorhandene
+ * JSON-Schreibschutz und die Sitzungs-/Rollenpruefung laufen vor dem Handler;
+ * eine Identitaet stammt nie aus dem Request-Body.
  */
 export function registerAdminTotpSetupRoutes(
   app: FastifyInstance,
@@ -174,6 +182,10 @@ export function registerAdminTotpSetupRoutes(
         throw ApiError.rateLimited(gate.retryAfterSeconds);
       }
 
+      // Rolle vor der Passwortpruefung: eine Operator-Sitzung darf den
+      // Endpunkt nicht als Passwort-Orakel verwenden.
+      const session = requireAdminSession(request);
+
       const password = parsePassword(request.body);
       const valid = await verifyPassword(
         password,
@@ -185,7 +197,6 @@ export function registerAdminTotpSetupRoutes(
       }
       deps.loginLimiter.reset(sourceKey);
 
-      const principal = readPrincipal(request);
       const key = deps.encryptionKey;
       if (!hasValidKey(key)) {
         throw mfaUnavailable();
@@ -199,10 +210,10 @@ export function registerAdminTotpSetupRoutes(
         // noch kein ausstehender Datensatz existiert.
         await client.query(
           "select pg_advisory_xact_lock(hashtextextended($1::text, 0))",
-          [principal.id],
+          [session.actorId],
         );
 
-        const active = await client.query(ACTIVE_MFA_SQL, [principal.id]);
+        const active = await client.query(ACTIVE_MFA_SQL, [session.actorId]);
         if ((active.rowCount ?? 0) > 0) {
           throw mfaAlreadyActive();
         }
@@ -212,7 +223,7 @@ export function registerAdminTotpSetupRoutes(
           key,
           now: () => startedAt,
         });
-        const pending = await store.replace(principal.id, secret);
+        const pending = await store.replace(session.actorId, secret);
 
         // Bereinigter Audit-Eintrag in derselben Transaktion: nur
         // Benutzer-ID, Aktion, Ziel und Einrichtungs-ID. Kein Geheimnis,
@@ -220,7 +231,7 @@ export function registerAdminTotpSetupRoutes(
         await insertAuditEvent(client, {
           at: startedAt,
           actorType: "admin",
-          actorId: principal.id,
+          actorId: session.actorId,
           action: ADMIN_MFA_TOTP_SETUP_ACTION,
           targetType: ADMIN_MFA_TOTP_SETUP_TARGET_TYPE,
           targetId: pending.enrollmentId,
@@ -235,7 +246,7 @@ export function registerAdminTotpSetupRoutes(
         enrollment_id: enrollment.enrollmentId,
         expires_at: enrollment.expiresAt.toISOString(),
         secret,
-        otpauth_uri: buildTotpOtpauthUri(principal.id, secret),
+        otpauth_uri: buildTotpOtpauthUri(session.actorId, secret),
       });
     },
   });
