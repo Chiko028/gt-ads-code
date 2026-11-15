@@ -62,6 +62,15 @@ export function useAdminSession(): AdminSessionContextValue {
   return value;
 }
 
+/**
+ * Wie useAdminSession, aber ohne Fehler ausserhalb der AdminShell. Die
+ * Statistikseite bleibt dadurch auch als eigenstaendige, injizierte Ansicht
+ * testbar; ohne Shell entfaellt nur die zentrale Sitzungsinvalidierung.
+ */
+export function useOptionalAdminSession(): AdminSessionContextValue | null {
+  return useContext(AdminSessionContext);
+}
+
 function messageFor(error: unknown): string {
   return isAdminApiError(error) ? error.message : UNEXPECTED_MESSAGE;
 }

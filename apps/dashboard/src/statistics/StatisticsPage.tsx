@@ -16,7 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { FetchLike } from "../admin/adminApi";
 import { isAdminApiError } from "../admin/adminApi";
-import { useAdminSession } from "../admin/AdminShell";
+import { useOptionalAdminSession } from "../admin/AdminShell";
 import type {
   DeviceQualityRow,
   PlayRow,
@@ -25,7 +25,10 @@ import type {
   StatisticsRequest,
   StatisticsResponse,
 } from "./statisticsApi";
-import { createStatisticsClient } from "./statisticsApi";
+import {
+  createStatisticsClient,
+  normalizeStatisticsResponse,
+} from "./statisticsApi";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_RANGE_MS = 31 * DAY_MS;
@@ -34,6 +37,8 @@ const UNEXPECTED_MESSAGE = "Ein unerwarteter Fehler ist aufgetreten.";
 export interface StatisticsPageProps {
   /** Injizierter Statistikclient; ohne Angabe wird der Fetch-Client gebaut. */
   readonly client?: StatisticsClient;
+  /** Alias fuer den injizierten Statistikclient. */
+  readonly statisticsClient?: StatisticsClient;
   /** Injizierbares fetch fuer den Standardclient. */
   readonly fetchImpl?: FetchLike;
   /** Injizierbare Uhr fuer den initialen Sieben-Tage-Zeitraum. */
@@ -332,10 +337,12 @@ function DefinitionBlock({ data }: { readonly data: StatisticsResponse }) {
 
 export function StatisticsPage({
   client,
+  statisticsClient: statisticsClientProp,
   fetchImpl,
   now,
 }: StatisticsPageProps = {}) {
-  const { invalidateSession } = useAdminSession();
+  const session = useOptionalAdminSession();
+  const invalidateSession = session?.invalidateSession;
   const [initial] = useState(() => initialUtcRange(now ?? new Date()));
 
   const [campaignId, setCampaignId] = useState("");
@@ -359,14 +366,20 @@ export function StatisticsPage({
 
   const statisticsClient: StatisticsClient = useMemo(
     () =>
-      client ?? createStatisticsClient({ fetchImpl, onUnauthorized: invalidateSession }),
-    [client, fetchImpl, invalidateSession],
+      client ??
+      statisticsClientProp ??
+      createStatisticsClient({ fetchImpl, onUnauthorized: invalidateSession }),
+    [client, statisticsClientProp, fetchImpl, invalidateSession],
   );
 
   const apply = useCallback(async () => {
     const validated = validateRange(fromInput, toInput);
     if ("kind" in validated) {
+      // Auch eine ungueltige Eingabe beendet eine noch laufende Abfrage und
+      // laesst keine alten Zahlen als aktuelle Auswertung stehen.
+      seqRef.current += 1;
       setRangeError(validated);
+      setResult({ kind: "idle" });
       return;
     }
     setRangeError(null);
@@ -380,7 +393,10 @@ export function StatisticsPage({
     const seq = ++seqRef.current;
     setResult({ kind: "loading" });
     try {
-      const data = await statisticsClient.getStatistics(request);
+      const data = normalizeStatisticsResponse(
+        await statisticsClient.getStatistics(request),
+        { from: request.from, to: request.to },
+      );
       if (!mountedRef.current || seq !== seqRef.current) {
         return;
       }
