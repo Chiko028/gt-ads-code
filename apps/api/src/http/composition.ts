@@ -62,6 +62,7 @@ import { DeviceInventoryService } from "../modules/inventory/service.js";
 import { registerTaxiPauseRoutes } from "./taxiPauseRoutes.js";
 import { registerDeviceCommandRoutes } from "./deviceCommands.js";
 import { registerStatusRoute } from "./statusRoute.js";
+import { registerStatisticsRoute } from "./statisticsRoute.js";
 import { createSqlTaxiDirectory } from "../modules/pause/index.js";
 import { createRemoteControlService } from "../modules/remoteControl/index.js";
 
@@ -225,6 +226,15 @@ export function registerHttpComposition(
       pool: deps.pool,
       adminAuth: deps.adminAuth,
       onlineThresholdSeconds: deps.onlineThresholdSeconds,
+      now: deps.now,
+    });
+
+    // CX-049 / R-404: lesende Wiedergabe-Statistik. Der Adapter liest
+    // ausschliesslich vorhandene Telemetrie, Rollups, Zuordnungen und
+    // Kampagnen; es entsteht keine neue Speicherung.
+    registerStatisticsRoute(scope, {
+      pool: deps.pool,
+      adminAuth: deps.adminAuth,
       now: deps.now,
     });
 
