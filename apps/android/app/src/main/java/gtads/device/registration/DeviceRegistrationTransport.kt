@@ -110,20 +110,17 @@ class DeviceRegistrationTransport(
         }
     }
 
-    /** Prueft die Basisadresse und erhaelt deren Pfad beim Anhaengen des Endpunkts. */
+    /** Nutzt dieselbe Normalisierung wie der Registrierungsablauf. */
     private fun targetUrl(): URL? {
+        val normalized = normalizeServerBaseUrl(baseUrl) ?: return null
         val base = try {
-            URL(baseUrl)
+            URL(normalized)
         } catch (_: Exception) {
             return null
         }
-        if (!base.protocol.equals("https", ignoreCase = true)) return null
-        if (base.host.isNullOrBlank()) return null
-        if (base.userInfo != null || base.query != null || base.ref != null) return null
         val path = base.path ?: ""
-        val prefix = if (path.isEmpty() || path == "/") "" else path.trimEnd('/')
         return try {
-            URL(base.protocol, base.host, base.port, prefix + REGISTER_PATH)
+            URL(base.protocol, base.host, base.port, path + REGISTER_PATH)
         } catch (_: Exception) {
             null
         }
