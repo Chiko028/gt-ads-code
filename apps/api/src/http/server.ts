@@ -87,6 +87,8 @@ export interface OperationsAlarmOptions {
 export interface OperationsBackupCheckOptions {
   configuration?: BackupCheckTestConfiguration | null;
   audit?: OperationsBackupCheckRouteOptions["audit"];
+  /** Nur fuer Tests/explizite Verdrahtung: abweichender CX-060-Port. */
+  alarm?: OperationsBackupCheckRouteOptions["alarm"];
 }
 
 export interface ApiServerOptions {
@@ -425,7 +427,10 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     environment: config.env,
     configuration: options.operationsBackupCheck?.configuration ?? null,
     resolvePrincipal,
-    alarm: operationsAlarm,
+    alarm:
+      options.operationsBackupCheck?.alarm !== undefined
+        ? options.operationsBackupCheck.alarm
+        : operationsAlarm,
     now,
     ...(options.operationsBackupCheck?.audit === undefined
       ? {}

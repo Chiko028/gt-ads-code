@@ -25,8 +25,10 @@ import {
 import { CONFIG_DEFAULTS, type AppConfig } from "../../../src/config.js";
 import { migrateUp } from "../../../src/db/migrate.js";
 import {
+  BACKUP_CHECK_ALARM_REPORT_ERROR,
   BACKUP_CHECK_COMPLETED_ACTION,
   BACKUP_CHECK_STARTED_ACTION,
+  type BackupCheckAlarmPort,
   type BackupCheckAuditPort,
   type BackupCheckSqlChecks,
   type BackupCheckTestConfiguration,
@@ -164,6 +166,8 @@ function headers(role?: "Admin" | "Operator", extra: Record<string, string> = {}
 async function buildApp(options: {
   configuration?: BackupCheckTestConfiguration | null;
   audit?: BackupCheckAuditPort;
+  alarm?: BackupCheckAlarmPort | null;
+  resolvePrincipal?: PrincipalResolver;
   readiness?: ReadinessProbe;
   now?: () => Date;
 } = {}): Promise<FastifyInstance> {
@@ -175,7 +179,7 @@ async function buildApp(options: {
     config: appConfig,
     pool: pool as Pool,
     now: options.now ?? (() => new Date()),
-    resolvePrincipal,
+    resolvePrincipal: options.resolvePrincipal ?? resolvePrincipal,
     operations: {
       readiness:
         options.readiness ??
@@ -190,6 +194,7 @@ async function buildApp(options: {
     operationsBackupCheck: {
       configuration,
       ...(options.audit === undefined ? {} : { audit: options.audit }),
+      ...(options.alarm === undefined ? {} : { alarm: options.alarm }),
     },
   });
   await app.ready();
@@ -675,6 +680,83 @@ describe("CX-061 Admin-Backup-Pruefung und Betriebsuebersicht", () => {
     expect(persistenceBody.error_code).toBe("result_persistence_failed");
     expect(verifierCalls).toBe(1);
 
+    // Ein frueherer erfolgreicher Nachweis bleibt als letzter persistierter
+    // Eintrag sichtbar; die korrigierte Alarmspur muss den Persistenzfehler
+    // dennoch ausweisen.
+    await (pool as Pool).query(
+      "delete from audit_events where action = $1",
+      [BACKUP_CHECK_COMPLETED_ACTION],
+    );
+    const olderStartedAt = new Date(BASE_TIME).toISOString();
+    const olderFinishedAt = new Date(BASE_TIME + 50).toISOString();
+    await (pool as Pool).query(
+      [
+        "insert into audit_events",
+        "  (at, actor_type, action, target_type, target_id, details)",
+        "values ($1, 'admin', $2, 'backup_check', $3, $4)",
+      ].join("\n"),
+      [
+        olderFinishedAt,
+        BACKUP_CHECK_COMPLETED_ACTION,
+        "older-successful-run",
+        {
+          run_id: "older-successful-run",
+          started_at: olderStartedAt,
+          finished_at: olderFinishedAt,
+          duration_ms: 50,
+          status: "succeeded",
+          archive_sha256: artifact.sha256,
+          checks: {
+            restore: true,
+            content: true,
+            foreign_keys: true,
+            sequences: true,
+            cleanup: true,
+          },
+          error_code: null,
+        },
+      ],
+    );
+
+    const episodesAfterPersistence = await (pool as Pool).query<{
+      status: string;
+      error_code: string;
+    }>(
+      "select status, error_code from technical_alarm_episodes order by episode_id",
+    );
+    const openEpisodes = episodesAfterPersistence.rows.filter(
+      (row) => row.status === "open",
+    );
+    expect(openEpisodes).toHaveLength(1);
+    expect(openEpisodes[0]?.error_code).toBe("result_persistence_failed");
+
+    const overview = await persistenceApp.inject({
+      method: "GET",
+      url: "/v1/admin/operations",
+      headers: headers("Admin"),
+      remoteAddress: "192.0.2.83",
+    });
+    expect(overview.statusCode).toBe(200);
+    const overviewBody = overview.json() as {
+      alarms: {
+        items: Array<{ action: string; error_code: string | null }>;
+      };
+      last_backup_check: {
+        proof: { run_id: string | null; status: string | null } | null;
+      };
+    };
+    expect(overviewBody.last_backup_check.proof?.run_id).toBe(
+      "older-successful-run",
+    );
+    expect(overviewBody.last_backup_check.proof?.status).toBe("succeeded");
+    expect(
+      overviewBody.alarms.items.some(
+        (item) =>
+          item.action === TECHNICAL_ALARM_OPENED_ACTION &&
+          item.error_code === "result_persistence_failed",
+      ),
+    ).toBe(true);
+
     const all = await (pool as Pool).query<{ details: unknown }>(
       "select details from audit_events order by id",
     );
@@ -688,6 +770,40 @@ describe("CX-061 Admin-Backup-Pruefung und Betriebsuebersicht", () => {
     ]) {
       expect(serialized).not.toContain(fragment);
     }
+  }, 120_000);
+
+  it("behandelt eine nicht angenommene CX-060-Meldung als unvollstaendigen Nachweis", async () => {
+    let calls = 0;
+    const rejectingAlarm: BackupCheckAlarmPort = {
+      async processBackupResult(): Promise<{ processed: boolean; ok: boolean }> {
+        calls += 1;
+        return { processed: false, ok: false };
+      },
+    };
+    const app = await buildApp({ alarm: rejectingAlarm });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/admin/operations/backup-check",
+      headers: headers("Admin", { "content-type": "application/json" }),
+      payload: {},
+      remoteAddress: "192.0.2.77",
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      run_id: string;
+      status: string;
+      error_code: string;
+    };
+    expect(body.status).toBe("incomplete");
+    expect(body.error_code).toBe(BACKUP_CHECK_ALARM_REPORT_ERROR);
+    expect(calls).toBe(1);
+
+    const completed = await auditRows(BACKUP_CHECK_COMPLETED_ACTION);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.target_id).toBe(body.run_id);
+    expect(completed[0]?.details.status).toBe("incomplete");
+    expect(completed[0]?.details.error_code).toBe(BACKUP_CHECK_ALARM_REPORT_ERROR);
   }, 120_000);
 
   it("weist einen parallelen zweiten Start mit 409 ab und liefert die Betriebsuebersicht deterministisch", async () => {
@@ -844,5 +960,100 @@ describe("CX-061 Admin-Backup-Pruefung und Betriebsuebersicht", () => {
     expect(emptyBody.last_backup_check.available).toBe(false);
     expect(emptyBody.last_backup_check.reason).toBe("no_backup_check");
     expect(emptyBody.last_backup_check.proof).toBeNull();
+  }, 120_000);
+
+  it("prueft Authentifizierung vor der Sperre und blockiert berechtigte Starts nicht durch anonyme Anfragen", async () => {
+    let releaseAnonymous: () => void = () => undefined;
+    const anonymousGate = new Promise<void>((resolve) => {
+      releaseAnonymous = resolve;
+    });
+    let notifyAnonymousEntered: (() => void) | null = null;
+    const anonymousEntered = new Promise<void>((resolve) => {
+      notifyAnonymousEntered = resolve;
+    });
+    let anonymousCalls = 0;
+    const delayedResolver: PrincipalResolver = async (request) => {
+      const role = roleFrom(request);
+      if (role === null) {
+        anonymousCalls += 1;
+        if (anonymousCalls === 1) {
+          if (notifyAnonymousEntered !== null) {
+            notifyAnonymousEntered();
+            notifyAnonymousEntered = null;
+          }
+          await anonymousGate;
+        }
+        return null;
+      }
+      return {
+        id: role === "Admin" ? ADMIN_ID : OPERATOR_ID,
+        role,
+      };
+    };
+
+    gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    verifierEntered = new Promise<void>((resolve) => {
+      notifyVerifierEntered = resolve;
+    });
+    const app = await buildApp({ resolvePrincipal: delayedResolver });
+
+    // Diese anonyme Anfrage haengt absichtlich in ihrer Sitzungspruefung.
+    const anonymous = app.inject({
+      method: "POST",
+      url: "/v1/admin/operations/backup-check",
+      headers: headers(undefined, { "content-type": "application/json" }),
+      payload: {},
+      remoteAddress: "192.0.2.78",
+    });
+    await anonymousEntered;
+
+    const first = app.inject({
+      method: "POST",
+      url: "/v1/admin/operations/backup-check",
+      headers: headers("Admin", { "content-type": "application/json" }),
+      payload: {},
+      remoteAddress: "192.0.2.79",
+    });
+    await (verifierEntered as Promise<void>);
+
+    // Waehrend der Nachweis laeuft, erhalten anonyme und unberechtigte
+    // Anfragen die vorgesehene Authentifizierungs- bzw. Rechteablehnung.
+    const during = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/v1/admin/operations/backup-check",
+        headers: headers(undefined, { "content-type": "application/json" }),
+        payload: {},
+        remoteAddress: "192.0.2.80",
+      }),
+      app.inject({
+        method: "POST",
+        url: "/v1/admin/operations/backup-check",
+        headers: headers("Operator", { "content-type": "application/json" }),
+        payload: {},
+        remoteAddress: "192.0.2.81",
+      }),
+      app.inject({
+        method: "POST",
+        url: "/v1/admin/operations/backup-check",
+        headers: headers(undefined, { "content-type": "application/json" }),
+        payload: {},
+        remoteAddress: "192.0.2.82",
+      }),
+    ]);
+    expect(during.map((entry) => entry.statusCode)).toEqual([401, 403, 401]);
+
+    (releaseGate as () => void)();
+    const firstResponse = await first;
+    expect(firstResponse.statusCode).toBe(200);
+    expect(verifierCalls).toBe(1);
+    expect(await countAudit(BACKUP_CHECK_STARTED_ACTION)).toBe(1);
+
+    // Die wartende anonyme Anfrage hat den berechtigten Start nie belegt.
+    releaseAnonymous();
+    expect((await anonymous).statusCode).toBe(401);
+    expect(verifierCalls).toBe(1);
   }, 120_000);
 });

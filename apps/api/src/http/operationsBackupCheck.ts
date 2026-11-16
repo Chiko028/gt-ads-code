@@ -264,9 +264,32 @@ export function registerOperationsBackupCheckRoutes(
       // Origin-Schreibschutz wie im zentralen Rechtekern.
       assertSameOriginForWrite(request);
 
-      // Die Sperre wird vor dem ersten await gesetzt, damit eine gleichzeitig
-      // eintreffende zweite Startanfrage ohne weiteren Restore 409 erhaelt.
-      // Sie wird in finally in jedem Fehlerfall freigegeben.
+      // Authentifizierung und Rechtepruefung laufen vor der Sperre. Eine
+      // anonyme oder unberechtigte Anfrage belegt daher keinen Restore und
+      // erhaelt auch waehrend eines laufenden Nachweises 401 bzw. 403.
+      const principal = await options.resolvePrincipal(request);
+      if (!isValidPrincipal(principal)) {
+        throw ApiError.unauthorized();
+      }
+      if (principal.role !== "Admin") {
+        throw ApiError.forbidden();
+      }
+
+      assertEmptyClientInput(request);
+
+      if (options.environment !== "test" || options.configuration === null) {
+        return sendError(
+          reply,
+          request,
+          503,
+          BACKUP_CHECK_UNAVAILABLE_ERROR,
+          "Keine sichere Backup-Testkonfiguration verfuegbar.",
+        );
+      }
+
+      // Erst nach allen awaits wird die Sperre geprueft und ohne weiteres
+      // await gesetzt. Eine gleichzeitig eintreffende zweite Startanfrage
+      // erhaelt damit weiterhin 409; die Freigabe erfolgt in finally.
       if (inProgress) {
         return sendError(
           reply,
@@ -279,26 +302,6 @@ export function registerOperationsBackupCheckRoutes(
       inProgress = true;
 
       try {
-        const principal = await options.resolvePrincipal(request);
-        if (!isValidPrincipal(principal)) {
-          throw ApiError.unauthorized();
-        }
-        if (principal.role !== "Admin") {
-          throw ApiError.forbidden();
-        }
-
-        assertEmptyClientInput(request);
-
-        if (options.environment !== "test" || options.configuration === null) {
-          return sendError(
-            reply,
-            request,
-            503,
-            BACKUP_CHECK_UNAVAILABLE_ERROR,
-            "Keine sichere Backup-Testkonfiguration verfuegbar.",
-          );
-        }
-
         const configuration = options.configuration;
         const runId = randomUUID();
         const startedAt = utcNow(now);
@@ -388,33 +391,42 @@ export function registerOperationsBackupCheckRoutes(
           ? null
           : (sanitizeErrorCode(result.error?.code) ?? "internal_error");
 
-        // CX-060 meldet das terminale Ergebnis. Ein Fehler der Meldung macht
-        // aus einem bestandenen Restore keinen vollstaendigen Nachweis.
-        let alarmReported = options.alarm !== null;
+        // CX-060 meldet das terminale Ergebnis. Der Adapter bestaetigt mit
+        // processed, ob er das Ergebnis angenommen hat, und mit ok, welches
+        // Erfolgsergebnis er verarbeitet hat. Eine abweichende oder
+        // fehlgeschlagene Meldung macht aus einem bestandenen Restore keinen
+        // vollstaendigen Nachweis.
+        const alarmPayload = {
+          success: result.success === true,
+          startedAt: result.startedAt,
+          artifactSha256: archiveSha256,
+          restoreDurationMs: result.restoreDurationMs,
+          verificationPassed: result.verificationPassed,
+          cleanupSucceeded: result.cleanupSucceeded,
+          ...(result.success
+            ? {}
+            : {
+                error: {
+                  code: errorCode ?? "internal_error",
+                  message: "Der Restore-Nachweis ist fehlgeschlagen",
+                },
+              }),
+        };
+        let alarmAccepted = options.alarm === null;
+        let alarmAcceptedSuccess = false;
         if (options.alarm !== null) {
           try {
-            await options.alarm.processBackupResult({
-              success: result.success === true,
-              startedAt: result.startedAt,
-              artifactSha256: archiveSha256,
-              restoreDurationMs: result.restoreDurationMs,
-              verificationPassed: result.verificationPassed,
-              cleanupSucceeded: result.cleanupSucceeded,
-              ...(result.success
-                ? {}
-                : {
-                    error: {
-                      code: errorCode ?? "internal_error",
-                      message: "Der Restore-Nachweis ist fehlgeschlagen",
-                    },
-                  }),
-            });
+            const report = await options.alarm.processBackupResult(alarmPayload);
+            alarmAccepted =
+              report.processed === true &&
+              report.ok === (result.success === true);
+            alarmAcceptedSuccess = alarmAccepted && result.success === true;
           } catch {
-            alarmReported = false;
+            alarmAccepted = false;
           }
         }
 
-        if (status === "succeeded" && !alarmReported) {
+        if (status === "succeeded" && !alarmAccepted) {
           status = "incomplete";
           errorCode = BACKUP_CHECK_ALARM_REPORT_ERROR;
         }
@@ -442,9 +454,28 @@ export function registerOperationsBackupCheckRoutes(
             details: { ...details },
           });
         } catch {
-          if (status === "succeeded") {
+          if (details.status === "succeeded") {
             details.status = "incomplete";
             details.error_code = BACKUP_CHECK_RESULT_PERSISTENCE_ERROR;
+          }
+          // CX-060 hat zuvor ein erfolgreiches Ergebnis angenommen. Damit die
+          // Alarmspur und die Uebersicht den Persistenzfehler nicht als
+          // weiterhin erfolgreichen Nachweis sehen, erhaelt sie den
+          // endgueltigen Gesamtstatus als Korrektur.
+          if (alarmAcceptedSuccess && options.alarm !== null) {
+            try {
+              await options.alarm.processBackupResult({
+                ...alarmPayload,
+                success: false,
+                error: {
+                  code: BACKUP_CHECK_RESULT_PERSISTENCE_ERROR,
+                  message:
+                    "Das Backup-Ergebnis konnte nicht persistiert werden",
+                },
+              });
+            } catch {
+              // Der Gesamtnachweis bleibt in jedem Fall unvollstaendig.
+            }
           }
         }
 
