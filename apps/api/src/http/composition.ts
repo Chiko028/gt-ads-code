@@ -63,6 +63,7 @@ import { TabletActivationService } from "../modules/tabletActivation/index.js";
 import { registerInventoryListRoute } from "./inventoryList.js";
 import { registerTaxiListRoute } from "./taxiList.js";
 import { registerTaxiWriteRoutes } from "./taxiWriteRoutes.js";
+import { registerTabletListRoute } from "./tabletList.js";
 import { TaxiService } from "../modules/taxis/service.js";
 import { registerInventoryWriteRoute } from "./inventoryWrite.js";
 import { DeviceInventoryService } from "../modules/inventory/service.js";
@@ -228,6 +229,13 @@ export function registerHttpComposition(
     // Gruppenzuordnung und schreibt Audit in derselben Transaktion.
     registerTaxiWriteRoutes(scope, {
       service: new TaxiService({ pool: deps.pool, now: deps.now }),
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-134 / R-104 Teil 3: lesende Tablet-Liste fuer die Dashboard-Seite
+    // (Paarzuordnung). Ein SQL-Lesevorgang; keine Schreibwege.
+    registerTabletListRoute(scope, {
+      pool: deps.pool,
       adminAuth: deps.adminAuth,
     });
 

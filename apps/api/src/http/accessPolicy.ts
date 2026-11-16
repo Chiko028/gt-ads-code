@@ -156,6 +156,8 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   // CX-133 / R-104 Teil 2: Taxi anlegen und aendern.
   "POST /v1/admin/taxis": human("taxi.activation"),
   "PATCH /v1/admin/taxis/:id": human("taxi.activation"),
+  // CX-134 / R-104 Teil 3: lesende Tablet-Liste der Dashboard-Seite.
+  "GET /v1/admin/tablets": human("devices.read"),
 
   // Menschliche Verwaltung: Registrierungscodes.
   "GET /v1/admin/registration-codes": human("registrationCodes.manage"),
