@@ -575,6 +575,53 @@ const ROUTE_MUTATIONS: Readonly<Record<string, RouteMutation>> = {
       return { response, targetId: id };
     },
   },
+  "POST /v1/admin/taxis": {
+    expectedAction: "taxi.created",
+    expectedStatus: 201,
+    actorType: "admin",
+    actorId: ADMIN_ACTOR_ID,
+    targetType: "taxi",
+    persistsRequestId: false,
+    run: async (targetApp, cookie) => {
+      const id = "SYN-CX058-NEU-" + randomUUID();
+      const response = await injectJson(
+        targetApp,
+        "POST",
+        "/v1/admin/taxis",
+        cookie,
+        {
+          id,
+          display_name: "SYN CX-058 Neues Taxi",
+          group_ids: [GROUP_ID],
+        },
+      );
+      expect(response.statusCode).toBe(201);
+      return { response, targetId: id };
+    },
+  },
+  "PATCH /v1/admin/taxis/:id": {
+    expectedAction: "taxi.updated",
+    expectedStatus: 200,
+    actorType: "admin",
+    actorId: ADMIN_ACTOR_ID,
+    targetType: "taxi",
+    persistsRequestId: false,
+    run: async (targetApp, cookie) => {
+      const response = await injectJson(
+        targetApp,
+        "PATCH",
+        "/v1/admin/taxis/" + TAXI_ID,
+        cookie,
+        {
+          display_name: "SYN CX-058 Taxi Neu",
+          group_ids: [GROUP_ID],
+          revision: 1,
+        },
+      );
+      expect(response.statusCode).toBe(200);
+      return { response, targetId: TAXI_ID };
+    },
+  },
   "PUT /v1/admin/taxis/:id/groups": {
     expectedAction: "taxi.group_memberships_replaced",
     expectedStatus: 200,

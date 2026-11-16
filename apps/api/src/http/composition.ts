@@ -62,6 +62,8 @@ import { registerTabletActivationRoute } from "./tabletActivationRoutes.js";
 import { TabletActivationService } from "../modules/tabletActivation/index.js";
 import { registerInventoryListRoute } from "./inventoryList.js";
 import { registerTaxiListRoute } from "./taxiList.js";
+import { registerTaxiWriteRoutes } from "./taxiWriteRoutes.js";
+import { TaxiService } from "../modules/taxis/service.js";
 import { registerInventoryWriteRoute } from "./inventoryWrite.js";
 import { DeviceInventoryService } from "../modules/inventory/service.js";
 import { registerTaxiPauseRoutes } from "./taxiPauseRoutes.js";
@@ -218,6 +220,14 @@ export function registerHttpComposition(
     // Ein SQL-Lesevorgang auf den vorhandenen Tabellen; keine Schreibwege.
     registerTaxiListRoute(scope, {
       pool: deps.pool,
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-133 / R-104 Teil 2: Taxi anlegen und aendern. Der Adapter delegiert
+    // genau einmal an den Taxidienst; dieser nutzt die vorhandene
+    // Gruppenzuordnung und schreibt Audit in derselben Transaktion.
+    registerTaxiWriteRoutes(scope, {
+      service: new TaxiService({ pool: deps.pool, now: deps.now }),
       adminAuth: deps.adminAuth,
     });
 

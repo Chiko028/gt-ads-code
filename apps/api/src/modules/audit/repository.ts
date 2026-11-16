@@ -29,6 +29,8 @@ export const AUDIT_ACTIONS = Object.freeze({
   taxiGroupCreated: "taxi_group.created",
   taxiGroupRenamed: "taxi_group.renamed",
   taxiGroupMembershipsReplaced: "taxi.group_memberships_replaced",
+  taxiCreated: "taxi.created",
+  taxiUpdated: "taxi.updated",
   taxiActivationChanged: "taxi.activation.changed",
   tabletActivationChanged: "tablet.activation.changed",
   remoteControlPauseSet: "remote_control.pause.set",
@@ -60,6 +62,8 @@ export const AUDIT_WRITE_ROUTE_ACTIONS: Readonly<Record<string, string>> =
     "PATCH /v1/admin/taxis/:taxiId/config": AUDIT_ACTIONS.controlConfigUpdated,
     "POST /v1/admin/taxi-groups": AUDIT_ACTIONS.taxiGroupCreated,
     "PATCH /v1/admin/taxi-groups/:id": AUDIT_ACTIONS.taxiGroupRenamed,
+    "POST /v1/admin/taxis": AUDIT_ACTIONS.taxiCreated,
+    "PATCH /v1/admin/taxis/:id": AUDIT_ACTIONS.taxiUpdated,
     "PUT /v1/admin/taxis/:id/groups":
       AUDIT_ACTIONS.taxiGroupMembershipsReplaced,
     "POST /v1/admin/taxis/:taxiId/activation":

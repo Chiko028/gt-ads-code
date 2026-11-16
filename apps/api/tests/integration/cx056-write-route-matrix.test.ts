@@ -506,6 +506,20 @@ const PAYLOADS: Readonly<Record<string, PayloadFixture>> = Object.freeze({
   "PATCH /v1/admin/taxi-groups/:id": {
     payload: { name: "SYN-CX056-Matrix-Neu", revision: 1 },
   },
+  "POST /v1/admin/taxis": {
+    payload: {
+      id: "SYN-CX056-NEUE-TAXI",
+      display_name: "SYN CX-056 Neues Taxi",
+      group_ids: [GROUP_ID],
+    },
+  },
+  "PATCH /v1/admin/taxis/:id": {
+    payload: {
+      display_name: "SYN CX-056 Taxi Neu",
+      group_ids: [GROUP_ID],
+      revision: 1,
+    },
+  },
   "PUT /v1/admin/taxis/:id/groups": { payload: { group_ids: [], revision: 0 } },
   "POST /v1/admin/taxis/:taxiId/activation": { payload: { active: true, revision: 1 } },
   "PATCH /v1/admin/tablets/:tabletId/activation": {
@@ -574,6 +588,8 @@ describe("CX-056 Matrix der Verwaltungs-Schreibrouten", () => {
         "PATCH /v1/admin/taxis/:taxiId/config",
         "PATCH /v1/admin/taxi-groups/:id",
         "PUT /v1/admin/taxis/:id/groups",
+        "POST /v1/admin/taxis",
+        "PATCH /v1/admin/taxis/:id",
       ]),
     );
     expect(routes.length).toBeGreaterThanOrEqual(17);
@@ -599,6 +615,8 @@ describe("CX-056 Matrix der Verwaltungs-Schreibrouten", () => {
         "POST /v1/admin/taxi-groups",
         "PATCH /v1/admin/taxi-groups/:id",
         "PUT /v1/admin/taxis/:id/groups",
+        "POST /v1/admin/taxis",
+        "PATCH /v1/admin/taxis/:id",
       ]),
     );
 
