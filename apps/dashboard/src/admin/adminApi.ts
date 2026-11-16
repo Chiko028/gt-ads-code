@@ -24,6 +24,30 @@ export interface CreatedRegistrationCode {
   expiresAt: string;
 }
 
+/** Rolle der bestehenden Admin-Sitzung (CX-015-Rechtekern). */
+export type AdminSessionRole = "Admin" | "Operator";
+
+/**
+ * Ergebnis der Passwort-Anmeldung. Der vorhandene Endpunkt antwortet mit 204
+ * ohne Body; die optionalen Felder erlauben dem Client, eine bereits
+ * aktivierte zweite Faktor-Pruefung zu erkennen, ohne eine zweite Logik-
+ * quelle zu erfinden.
+ */
+export interface AdminLoginResult {
+  readonly mfaRequired: boolean;
+  readonly role: AdminSessionRole;
+}
+
+/**
+ * Einmalig ausgegebener Wiederherstellungscodesatz (CX-065/CX-066). Der
+ * Klartext existiert ausschliesslich in dieser Antwort; es gibt keine
+ * lesende Code-API.
+ */
+export interface RecoveryCodeSet {
+  readonly codes: readonly string[];
+  readonly createdAt: string;
+}
+
 export interface AdminDevice {
   id: string;
   label: string | null;
@@ -102,11 +126,22 @@ export function isUnauthorizedError(error: unknown): boolean {
 }
 
 export interface AdminApi {
-  login(password: string): Promise<void>;
+  /**
+   * Die bestehende Route antwortet mit 204. Liefert der Server optional
+   * mfa_required/role, werden diese Hinweise uebernommen; sonst bleibt das
+   * bisherige Verhalten (kein zweiter Faktor erzwungen).
+   */
+  login(password: string): Promise<AdminLoginResult | void>;
   logout(): Promise<void>;
   listRegistrationCodes(): Promise<RegistrationCode[]>;
   createRegistrationCode(label?: string): Promise<CreatedRegistrationCode>;
   revokeRegistrationCode(id: string): Promise<void>;
+  /** Zweiter Faktor TOTP; ersetzt nur die Vorsitzung, kein neues Passwort. */
+  verifyTotpCode(totpCode: string): Promise<void>;
+  /** Wiederherstellungscode als Ersatz fuer den zweiten Faktor. */
+  verifyRecoveryCode(code: string): Promise<void>;
+  /** Erzeugt/ersetzt den Codesatz nach frischer TOTP-Bestaetigung. */
+  generateRecoveryCodes(totpCode: string): Promise<RecoveryCodeSet>;
   listDevices(): Promise<AdminDeviceList>;
   getDevice(id: string): Promise<AdminDeviceDetail>;
   revokeDevice(id: string): Promise<void>;
@@ -278,6 +313,49 @@ function parseCreatedCode(value: unknown): CreatedRegistrationCode {
     throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
   }
   return { id, code, label: labelValue, expiresAt };
+}
+
+function parseRecoveryCodeSet(value: unknown): RecoveryCodeSet {
+  const body = recordOf(value);
+  if (
+    body === null ||
+    !Array.isArray(body.codes) ||
+    typeof body.created_at !== "string"
+  ) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  const codes: string[] = [];
+  for (const code of body.codes) {
+    if (typeof code !== "string" || code === "") {
+      throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+    }
+    codes.push(code);
+  }
+  return { codes, createdAt: body.created_at };
+}
+
+function parseLoginResult(value: unknown): AdminLoginResult {
+  const body = recordOf(value);
+  if (body === null) {
+    return { mfaRequired: false, role: "Admin" };
+  }
+  const mfaRequired =
+    body.mfa_required === true ||
+    body.mfaRequired === true ||
+    body.require_mfa === true ||
+    body.requireMfa === true ||
+    body.two_factor_required === true ||
+    body.twoFactorRequired === true ||
+    body.mfa === true;
+  const roleValue = body.role ?? body.session_role ?? body.sessionRole;
+  return {
+    mfaRequired,
+    role:
+      typeof roleValue === "string" &&
+      roleValue.toLowerCase() === "operator"
+        ? "Operator"
+        : "Admin",
+  };
 }
 
 function parseRegistrationCodeList(value: unknown): RegistrationCode[] {
@@ -541,13 +619,35 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
   }
 
   return {
-    async login(password: string): Promise<void> {
-      await request(
+    async login(password: string): Promise<AdminLoginResult> {
+      const response = await request(
         "/admin/login",
         "POST",
         { password },
         false,
       );
+      if (response.status === 204) {
+        return { mfaRequired: false, role: "Admin" };
+      }
+      // Der bestehende Login-Vertrag liefert 204 ohne Body. Einige
+      // Server-/Testvarianten antworten mit 200; ein leerer oder nicht
+      // auswertbarer Body darf die erfolgreiche Anmeldung nicht kippen.
+      let text: string;
+      try {
+        text = await response.text();
+      } catch {
+        return { mfaRequired: false, role: "Admin" };
+      }
+      if (text.trim() === "") {
+        return { mfaRequired: false, role: "Admin" };
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(text) as unknown;
+      } catch {
+        return { mfaRequired: false, role: "Admin" };
+      }
+      return parseLoginResult(value);
     },
 
     async logout(): Promise<void> {
@@ -584,6 +684,34 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
         undefined,
         true,
       );
+    },
+
+    async verifyTotpCode(totpCode: string): Promise<void> {
+      await request(
+        "/admin/auth/totp/verify",
+        "POST",
+        { totp_code: totpCode },
+        true,
+      );
+    },
+
+    async verifyRecoveryCode(code: string): Promise<void> {
+      await request(
+        "/admin/auth/recovery/verify",
+        "POST",
+        { code },
+        true,
+      );
+    },
+
+    async generateRecoveryCodes(totpCode: string): Promise<RecoveryCodeSet> {
+      const response = await request(
+        "/admin/auth/recovery-codes",
+        "POST",
+        { totp_code: totpCode },
+        true,
+      );
+      return parseRecoveryCodeSet(await readJson(response));
     },
 
     async listDevices(): Promise<AdminDeviceList> {
