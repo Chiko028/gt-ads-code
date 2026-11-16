@@ -29,9 +29,13 @@ import { registerCampaignRoutes } from "../modules/campaigns/campaignRoutes.js";
 import { registerCustomerRoutes } from "../modules/campaigns/routes.js";
 import { installContractErrorHandling } from "./jsonContract.js";
 import {
+  registerMediaDeleteRoute,
   registerMediaUploadRoute,
+  type MediaDeleteDeps,
   type MediaUploadDeps,
 } from "./mediaUpload.js";
+import { createLegacyAdminPrincipalResolver } from "./principal.js";
+import { deleteMedia } from "../modules/media/index.js";
 import {
   registerMediaListRoute,
   type MediaListDeps,
@@ -94,6 +98,16 @@ export function registerHttpComposition(
 
     // CX-031: Upload-Adapter, genau einmal.
     registerMediaUploadRoute(scope, deps.mediaUpload);
+
+    // CX-079 / R-203: logische Medienloeschung. Der Adapter nutzt die
+    // vorhandene CX-078-Grenze deleteMedia; Audit und Loeschzustand entstehen
+    // ausschliesslich dort in einer Transaktion.
+    const mediaDelete: MediaDeleteDeps = {
+      deleteMedia,
+      serviceOptions: deps.mediaUpload.serviceOptions,
+      resolvePrincipal: createLegacyAdminPrincipalResolver(deps.adminAuth),
+    };
+    registerMediaDeleteRoute(scope, mediaDelete);
 
     // CX-095 / R-203: geschuetzte, begrenzte Medienliste. Der Adapter nutzt
     // die vorhandene CX-030-Listengrenze; es entsteht keine zweite

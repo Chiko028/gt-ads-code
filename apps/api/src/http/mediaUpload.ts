@@ -12,16 +12,27 @@
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
+  MediaInUseError,
   MediaInputError,
+  MediaNotFoundError,
   MediaProfileRejectedError,
+  isMediaId,
   type CreateMediaInput,
+  type DeleteMediaOptions,
+  type MediaDeletionResult,
   type MediaServiceOptions,
   type ReadyMedia,
 } from "../modules/media/index.js";
+import { hasAction } from "./accessPolicy.js";
+import { assertSameOriginForWrite } from "./authorization.js";
 import { ApiError } from "./errors.js";
+import { isValidPrincipal, type PrincipalResolver } from "./principal.js";
 
 /** Einzige registrierte Upload-Route (siehe Rechtekern-Katalog). */
 export const MEDIA_UPLOAD_PATH = "/v1/admin/media";
+
+/** Einzige registrierte Loeschroute (siehe Rechtekern-Katalog). */
+export const MEDIA_DELETE_PATH = "/v1/admin/media/:id";
 
 /** Dezimale 20 MB laut R-202 und CX-003-Profil. */
 export const MEDIA_UPLOAD_MAX_BYTES = 20_000_000;
@@ -207,3 +218,127 @@ export function registerMediaUploadRoute(
   });
 }
 
+
+
+/**
+ * CX-079 / R-203: geschuetzte logische Loeschung eines Mediums.
+ *
+ * Der Handler prueft ausschliesslich die vorhandenen Sitzungs-, Rollen- und
+ * Originregeln und delegiert genau einmal an die vorhandene CX-078-Grenze
+ * deleteMedia(options, id, deleteOptions). Loeschzustand und Erfolgsaudit
+ * entstehen ausschliesslich dort in einer Transaktion; der Adapter schreibt
+ * kein zweites Audit und fuehrt keine Referenz- oder Dateipruefung durch.
+ */
+export interface MediaDeleteDeps {
+  /** Vorhandene CX-078-Funktion in ihrer tatsaechlichen Signatur. */
+  deleteMedia: (
+    options: MediaServiceOptions,
+    id: string,
+    deleteOptions?: DeleteMediaOptions,
+  ) => Promise<MediaDeletionResult>;
+  /** Produktionsoptionen des vorhandenen Medienspeichers. */
+  serviceOptions: MediaServiceOptions;
+  /** Vorhandene serverseitige Sitzungspruefung, kein Ersatz durch Header. */
+  resolvePrincipal: PrincipalResolver;
+}
+
+/** DELETE /v1/admin/media/:id nimmt keine Queryparameter an. */
+function assertNoDeleteQuery(query: unknown): void {
+  if (typeof query !== "object" || query === null || Array.isArray(query)) {
+    throw ApiError.invalidRequest();
+  }
+  if (Object.keys(query as Record<string, unknown>).length > 0) {
+    throw ApiError.invalidRequest();
+  }
+}
+
+/**
+ * Eine Loeschanfrage hat keinen Nutzdatenteil. Ein leerer Buffer bzw. ein
+ * leerer Text bleibt zulaessig; jedes geparste JSON-Objekt, Array oder nicht
+ * leere Nutzdatum wird abgelehnt statt still verworfen.
+ */
+function assertNoDeleteBody(body: unknown): void {
+  if (body === undefined || body === null) {
+    return;
+  }
+  if (Buffer.isBuffer(body)) {
+    if (body.length === 0) {
+      return;
+    }
+    throw ApiError.invalidRequest();
+  }
+  if (typeof body === "string" && body.length === 0) {
+    return;
+  }
+  throw ApiError.invalidRequest();
+}
+
+/** Bildet ausschliesslich die typisierten CX-078-Fehler auf den Vertrag ab. */
+function toDeleteApiError(error: unknown): never {
+  if (error instanceof MediaNotFoundError) {
+    throw ApiError.notFound();
+  }
+  if (error instanceof MediaInUseError) {
+    throw new ApiError("invalid_request", { statusCode: 409 });
+  }
+  if (error instanceof MediaInputError) {
+    throw ApiError.invalidRequest();
+  }
+  // Unerwartete Serviceausnahmen werden nie mit Meldung, SQL, Pfad oder
+  // Stacktrace weitergereicht; der gekapselte Fehlerbaustein liefert 500.
+  throw new Error("Medien-Loeschung fehlgeschlagen.");
+}
+
+async function handleDelete(
+  deps: MediaDeleteDeps,
+  request: FastifyRequest<{
+    Params: { id: string };
+    Querystring: Record<string, unknown>;
+  }>,
+): Promise<void> {
+  // Vor Authentifizierung: derselbe Origin-Schreibschutz wie im Rechtekern.
+  // Er gilt auch ohne Requestbody.
+  assertSameOriginForWrite(request);
+
+  const principal = await deps.resolvePrincipal(request);
+  if (!isValidPrincipal(principal)) {
+    throw ApiError.unauthorized();
+  }
+  if (!hasAction(principal.role, "media.write")) {
+    throw ApiError.forbidden();
+  }
+
+  const id = request.params.id;
+  if (!isMediaId(id)) {
+    throw ApiError.invalidRequest();
+  }
+  assertNoDeleteQuery(request.query);
+  assertNoDeleteBody(request.body);
+
+  try {
+    // Der Akteur stammt ausschliesslich aus der serverseitigen Sitzung.
+    await deps.deleteMedia(deps.serviceOptions, id, {
+      actorType: "admin",
+      actorId: principal.id,
+    });
+  } catch (error) {
+    toDeleteApiError(error);
+  }
+}
+
+/**
+ * Registriert DELETE /v1/admin/media/:id genau einmal. Der Handler nutzt die
+ * vorhandene CX-078-Servicegrenze; es entsteht keine eigene Persistenz.
+ */
+export function registerMediaDeleteRoute(
+  app: FastifyInstance,
+  deps: MediaDeleteDeps,
+): void {
+  app.delete<{
+    Params: { id: string };
+    Querystring: Record<string, unknown>;
+  }>(MEDIA_DELETE_PATH, async (request, reply) => {
+    await handleDelete(deps, request);
+    reply.code(204).send();
+  });
+}

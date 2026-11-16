@@ -160,6 +160,11 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   // Medien (CX-031 Upload, CX-033 Liste), Kampagnen (CX-056), Pause/Fortsetzen.
   "GET /v1/admin/media": human("media.read"),
   "POST /v1/admin/media": human("media.write"),
+  // CX-079 / R-203: logische Medienloeschung. Der bestehende CX-058-Audit-
+  // Schreibkatalog kennt keine Route fuer DELETE; der Handler prueft deshalb
+  // die vorhandene Sitzung, Rolle und den Origin-Schutz selbst und delegiert
+  // genau einmal an CX-078, das media.deleted atomar schreibt.
+  "DELETE /v1/admin/media/:id": PUBLIC,
   "PATCH /v1/admin/media/:id": human("media.write"),
   "GET /v1/admin/campaigns": human("campaigns.read"),
   "PATCH /v1/admin/campaigns/:id": human("campaigns.write"),
