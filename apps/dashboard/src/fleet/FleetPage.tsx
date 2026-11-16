@@ -162,6 +162,12 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   const [groupBusy, setGroupBusy] = useState(false);
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  /**
+   * Ein Revisionskonflikt bleibt sichtbar, bis die Daten ausdruecklich neu
+   * geladen wurden. Die Eingabe bleibt dabei erhalten; ohne dieses
+   * Nachladen ist ein erneutes Absenden gesperrt.
+   */
+  const [renameConflict, setRenameConflict] = useState(false);
   const groupBusyRef = useRef(false);
 
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
@@ -645,7 +651,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     group: FleetGroup,
   ): Promise<void> {
     event.preventDefault();
-    if (groupBusyRef.current || unclearWriteRef.current) {
+    if (groupBusyRef.current || unclearWriteRef.current || renameConflict) {
       return;
     }
     const name = renameDraft.trim();
@@ -670,6 +676,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
       setGroups((current) => upsertBy(current, saved, (item) => item.id));
       setRenamingGroupId(null);
       setRenameDraft("");
+      setRenameConflict(false);
       setNotice(GROUP_SAVED);
     } catch (error) {
       if (!isAlive(generation)) {
@@ -679,10 +686,11 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isFleetConflict(error)) {
+        // Eingabe und Bearbeitungszustand bleiben erhalten. Es wird weder
+        // automatisch nachgeladen noch mit einer neuen Revision geschrieben;
+        // das Nachladen bietet die Ansicht ausdruecklich an.
+        setRenameConflict(true);
         setActionError(CONFLICT_MESSAGE);
-        setRenamingGroupId(null);
-        setRenameDraft("");
-        await loadAll(generation);
         return;
       }
       if (isUnclearWriteOutcome(error)) {
@@ -696,6 +704,13 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         setGroupBusy(false);
       }
     }
+  }
+
+  function reloadGroupsAfterConflict(): void {
+    setRenameConflict(false);
+    setActionError(null);
+    const generation = generationRef.current;
+    void loadAll(generation);
   }
 
   function startInventoryEdit(item: FleetInventoryItem): void {
@@ -1224,6 +1239,9 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                           void handleRenameGroup(event, group)
                         }
                       >
+                        <p>
+                          Bisheriger Name: <strong>{group.name}</strong>
+                        </p>
                         <label htmlFor={`group-name-${group.id}`}>
                           Neuer Gruppenname
                         </label>
@@ -1239,16 +1257,26 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                         />
                         <button
                           type="submit"
-                          disabled={groupBusy || unclearWrite}
+                          disabled={groupBusy || unclearWrite || renameConflict}
                         >
                           Speichern
                         </button>
+                        {renameConflict ? (
+                          <button
+                            type="button"
+                            disabled={groupBusy || loading}
+                            onClick={reloadGroupsAfterConflict}
+                          >
+                            Neu laden
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           disabled={groupBusy}
                           onClick={() => {
                             setRenamingGroupId(null);
                             setRenameDraft("");
+                            setRenameConflict(false);
                           }}
                         >
                           Abbrechen
@@ -1265,6 +1293,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                         onClick={() => {
                           setRenamingGroupId(group.id);
                           setRenameDraft(group.name);
+                          setRenameConflict(false);
                           setActionError(null);
                         }}
                         disabled={groupBusy || unclearWrite}
