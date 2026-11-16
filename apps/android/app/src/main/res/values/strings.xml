@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Feste deutsche Anzeigemeldungen der Registrierungsoberflaeche. -->
+    <string name="registration_message_loading">Registrierungszustand wird geladen</string>
+    <string name="registration_message_progress">Registrierung laeuft</string>
+    <string name="registration_message_success">Registrierung erfolgreich</string>
+    <string name="registration_message_not_registered">Nicht registriert</string>
+    <string name="registration_message_invalid_input">Ungueltige Eingabe: Bitte HTTPS-Serveradresse und Registrierungscode pruefen.</string>
+    <string name="registration_message_code_rejected">Der Registrierungscode wurde abgelehnt.</string>
+    <string name="registration_message_rate_limited">Zu viele Registrierungsversuche. Bitte spaeter erneut versuchen.</string>
+    <string name="registration_message_network_error">Netzwerkfehler: Der Server ist nicht erreichbar.</string>
+    <string name="registration_message_unknown">Ergebnis unklar. Bitte nicht erneut registrieren und Unterstuetzung anfordern.</string>
+    <string name="registration_label_server_url">HTTPS-Serveradresse</string>
+    <string name="registration_label_code">Registrierungscode</string>
+    <string name="registration_label_device_id">Geraetekennung</string>
+    <string name="registration_label_registered_server">Serveradresse</string>
+    <string name="registration_action_register">Registrieren</string>
+</resources>

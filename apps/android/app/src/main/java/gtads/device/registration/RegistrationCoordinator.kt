@@ -33,6 +33,12 @@ class RegistrationCoordinator(
     @Volatile
     private var inFlight = false
 
+    @Volatile
+    private var lastOutcome: RegistrationOutcome? = null
+
+    /** Anzeigekategorie des letzten Versuchs; nie Rohtext oder Serverinhalt. */
+    fun outcome(): RegistrationOutcome? = lastOutcome
+
     fun state(): RegistrationState =
         if (inFlight) RegistrationState.Registering else repository.read()
 
@@ -41,23 +47,47 @@ class RegistrationCoordinator(
 
     private fun attempt(registrationCode: String): RegistrationState {
         val current = repository.read()
-        if (current != RegistrationState.NotRegistered) return current
+        if (current != RegistrationState.NotRegistered) {
+            return conclude(
+                current,
+                if (current is RegistrationState.Registered) {
+                    RegistrationOutcome.REGISTERED
+                } else {
+                    RegistrationOutcome.UNCERTAIN
+                },
+            )
+        }
         if (!isValidBaseUrl()) {
-            return RegistrationState.Failed(RegistrationFailure.INVALID_BASE_URL)
+            return conclude(
+                RegistrationState.Failed(RegistrationFailure.INVALID_BASE_URL),
+                RegistrationOutcome.INVALID_INPUT,
+            )
         }
         val publicKey = try {
             identity.publicKeySpki()
         } catch (_: Exception) {
-            return RegistrationState.Failed(RegistrationFailure.IDENTITY_UNAVAILABLE)
+            return conclude(
+                RegistrationState.Failed(RegistrationFailure.IDENTITY_UNAVAILABLE),
+                RegistrationOutcome.UNCERTAIN,
+            )
         }
         val request = buildRequest(registrationCode, publicKey)
         inFlight = true
         try {
             if (!repository.writeMarker(baseUrl)) {
-                return RegistrationState.Failed(RegistrationFailure.STORAGE_UNAVAILABLE)
+                return conclude(
+                    RegistrationState.Failed(RegistrationFailure.STORAGE_UNAVAILABLE),
+                    RegistrationOutcome.UNCERTAIN,
+                )
             }
             return when (val result = transport(request)) {
-                is TransportResult.Failure -> RegistrationState.Unknown
+                is TransportResult.Failure -> conclude(
+                    RegistrationState.Unknown,
+                    when (result.code) {
+                        ErrorCode.NETWORK, ErrorCode.TIMEOUT -> RegistrationOutcome.NETWORK_ERROR
+                        else -> RegistrationOutcome.UNCERTAIN
+                    },
+                )
                 is TransportResult.Response -> complete(result)
             }
         } finally {
@@ -69,17 +99,33 @@ class RegistrationCoordinator(
         val deviceId = parseSuccess(response)
         if (deviceId != null) {
             return if (repository.writeRegistered(deviceId, baseUrl)) {
-                RegistrationState.Registered(deviceId, baseUrl)
+                conclude(
+                    RegistrationState.Registered(deviceId, baseUrl),
+                    RegistrationOutcome.REGISTERED,
+                )
             } else {
-                RegistrationState.Unknown
+                conclude(RegistrationState.Unknown, RegistrationOutcome.UNCERTAIN)
             }
         }
-        if (!isExplicitRejection(response)) return RegistrationState.Unknown
-        return if (repository.clearMarker()) {
-            RegistrationState.NotRegistered
-        } else {
-            RegistrationState.Unknown
+        if (response.status == 429) {
+            return conclude(RegistrationState.Unknown, RegistrationOutcome.RATE_LIMITED)
         }
+        if (!isExplicitRejection(response)) {
+            return conclude(RegistrationState.Unknown, RegistrationOutcome.UNCERTAIN)
+        }
+        return if (repository.clearMarker()) {
+            conclude(RegistrationState.NotRegistered, RegistrationOutcome.CODE_REJECTED)
+        } else {
+            conclude(RegistrationState.Unknown, RegistrationOutcome.CODE_REJECTED)
+        }
+    }
+
+    private fun conclude(
+        state: RegistrationState,
+        outcome: RegistrationOutcome,
+    ): RegistrationState {
+        lastOutcome = outcome
+        return state
     }
 
     private fun isValidBaseUrl(): Boolean {
