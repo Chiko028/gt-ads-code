@@ -11,6 +11,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.security.PublicKey
+import java.time.Instant
 import java.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
@@ -44,11 +45,27 @@ class ActiveManifest internal constructor(
     private val artifactBytes: ByteArray,
     val artifactSha256: String,
     val etag: String,
-    media: List<VerifiedMedia>,
+    parsed: ParsedManifest,
 ) {
-    val media: List<VerifiedMedia> = java.util.Collections.unmodifiableList(media.toList())
+    /** Hashadressierte Medienreferenzen, eindeutig je SHA-256. */
+    val media: List<VerifiedMedia> = java.util.Collections.unmodifiableList(parsed.media.toList())
+
+    /** Alle Slots in Manifestreihenfolge, einschliesslich mehrfacher Slots desselben Mediums (CX-080). */
+    val slots: List<ManifestSlot> = java.util.Collections.unmodifiableList(parsed.slots.toList())
     fun bytes(): ByteArray = artifactBytes.copyOf()
 }
+
+/** Ein Wiedergabeslot aus dem geprueften Manifest; Beginn inklusive, Ende exklusive. */
+class ManifestSlot internal constructor(
+    val position: Int,
+    val media: VerifiedMedia,
+    val durationMs: Long,
+    val campaignId: String,
+    val startAt: Instant,
+    val endAt: Instant,
+)
+
+internal class ParsedManifest(val media: List<VerifiedMedia>, val slots: List<ManifestSlot>)
 
 sealed interface ManifestActivation {
     /** Neuer Stand ist atomar veroeffentlicht. */
@@ -131,11 +148,12 @@ class ManifestRepository internal constructor(
         if (sha256Hex(bytes) != record.artifactSha256) return ManifestLoad.Failed(ManifestStoreFailure.ARTIFACT_INVALID)
         val verified = verifyManifest(bytes, trustedPublicKey, expectedTaxiId) as? ManifestVerification.Verified
             ?: return ManifestLoad.Failed(ManifestStoreFailure.ARTIFACT_INVALID)
-        val media = mediaOf(verified) ?: return ManifestLoad.Failed(ManifestStoreFailure.ARTIFACT_INVALID)
+        val parsed = parseManifest(verified) ?: return ManifestLoad.Failed(ManifestStoreFailure.ARTIFACT_INVALID)
+        val media = parsed.media
         if (!sameMedia(media, record.media)) return ManifestLoad.Failed(ManifestStoreFailure.POINTER_CORRUPT)
         checkMedia(media)?.let { return ManifestLoad.Failed(it) }
 
-        val snapshot = ActiveManifest(bytes, record.artifactSha256, record.etag, media)
+        val snapshot = ActiveManifest(bytes, record.artifactSha256, record.etag, parsed)
         current = snapshot
         ManifestLoad.Active(snapshot)
     }
@@ -152,7 +170,8 @@ class ManifestRepository internal constructor(
         val active = current
         if (active != null && active.artifactSha256 == artifactSha256) return ManifestActivation.Unchanged
 
-        val media = mediaOf(manifest) ?: return ManifestActivation.Rejected(ManifestStoreFailure.INVALID_INPUT)
+        val parsed = parseManifest(manifest) ?: return ManifestActivation.Rejected(ManifestStoreFailure.INVALID_INPUT)
+        val media = parsed.media
         checkMedia(media)?.let { return ManifestActivation.Rejected(it) }
 
         try {
@@ -175,7 +194,7 @@ class ManifestRepository internal constructor(
             return ManifestActivation.Rejected(ManifestStoreFailure.STORAGE)
         }
 
-        val snapshot = ActiveManifest(bytes, artifactSha256, etag, media)
+        val snapshot = ActiveManifest(bytes, artifactSha256, etag, parsed)
         current = snapshot
         ManifestActivation.Activated(snapshot)
     }
@@ -267,13 +286,14 @@ class ManifestRepository internal constructor(
          * Hashadressierte Medienreferenzen aus den geprueften Bytes, eindeutig je
          * SHA-256 in Manifestreihenfolge. Widerspruechliche Eintraege ergeben null.
          */
-        private fun mediaOf(manifest: ManifestVerification.Verified): List<VerifiedMedia>? {
+        internal fun parseManifest(manifest: ManifestVerification.Verified): ParsedManifest? {
           return try {
             val envelope = JSONObject(String(manifest.bytes(), Charsets.UTF_8))
             val payload = JSONObject(String(Base64.getDecoder().decode(envelope.getString("payloadBase64")), Charsets.UTF_8))
             val entries = payload.getJSONArray("entries")
             val byHash = LinkedHashMap<String, VerifiedMedia>()
             val byId = HashMap<String, String>()
+            val slots = ArrayList<ManifestSlot>()
             for (index in 0 until entries.length()) {
                 val entry = entries.getJSONObject(index)
                 val mediaId = entry.getString("mediaId")
@@ -281,12 +301,19 @@ class ManifestRepository internal constructor(
                 val size = when (val raw = entry.opt("sizeBytes")) { is Int -> raw.toLong(); is Long -> raw; else -> null }
                     ?: return null
                 val item = VerifiedMedia.of(mediaId, sha, size) ?: return null
+                val durationMs = when (val raw = entry.opt("durationMs")) { is Int -> raw.toLong(); is Long -> raw; else -> null }
+                    ?: return null
+                if (durationMs <= 0L) return null
+                val startAt = Instant.parse(entry.getString("startAt"))
+                val endAt = Instant.parse(entry.getString("endAt"))
+                if (!startAt.isBefore(endAt)) return null
+                slots.add(ManifestSlot(index, item, durationMs, entry.getString("campaignId"), startAt, endAt))
                 val knownHash = byId.putIfAbsent(mediaId, sha)
                 if (knownHash != null && knownHash != sha) return null
                 val known = byHash[sha]
                 if (known == null) byHash[sha] = item else if (known.sizeBytes != size) return null
             }
-            if (byHash.isEmpty()) null else byHash.values.toList()
+            if (byHash.isEmpty()) null else ParsedManifest(byHash.values.toList(), slots)
           } catch (_: Exception) {
             null
           }
