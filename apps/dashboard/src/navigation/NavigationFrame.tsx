@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { DevicesPanel } from "../devices/DevicesPanel";
+import { UsersPanel } from "../users/UsersPanel";
 import { DASHBOARD_ROUTES } from "./routes";
 import type { RouteMatch } from "./routes";
 import { TaxiPageSlot } from "./TaxiPageSlot";
@@ -87,6 +88,8 @@ function pageFor(
       ) : (
         statisticPage
       );
+    case "benutzer":
+      return <UsersPanel />;
     default:
       return <UnavailablePage title={match.route.label} />;
   }

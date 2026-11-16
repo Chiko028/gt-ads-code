@@ -155,12 +155,7 @@ const NAV_LABELS = [
   "Betrieb",
 ];
 
-const PLACEHOLDER_LABELS = [
-  "Status",
-  "Bedienung",
-  "Benutzer",
-  "Betrieb",
-];
+const PLACEHOLDER_LABELS = ["Status", "Bedienung", "Betrieb"];
 
 describe("CX-034 Dashboard-Navigation", () => {
   it("bedient alle Navigationsziele, Direktaufruf per Hash, Zurück/Vorwärts und unbekannte Adressen", async () => {
@@ -338,5 +333,14 @@ describe("CX-034 Dashboard-Navigation", () => {
       expect(within(region).queryByRole("link")).toBeNull();
       expect(within(region).queryByRole("list")).toBeNull();
     }
+
+    // Benutzer ist kein Platzhalter mehr, sondern eine echte lesende Seite.
+    await user.click(within(nav).getByRole("link", { name: "Benutzer" }));
+    await screen.findByRole("heading", { name: "Benutzer" });
+    const usersRegion = screen.getByRole("region", { name: "Benutzer" });
+    expect(
+      within(usersRegion).getByRole("button", { name: "Aktualisieren" }),
+    ).toBeTruthy();
+    expect(within(usersRegion).queryByText("Noch nicht verfügbar")).toBeNull();
   });
 });

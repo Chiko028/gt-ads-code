@@ -51,6 +51,14 @@ export interface AdminDeviceList {
   truncated: boolean;
 }
 
+/** Lesende Benutzeransicht der CX-057-Operatorsammlung. */
+export interface AdminUser {
+  id: string;
+  username: string;
+  role: string;
+  status: string;
+}
+
 export type AdminApiErrorKind =
   | "unauthorized"
   | "forbidden"
@@ -102,6 +110,7 @@ export interface AdminApi {
   listDevices(): Promise<AdminDeviceList>;
   getDevice(id: string): Promise<AdminDeviceDetail>;
   revokeDevice(id: string): Promise<void>;
+  listUsers(options?: { readonly isCurrent?: () => boolean }): Promise<AdminUser[]>;
 }
 
 export interface CreateAdminApiOptions {
@@ -364,6 +373,55 @@ function parseDeviceDetail(value: unknown): AdminDeviceDetail {
   };
 }
 
+function parseAdminUser(value: unknown): AdminUser {
+  const item = recordOf(value);
+  const id =
+    item === null
+      ? null
+      : stringField(item, "operator_id") ??
+        stringField(item, "actor_id") ??
+        stringField(item, "id");
+  const username =
+    item === null
+      ? null
+      : stringField(item, "username") ??
+        stringField(item, "display_name") ??
+        stringField(item, "name");
+  const status =
+    item === null
+      ? null
+      : item.status ??
+        item.state ??
+        (typeof item.locked === "boolean" ? (item.locked ? "disabled" : "active") : null);
+  if (
+    item === null ||
+    id === null ||
+    username === null ||
+    typeof status !== "string"
+  ) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  const role = item.role;
+  return {
+    id,
+    username,
+    role: typeof role === "string" && role !== "" ? role : "Operator",
+    status,
+  };
+}
+
+function parseAdminUserList(value: unknown): AdminUser[] {
+  if (value === undefined) return [];
+  const body = recordOf(value);
+  const items = Array.isArray(value)
+    ? value
+    : body?.items ?? body?.users ?? body?.operators;
+  if (!Array.isArray(items)) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  return items.map(parseAdminUser);
+}
+
 function joinUrl(baseUrl: string, path: string): string {
   const base = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
   return base + path;
@@ -375,6 +433,8 @@ export interface ApiRequestOptions {
   readonly body?: unknown;
   /** Nur geschuetzte Operationen loesen die zentrale 401-Behandlung aus. */
   readonly protectedOperation?: boolean;
+  /** Schuetzt eine neue Sitzung vor einer verspaeteten 401 eines alten Abrufs. */
+  readonly isCurrent?: () => boolean;
 }
 
 /**
@@ -441,7 +501,7 @@ export function createApiTransport(
           getSessionGeneration === undefined ||
           sessionGeneration === undefined ||
           getSessionGeneration() === sessionGeneration;
-        if (isCurrentSession) {
+        if (isCurrentSession && (initOptions.isCurrent?.() ?? true)) {
           onUnauthorized?.();
         }
       }
@@ -475,8 +535,9 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
     method: "GET" | "POST" | "DELETE",
     body: unknown,
     protectedOperation: boolean,
+    isCurrent?: () => boolean,
   ): Promise<Response> {
-    return transport.request(path, { method, body, protectedOperation });
+    return transport.request(path, { method, body, protectedOperation, isCurrent });
   }
 
   return {
@@ -528,6 +589,13 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
     async listDevices(): Promise<AdminDeviceList> {
       const response = await request("/admin/devices", "GET", undefined, true);
       return parseDeviceList(await readJson(response));
+    },
+
+    async listUsers(options = {}): Promise<AdminUser[]> {
+      const response = await request(
+        "/admin/operators", "GET", undefined, true, options.isCurrent,
+      );
+      return parseAdminUserList(await readJson(response));
     },
 
     async getDevice(id: string): Promise<AdminDeviceDetail> {
