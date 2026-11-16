@@ -61,6 +61,7 @@ import { TaxiActivationService } from "../modules/taxiActivation/index.js";
 import { registerTabletActivationRoute } from "./tabletActivationRoutes.js";
 import { TabletActivationService } from "../modules/tabletActivation/index.js";
 import { registerInventoryListRoute } from "./inventoryList.js";
+import { registerTaxiListRoute } from "./taxiList.js";
 import { registerInventoryWriteRoute } from "./inventoryWrite.js";
 import { DeviceInventoryService } from "../modules/inventory/service.js";
 import { registerTaxiPauseRoutes } from "./taxiPauseRoutes.js";
@@ -209,6 +210,13 @@ export function registerHttpComposition(
     // CX-129 / R-106: geschuetzte, paginierte Inventarliste. Der Adapter
     // liest Geraete per LEFT JOIN; es entsteht keine zweite Persistenz.
     registerInventoryListRoute(scope, {
+      pool: deps.pool,
+      adminAuth: deps.adminAuth,
+    });
+
+    // CX-132 / R-104 Teil 1: lesende Taxi-Liste fuer die Dashboard-Seite.
+    // Ein SQL-Lesevorgang auf den vorhandenen Tabellen; keine Schreibwege.
+    registerTaxiListRoute(scope, {
       pool: deps.pool,
       adminAuth: deps.adminAuth,
     });
