@@ -311,7 +311,7 @@ class MediaDownloader internal constructor(
         const val MAX_MEDIA_BYTES = 20_000_000L
         private const val API_VERSION = "1"
         private const val BUFFER_BYTES = 16 * 1024
-        private const val MEDIA_DIRECTORY = "media-downloads"
+        internal const val MEDIA_DIRECTORY = "media-downloads"
         private const val DOWNLOAD_PATH_PREFIX = "/v1/device/downloads/"
         private val CONTENT_RANGE = Regex("bytes (\\d+)-(\\d+)/(\\d+)")
 
