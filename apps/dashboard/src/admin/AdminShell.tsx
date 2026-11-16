@@ -15,6 +15,7 @@ import type {
   CreatedRegistrationCode,
   FetchLike,
   RecoveryCodeSet,
+  TotpSetupStart,
   RegistrationCode,
   RegistrationCodeStatus,
 } from "./adminApi";
@@ -90,6 +91,27 @@ function isUnknownCreateOutcome(error: unknown): boolean {
     (error.kind === "network" ||
       error.kind === "server" ||
       error.kind === "invalid_response")
+  );
+}
+
+interface RecoveryCodeSetViewProps {
+  codeSet: RecoveryCodeSet;
+  onClose: () => void;
+  closeLabel?: string;
+}
+
+/** Einzige Darstellung einmaliger Wiederherstellungscodes (CX-067). */
+function RecoveryCodeSetView({ codeSet, onClose, closeLabel = "Schließen" }: RecoveryCodeSetViewProps) {
+  return (
+    <div>
+      <p role="status">Der Codesatz wurde erzeugt.</p>
+      <p>{RECOVERY_CODES_STORAGE_HINT}</p>
+      <ol aria-label="Neue Wiederherstellungscodes">
+        {codeSet.codes.map((code, index) => (<li key={index}><code>{code}</code></li>))}
+      </ol>
+      <p>Erstellt am <time dateTime={codeSet.createdAt}>{codeSet.createdAt}</time></p>
+      <button type="button" onClick={onClose}>{closeLabel}</button>
+    </div>
   );
 }
 
@@ -226,25 +248,222 @@ function RecoveryCodeSetDialog({ api, onClose }: RecoveryCodeSetDialogProps) {
           {error !== null ? <p role="alert">{error}</p> : null}
         </form>
       ) : (
-        <div>
-          <p role="status">Der Codesatz wurde erzeugt.</p>
-          <p>{RECOVERY_CODES_STORAGE_HINT}</p>
-          <ol aria-label="Neue Wiederherstellungscodes">
-            {codeSet.codes.map((code, index) => (
-              <li key={index}>
-                <code>{code}</code>
-              </li>
-            ))}
-          </ol>
-          <p>
-            Erstellt am{" "}
-            <time dateTime={codeSet.createdAt}>{codeSet.createdAt}</time>
-          </p>
-          <button type="button" onClick={close}>
-            Schließen
-          </button>
-        </div>
+        <RecoveryCodeSetView codeSet={codeSet} onClose={close} />
       )}
+    </section>
+  );
+}
+
+type TotpStage = "idle" | "password" | "enrolling" | "active";
+
+const TOTP_TEXT = {
+  passwordRequired: "Bitte das Passwort erneut eingeben.",
+  passwordInvalid: "Das Passwort ist falsch. Bitte erneut eingeben.",
+  codeRequired: "Bitte einen sechsstelligen Code aus der Authenticator-App eingeben.",
+  wrongCode: "Der Code ist falsch. Bitte den aktuellen Code aus der Authenticator-App eingeben.",
+  expired: "Die Einrichtung ist abgelaufen und wurde verworfen. Bitte neu beginnen.",
+  unclear:
+    "Der Ausgang der Bestätigung ist unklar. MFA wurde möglicherweise bereits aktiviert. Es wird nicht automatisch wiederholt; bitte die Sicherheitsverwaltung prüfen.",
+  conflict:
+    "Die Einrichtung kann nicht abgeschlossen werden. MFA ist möglicherweise bereits aktiv. Bitte die Sicherheitsverwaltung prüfen.",
+  alreadyActive:
+    "MFA ist bereits aktiv oder die Einrichtung ist gesperrt. Bitte die Sicherheitsverwaltung prüfen.",
+  cancelled: "Die Einrichtung wurde abgebrochen.",
+} as const;
+
+/**
+ * CX-110 / R-605: kompakter TOTP-Einrichtungsbildschirm. Passwort,
+ * Base32-Geheimnis und Wiederherstellungscodes leben nur im fluechtigen
+ * Zustand dieser Komponente; Schreibaktionen sind waehrend eines Requests
+ * gesperrt, verspaetete Antworten werden ueber Generation und Unmount
+ * verworfen. Keine QR-Bibliothek, keine externe URL, kein Web-Storage.
+ */
+export function TotpSetupScreen() {
+  const { api, role, sessionStatus, invalidateSession } = useAdminSession();
+  const [stage, setStage] = useState<TotpStage>("idle");
+  const [password, setPassword] = useState("");
+  const [enrollment, setEnrollment] = useState<TotpSetupStart | null>(null);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [recovery, setRecovery] = useState<RecoveryCodeSet | null>(null);
+  const busyRef = useRef(false);
+  const aliveRef = useRef(true);
+  const generationRef = useRef(0);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      // Passwort, Geheimnis und Codes verschwinden mit dem Unmount.
+      aliveRef.current = false;
+      generationRef.current += 1;
+      busyRef.current = false;
+    };
+  }, []);
+
+  if (role !== "Admin" || sessionStatus !== "authenticated") return null;
+
+  function isStale(generation: number): boolean {
+    return !aliveRef.current || generation !== generationRef.current;
+  }
+
+  function closeSetup() {
+    setPassword("");
+    setEnrollment(null);
+    setCode("");
+    setError(null);
+    setNotice(null);
+    setRecovery(null);
+    setStage("idle");
+  }
+
+  async function handleStart(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busyRef.current) return;
+    if (password === "") { setError(TOTP_TEXT.passwordRequired); return; }
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const generation = generationRef.current;
+    try {
+      const started = await api.beginTotpSetup(password);
+      if (isStale(generation)) return;
+      setPassword("");
+      setEnrollment(started);
+      setCode("");
+      setStage("enrolling");
+    } catch (caught) {
+      if (isStale(generation)) return;
+      // Das Passwort wird nach dem Beginn immer verworfen.
+      setPassword("");
+      if (isUnauthorizedError(caught)) setError(TOTP_TEXT.passwordInvalid);
+      else if (isAdminApiError(caught) && caught.status === 409) {
+        setStage("idle");
+        setError(TOTP_TEXT.alreadyActive);
+      } else setError(messageFor(caught));
+    } finally {
+      busyRef.current = false;
+      if (!isStale(generation)) setBusy(false);
+    }
+  }
+
+  async function handleConfirm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busyRef.current || enrollment === null || recovery !== null) return;
+    const expiresAt = Date.parse(enrollment.expiresAt);
+    if (!Number.isNaN(expiresAt) && Date.now() >= expiresAt) {
+      setEnrollment(null);
+      setCode("");
+      setStage("password");
+      setError(TOTP_TEXT.expired);
+      return;
+    }
+    if (!/^[0-9]{6}$/.test(code)) { setError(TOTP_TEXT.codeRequired); return; }
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    const generation = generationRef.current;
+    try {
+      // Erst diese erfolgreiche Antwort aktiviert die Anzeige; das Geheimnis
+      // wird danach nicht mehr gehalten.
+      const issued = await api.confirmTotpSetup(enrollment.enrollmentId, code);
+      if (isStale(generation)) return;
+      setCode("");
+      setEnrollment(null);
+      setRecovery(issued);
+      setStage("active");
+    } catch (caught) {
+      if (isStale(generation)) return;
+      setCode("");
+      // CX-108 meldet einen falschen Code mit 401; die Sitzung bleibt.
+      if (isUnauthorizedError(caught)) setError(TOTP_TEXT.wrongCode);
+      else if (isAdminApiError(caught) && caught.status === 409) setError(TOTP_TEXT.conflict);
+      else if (
+        isAdminApiError(caught) &&
+        (caught.kind === "network" || caught.kind === "server" || caught.kind === "invalid_response")
+      ) setError(TOTP_TEXT.unclear);
+      else setError(messageFor(caught));
+    } finally {
+      busyRef.current = false;
+      if (!isStale(generation)) setBusy(false);
+    }
+  }
+
+  async function handleCancel() {
+    if (busyRef.current || enrollment === null) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    const generation = generationRef.current;
+    try {
+      await api.cancelTotpSetup(enrollment.enrollmentId);
+      if (isStale(generation)) return;
+      setPassword("");
+      setEnrollment(null);
+      setCode("");
+      setRecovery(null);
+      setStage("idle");
+      setNotice(TOTP_TEXT.cancelled);
+    } catch (caught) {
+      if (isStale(generation)) return;
+      if (isUnauthorizedError(caught)) { invalidateSession(); return; }
+      setError(messageFor(caught));
+    } finally {
+      busyRef.current = false;
+      if (!isStale(generation)) setBusy(false);
+    }
+  }
+
+  return (
+    <section aria-label="Zwei-Faktor-Einrichtung">
+      <h2>TOTP-Einrichtung</h2>
+      {notice !== null ? <p role="status">{notice}</p> : null}
+      {stage === "idle" ? (
+        <div>
+          <p>Die Einrichtung ist freiwillig und kann jederzeit abgebrochen werden.</p>
+          <button type="button" onClick={() => { setError(null); setNotice(null); setStage("password"); }}>TOTP einrichten</button>
+          {error !== null ? <p role="alert">{error}</p> : null}
+        </div>
+      ) : null}
+      {stage === "password" ? (
+        <form onSubmit={(event) => void handleStart(event)} noValidate>
+          <p>Bitte das Passwort erneut eingeben. Es wird nur für diesen Schritt verwendet und nicht gespeichert.</p>
+          <label htmlFor="totp-setup-password">Passwort</label>
+          <input id="totp-setup-password" name="password" type="password" autoComplete="current-password"
+            value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy} />
+          <button type="submit" disabled={busy}>Weiter</button>
+          <button type="button" onClick={closeSetup} disabled={busy}>Abbrechen</button>
+          {error !== null ? <p role="alert">{error}</p> : null}
+        </form>
+      ) : null}
+      {stage === "enrolling" && enrollment !== null ? (
+        <div>
+          <p>Bitte das Geheimnis manuell in der Authenticator-App eintragen. Es gilt nur für diese Einrichtung.</p>
+          <dl>
+            <dt>Aussteller</dt><dd>GT-Ads</dd>
+            <dt>Geheimnis (Base32)</dt><dd><code>{enrollment.secret}</code></dd>
+            <dt>Stellen</dt><dd>6</dd>
+            <dt>Intervall</dt><dd>30 Sekunden</dd>
+          </dl>
+          <form onSubmit={(event) => void handleConfirm(event)} noValidate>
+            <label htmlFor="totp-setup-code">Erster Code (6 Ziffern)</label>
+            <input id="totp-setup-code" name="totp_code" type="text" inputMode="numeric"
+              autoComplete="one-time-code" maxLength={6} value={code}
+              onChange={(event) => setCode(event.target.value)} disabled={busy} />
+            <button type="submit" disabled={busy}>Bestätigen</button>
+          </form>
+          <button type="button" onClick={() => void handleCancel()} disabled={busy}>Einrichtung abbrechen</button>
+          {error !== null ? <p role="alert">{error}</p> : null}
+        </div>
+      ) : null}
+      {stage === "active" && recovery !== null ? (
+        <div>
+          <p role="status">MFA ist aktiv.</p>
+          <RecoveryCodeSetView codeSet={recovery} closeLabel="Fertig" onClose={closeSetup} />
+        </div>
+      ) : null}
     </section>
   );
 }

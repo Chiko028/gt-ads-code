@@ -1,4 +1,4 @@
-import { AdminShell } from "./admin/AdminShell";
+import { AdminShell, TotpSetupScreen } from "./admin/AdminShell";
 import type { FetchLike } from "./admin/adminApi";
 import { CampaignPage } from "./campaigns/CampaignPage";
 import type { FleetTransport } from "./fleet/fleetApi";
@@ -38,6 +38,7 @@ export function App({
 }: AppProps = {}) {
   return (
     <AdminShell fetchImpl={fetchImpl}>
+      <TotpSetupScreen />
       <NavigationFrame
         taxiPage={
           <FleetPage fetchImpl={fetchImpl} transport={fleetTransport} />

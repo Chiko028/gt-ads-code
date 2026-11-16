@@ -48,6 +48,17 @@ export interface RecoveryCodeSet {
   readonly createdAt: string;
 }
 
+/**
+ * Startantwort der TOTP-Einrichtung (CX-107). Das Base32-Geheimnis ist der
+ * einzige manuell uebertragbare Wert; es lebt nur im fluechtigen Zustand
+ * des Aufrufers.
+ */
+export interface TotpSetupStart {
+  readonly enrollmentId: string;
+  readonly expiresAt: string;
+  readonly secret: string;
+}
+
 export interface AdminDevice {
   id: string;
   label: string | null;
@@ -136,6 +147,15 @@ export interface AdminApi {
   listRegistrationCodes(): Promise<RegistrationCode[]>;
   createRegistrationCode(label?: string): Promise<CreatedRegistrationCode>;
   revokeRegistrationCode(id: string): Promise<void>;
+  /** CX-107: beginnt die Einrichtung nach erneuter Passwortpruefung. */
+  beginTotpSetup(password: string): Promise<TotpSetupStart>;
+  /** CX-108: bestaetigt die Einrichtung und liefert einmalige Codes. */
+  confirmTotpSetup(
+    enrollmentId: string,
+    code: string,
+  ): Promise<RecoveryCodeSet>;
+  /** CX-109: verwirft eine ausstehende Einrichtung (idempotent). */
+  cancelTotpSetup(enrollmentId: string): Promise<void>;
   /** Zweiter Faktor TOTP; ersetzt nur die Vorsitzung, kein neues Passwort. */
   verifyTotpCode(totpCode: string): Promise<void>;
   /** Wiederherstellungscode als Ersatz fuer den zweiten Faktor. */
@@ -332,6 +352,22 @@ function parseRecoveryCodeSet(value: unknown): RecoveryCodeSet {
     codes.push(code);
   }
   return { codes, createdAt: body.created_at };
+}
+
+function parseTotpSetupStart(value: unknown): TotpSetupStart {
+  const body = recordOf(value);
+  const enrollmentId = body === null ? null : stringField(body, "enrollment_id");
+  const expiresAt = body === null ? null : stringField(body, "expires_at");
+  const secret = body === null ? null : stringField(body, "secret");
+  if (body === null || enrollmentId === null || expiresAt === null || !secret) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  return { enrollmentId, expiresAt, secret };
+}
+
+function parseTotpConfirmation(value: unknown): RecoveryCodeSet {
+  const body = recordOf(value);
+  return parseRecoveryCodeSet({ codes: body?.codes, created_at: body?.activated_at });
 }
 
 function parseLoginResult(value: unknown): AdminLoginResult {
@@ -684,6 +720,23 @@ export function createAdminApi(options: CreateAdminApiOptions = {}): AdminApi {
         undefined,
         true,
       );
+    },
+
+    async beginTotpSetup(password: string): Promise<TotpSetupStart> {
+      const response = await request("/admin/mfa/totp/setup", "POST", { password }, false);
+      return parseTotpSetupStart(await readJson(response));
+    },
+
+    async confirmTotpSetup(enrollmentId: string, code: string): Promise<RecoveryCodeSet> {
+      // Ein falscher Code antwortet mit 401 und ist hier kein Sitzungsende.
+      const response = await request(
+        "/admin/mfa/totp/setup/confirm", "POST", { enrollment_id: enrollmentId, code }, false,
+      );
+      return parseTotpConfirmation(await readJson(response));
+    },
+
+    async cancelTotpSetup(enrollmentId: string): Promise<void> {
+      await request("/admin/mfa/totp/setup/" + encodeURIComponent(enrollmentId), "DELETE", undefined, true);
     },
 
     async verifyTotpCode(totpCode: string): Promise<void> {
