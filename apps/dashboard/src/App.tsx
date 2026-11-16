@@ -6,6 +6,8 @@ import { FleetPage } from "./fleet/FleetPage";
 import { MediaPage } from "./media/MediaPage";
 import type { UploadTransport } from "./media/uploadTransport";
 import { NavigationFrame } from "./navigation/NavigationFrame";
+import type { OperationsClient } from "./operations/operationsApi";
+import { OperationsPage } from "./operations/OperationsPage";
 import { PlayoutPreviewPage } from "./playout/PlayoutPreviewPage";
 import type { StatisticsClient } from "./statistics/statisticsApi";
 import { StatisticsPage } from "./statistics/StatisticsPage";
@@ -28,6 +30,11 @@ export interface AppProps {
    * Fetch-Client mit derselben Cookie-Sitzung verwendet.
    */
   readonly statisticsClient?: StatisticsClient;
+  /**
+   * Injizierbarer lesender Betriebsclient (CX-062/R-703). Ohne Angabe wird
+   * der vorhandene Fetch-Client mit derselben Cookie-Sitzung verwendet.
+   */
+  readonly operationsClient?: OperationsClient;
 }
 
 export function App({
@@ -35,6 +42,7 @@ export function App({
   uploadTransport,
   fleetTransport,
   statisticsClient,
+  operationsClient,
 }: AppProps = {}) {
   return (
     <AdminShell fetchImpl={fetchImpl}>
@@ -58,6 +66,9 @@ export function App({
         }
         statisticPage={
           <StatisticsPage client={statisticsClient} fetchImpl={fetchImpl} />
+        }
+        operationsPage={
+          <OperationsPage client={operationsClient} fetchImpl={fetchImpl} />
         }
       />
     </AdminShell>

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { useOptionalAdminSession } from "../admin/AdminShell";
 import { DevicesPanel } from "../devices/DevicesPanel";
 import { UsersPanel } from "../users/UsersPanel";
 import { DASHBOARD_ROUTES } from "./routes";
@@ -34,6 +35,12 @@ export interface NavigationFrameProps {
    * der klar gekennzeichnete Platzhalter gerendert.
    */
   readonly statisticPage?: ReactNode;
+  /**
+   * Austauschbarer Seitenplatz fuer #/betrieb (CX-062). Ohne Angabe wird
+   * der klar gekennzeichnete Platzhalter gerendert; in der App wird die
+   * lesende Betriebsseite eingebunden.
+   */
+  readonly operationsPage?: ReactNode;
 }
 
 function NotFoundPage() {
@@ -55,6 +62,7 @@ function pageFor(
   campaignPage: ReactNode | undefined,
   previewPage: ReactNode | undefined,
   statisticPage: ReactNode | undefined,
+  operationsPage: ReactNode | undefined,
 ) {
   if (match.kind === "not_found") {
     return <NotFoundPage />;
@@ -88,6 +96,12 @@ function pageFor(
       ) : (
         statisticPage
       );
+    case "betrieb":
+      return operationsPage === undefined ? (
+        <UnavailablePage title="Betrieb" />
+      ) : (
+        operationsPage
+      );
     case "benutzer":
       return <UsersPanel />;
     default:
@@ -100,6 +114,10 @@ function pageFor(
  * besteht aus nativen Hashlinks; der aktive Eintrag ist per aria-current
  * markiert. Der Rahmen liegt im main-Bereich der AdminShell und bringt je
  * Seite eine sichtbare Ueberschrift mit.
+ *
+ * Der Eintrag Betrieb ist eine reine Admin-Ansicht und wird fuer Operatoren
+ * ausgeblendet; ein direkter Hashaufruf bleibt trotzdem durch die
+ * serverseitige Berechtigung und die Seitenpruefung gesperrt.
  */
 export function NavigationFrame({
   taxiPage,
@@ -107,15 +125,21 @@ export function NavigationFrame({
   campaignPage,
   previewPage,
   statisticPage,
+  operationsPage,
 }: NavigationFrameProps = {}) {
   const match = useHashRoute();
+  const session = useOptionalAdminSession();
+  const showOperations = session === null || session.role === "Admin";
+  const visibleRoutes = DASHBOARD_ROUTES.filter(
+    (route) => route.id !== "betrieb" || showOperations,
+  );
   const activeRouteId = match.kind === "route" ? match.route.id : null;
 
   return (
     <>
       <nav aria-label="Hauptnavigation">
         <ul>
-          {DASHBOARD_ROUTES.map((route) => {
+          {visibleRoutes.map((route) => {
             const active = route.id === activeRouteId;
             return (
               <li key={route.id}>
@@ -137,6 +161,7 @@ export function NavigationFrame({
         campaignPage,
         previewPage,
         statisticPage,
+        operationsPage,
       )}
     </>
   );

@@ -155,7 +155,7 @@ const NAV_LABELS = [
   "Betrieb",
 ];
 
-const PLACEHOLDER_LABELS = ["Status", "Bedienung", "Betrieb"];
+const PLACEHOLDER_LABELS = ["Status", "Bedienung"];
 
 describe("CX-034 Dashboard-Navigation", () => {
   it("bedient alle Navigationsziele, Direktaufruf per Hash, Zurück/Vorwärts und unbekannte Adressen", async () => {
@@ -342,5 +342,17 @@ describe("CX-034 Dashboard-Navigation", () => {
       within(usersRegion).getByRole("button", { name: "Aktualisieren" }),
     ).toBeTruthy();
     expect(within(usersRegion).queryByText("Noch nicht verfügbar")).toBeNull();
+
+    // Betrieb ist ebenfalls kein Platzhalter mehr, sondern die echte
+    // lesende Betriebsseite mit reinem Aktualisieren.
+    await user.click(within(nav).getByRole("link", { name: "Betrieb" }));
+    await screen.findByRole("heading", { name: "Betrieb" });
+    const operationsRegion = screen.getByRole("region", { name: "Betrieb" });
+    expect(
+      within(operationsRegion).getByRole("button", { name: "Aktualisieren" }),
+    ).toBeTruthy();
+    expect(
+      within(operationsRegion).queryByText("Noch nicht verfügbar"),
+    ).toBeNull();
   });
 });
