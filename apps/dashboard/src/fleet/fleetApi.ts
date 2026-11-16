@@ -23,6 +23,9 @@ export const FLEET_PATHS = {
     "/admin/taxis/" + encodeURIComponent(id) + "/tablets",
   taxiActivation: (id: string) =>
     "/admin/taxis/" + encodeURIComponent(id) + "/activation",
+  /** CX-119: vollstaendige Gruppenzuordnung genau eines Taxis. */
+  taxiGroups: (id: string) =>
+    "/admin/taxis/" + encodeURIComponent(id) + "/groups",
   playoutPreview: (id: string) =>
     "/admin/taxis/" +
     encodeURIComponent(id) +
@@ -106,6 +109,13 @@ export interface TaxiPatch {
   readonly revision: number;
 }
 
+/** CX-119: serverbestaetigte Gruppenmenge und Revision eines Taxis. */
+export interface TaxiGroupMembership {
+  readonly taxiId: string;
+  readonly groupIds: readonly string[];
+  readonly revision: number;
+}
+
 export interface InventoryPatch {
   readonly serialNumber: string | null;
   readonly deviceType: string | null;
@@ -140,6 +150,16 @@ export interface FleetClient {
   ): Promise<FleetTaxi>;
   listGroups(): Promise<FleetGroup[]>;
   createGroup(name: string): Promise<FleetGroup>;
+  /**
+   * CX-119: ersetzt die vollstaendige Gruppenmenge eines Taxis in genau
+   * einem atomaren Schreibvorgang. Es gibt keine Hinzufuegen-/Entfernen-
+   * Aufrufe und keine automatische Wiederholung.
+   */
+  replaceTaxiGroupMemberships(
+    id: string,
+    groupIds: readonly string[],
+    revision: number,
+  ): Promise<TaxiGroupMembership>;
   renameGroup(id: string, name: string, revision: number): Promise<FleetGroup>;
   listTablets(): Promise<FleetTablet[]>;
   listInventory(): Promise<FleetInventoryItem[]>;
@@ -324,6 +344,18 @@ function parseTaxiList(value: unknown): FleetTaxi[] {
     throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
   }
   return body.items.map(parseTaxi);
+}
+
+function parseTaxiGroupMembership(value: unknown): TaxiGroupMembership {
+  const item = recordOf(value);
+  if (item === null) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  return {
+    taxiId: requiredString(item, ["taxi_id", "taxiId"]),
+    groupIds: stringArray(item.group_ids ?? item.groupIds),
+    revision: revisionOf(item),
+  };
 }
 
 function parseGroup(value: unknown): FleetGroup {
@@ -610,6 +642,22 @@ export function createFleetClient(
 
     async listGroups(): Promise<FleetGroup[]> {
       return parseGroupList(await request(FLEET_PATHS.groups, "GET"));
+    },
+
+    async replaceTaxiGroupMemberships(
+      id: string,
+      groupIds: readonly string[],
+      revision: number,
+    ): Promise<TaxiGroupMembership> {
+      // Kennungen bleiben eindeutig; die Reihenfolge der bestehenden
+      // Zuordnung bleibt erhalten, die neue Gruppe wird hinten angehaengt.
+      const unique = [...new Set(groupIds)];
+      return parseTaxiGroupMembership(
+        await request(FLEET_PATHS.taxiGroups(id), "PUT", {
+          group_ids: unique,
+          revision,
+        }),
+      );
     },
 
     async createGroup(name: string): Promise<FleetGroup> {

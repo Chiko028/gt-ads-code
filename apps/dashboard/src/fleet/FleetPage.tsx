@@ -41,6 +41,7 @@ const ACTIVATION_PAIR_MESSAGE =
 const INVENTORY_SAVED = "Inventardaten gespeichert.";
 const TAXI_SAVED = "Taxi gespeichert.";
 const GROUP_SAVED = "Gruppe gespeichert.";
+const MEMBERSHIP_SAVED = "Gruppenzuordnung gespeichert.";
 const TABLET_DEACTIVATION_CONFIRMED = "Tablet-Deaktivierung bestätigt.";
 
 /**
@@ -169,6 +170,15 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
    */
   const [renameConflict, setRenameConflict] = useState(false);
   const groupBusyRef = useRef(false);
+
+  /** CX-137: lokaler Entwurf der Taxizugehoerigkeit einer Gruppe. */
+  const [membershipGroupId, setMembershipGroupId] = useState<string | null>(
+    null,
+  );
+  const [membershipDraft, setMembershipDraft] = useState<readonly string[]>([]);
+  const [membershipBusy, setMembershipBusy] = useState(false);
+  const [membershipConflict, setMembershipConflict] = useState(false);
+  const membershipBusyRef = useRef(false);
 
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const taxiFormRef = useRef<TaxiFormState | null>(null);
@@ -713,6 +723,138 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     void loadAll(generation);
   }
 
+  function startMembershipEdit(group: FleetGroup): void {
+    if (membershipBusyRef.current || unclearWriteRef.current) {
+      return;
+    }
+    // Die bekannte vollstaendige Gruppenmenge der Taxis ist die Basis des
+    // Entwurfs. Nicht geladene Zuordnungen werden nie stillschweigend
+    // entfernt.
+    const selected = (taxis ?? [])
+      .filter((taxi) => taxi.groupIds.includes(group.id))
+      .map((taxi) => taxi.id);
+    setMembershipGroupId(group.id);
+    setMembershipDraft(selected);
+    setMembershipConflict(false);
+    setActionError(null);
+    setNotice(null);
+  }
+
+  function toggleMembershipTaxi(taxiId: string): void {
+    setMembershipDraft((current) =>
+      current.includes(taxiId)
+        ? current.filter((id) => id !== taxiId)
+        : [...current, taxiId],
+    );
+  }
+
+  function closeMembershipEdit(): void {
+    if (membershipBusyRef.current) {
+      return;
+    }
+    setMembershipGroupId(null);
+    setMembershipDraft([]);
+    setMembershipConflict(false);
+  }
+
+  function reloadMembershipAfterConflict(): void {
+    // Nur ein ausdrueckliches Nachladen loest den Konflikt; es wird nicht
+    // automatisch erneut geschrieben.
+    setMembershipConflict(false);
+    setActionError(null);
+    closeMembershipEdit();
+    void loadAll(generationRef.current);
+  }
+
+  async function handleMembershipSave(
+    event: FormEvent<HTMLFormElement>,
+  ): Promise<void> {
+    event.preventDefault();
+    const group =
+      membershipGroupId === null
+        ? null
+        : (groups ?? []).find((item) => item.id === membershipGroupId) ??
+          null;
+    if (
+      group === null ||
+      taxis === null ||
+      groups === null ||
+      membershipBusyRef.current ||
+      unclearWriteRef.current ||
+      membershipConflict
+    ) {
+      return;
+    }
+    const draft = new Set(membershipDraft);
+    const changed = taxis.filter(
+      (taxi) => draft.has(taxi.id) !== taxi.groupIds.includes(group.id),
+    );
+    // Unveraenderte Auswahl erzeugt keinen Schreibrequest.
+    if (changed.length === 0) {
+      return;
+    }
+    const generation = generationRef.current;
+    membershipBusyRef.current = true;
+    setMembershipBusy(true);
+    setActionError(null);
+    setNotice(null);
+    try {
+      for (const taxi of changed) {
+        // Die vollstaendige, bekannte Zuordnung des Taxis ist die Basis;
+        // andere Gruppen bleiben erhalten. Set hält Kennungen eindeutig.
+        const nextGroupIds = draft.has(taxi.id)
+          ? [...taxi.groupIds.filter((id) => id !== group.id), group.id]
+          : taxi.groupIds.filter((id) => id !== group.id);
+        const saved = await client.replaceTaxiGroupMemberships(
+          taxi.id,
+          [...new Set(nextGroupIds)],
+          taxi.revision,
+        );
+        if (!isAlive(generation)) {
+          return;
+        }
+        setTaxis((current) =>
+          (current ?? []).map((item) =>
+            item.id === saved.taxiId
+              ? {
+                  ...item,
+                  groupIds: [...saved.groupIds],
+                  revision: saved.revision,
+                }
+              : item,
+          ),
+        );
+      }
+      if (isAlive(generation)) {
+        setNotice(MEMBERSHIP_SAVED);
+      }
+    } catch (error) {
+      if (!isAlive(generation)) {
+        return;
+      }
+      if (isUnauthorizedError(error)) {
+        return;
+      }
+      if (isFleetConflict(error)) {
+        // Bestaetigte Zugehoerigkeiten bleiben unveraendert; der lokale
+        // Entwurf bleibt fuer eine bewusste Korrektur erhalten.
+        setMembershipConflict(true);
+        setActionError(CONFLICT_MESSAGE);
+        return;
+      }
+      if (isUnclearWriteOutcome(error)) {
+        lockUnclearWrite();
+        return;
+      }
+      setActionError(messageFor(error));
+    } finally {
+      membershipBusyRef.current = false;
+      if (isAlive(generation)) {
+        setMembershipBusy(false);
+      }
+    }
+  }
+
   function startInventoryEdit(item: FleetInventoryItem): void {
     // Waehrend eines laufenden Inventarschreibvorgangs und solange ein
     // Ausgang unklar ist, darf das bearbeitete Geraet nicht wechseln.
@@ -944,6 +1086,27 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   const confirmedPairComplete =
     confirmedTaxi !== null &&
     hasCompletePair(confirmedTaxi.tabletIds[0], confirmedTaxi.tabletIds[1]);
+
+  const membershipGroup =
+    membershipGroupId === null
+      ? null
+      : (groups ?? []).find((group) => group.id === membershipGroupId) ??
+        null;
+  // Ohne vollstaendig geladene Taxi- und Gruppenliste ist die Basis
+  // unbekannt; dann bleibt Speichern gesperrt.
+  const membershipBaseReady =
+    membershipGroup !== null &&
+    taxis !== null &&
+    groups !== null &&
+    loadError === null;
+  const membershipChanges =
+    membershipGroup === null || taxis === null
+      ? []
+      : taxis.filter(
+          (taxi) =>
+            membershipDraft.includes(taxi.id) !==
+            taxi.groupIds.includes(membershipGroup.id),
+        );
 
   function groupNames(ids: readonly string[]): string {
     if (ids.length === 0) {
@@ -1301,11 +1464,76 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                         Umbenennen
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => startMembershipEdit(group)}
+                      disabled={
+                        groupBusy || unclearWrite || membershipBusy
+                      }
+                    >
+                      Taxis zuordnen
+                    </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        ) : null}
+
+        {membershipGroup !== null ? (
+          <section aria-label="Taxizugehörigkeit">
+            <h3>Taxis in Gruppe {membershipGroup.name}</h3>
+            {membershipBaseReady ? null : (
+              <p>Die vollständige Zuordnung ist noch nicht geladen.</p>
+            )}
+            <form
+              onSubmit={(event) => void handleMembershipSave(event)}
+              noValidate
+            >
+              {taxis !== null && taxis.length === 0 ? (
+                <p>Keine Taxis vorhanden.</p>
+              ) : null}
+              {(taxis ?? []).map((item) => (
+                <label key={item.id}>
+                  <input
+                    type="checkbox"
+                    checked={membershipDraft.includes(item.id)}
+                    disabled={membershipBusy || !membershipBaseReady}
+                    onChange={() => toggleMembershipTaxi(item.id)}
+                  />
+                  {item.displayName} ({item.id})
+                </label>
+              ))}
+              <button
+                type="submit"
+                disabled={
+                  membershipBusy ||
+                  unclearWrite ||
+                  membershipConflict ||
+                  !membershipBaseReady ||
+                  membershipChanges.length === 0
+                }
+              >
+                Zuordnung speichern
+              </button>
+              {membershipConflict ? (
+                <button
+                  type="button"
+                  disabled={membershipBusy || loading}
+                  onClick={reloadMembershipAfterConflict}
+                >
+                  Neu laden
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={closeMembershipEdit}
+                disabled={membershipBusy}
+              >
+                Abbrechen
+              </button>
+            </form>
+          </section>
         ) : null}
       </section>
 
