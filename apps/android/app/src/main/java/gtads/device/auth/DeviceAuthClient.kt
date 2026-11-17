@@ -15,7 +15,13 @@ import java.net.URL
 
 /** Ergebnis eines Geraete-HTTP-Aufrufs ohne Rohantworten in Fehlerfaellen. */
 internal sealed interface DeviceHttpResult {
-    class Response(val status: Int, val body: ByteArray, val etag: String?) : DeviceHttpResult
+    class Response(
+        val status: Int,
+        val body: ByteArray,
+        val etag: String?,
+        /** CX-087: Retry-After in Sekunden (nur numerische Form), sonst null. */
+        val retryAfterSeconds: Long? = null,
+    ) : DeviceHttpResult
     data object Timeout : DeviceHttpResult
     data object Network : DeviceHttpResult
     data object TooLarge : DeviceHttpResult
@@ -58,7 +64,8 @@ internal class DeviceHttp(
             val status = opened.responseCode
             stream = if (status in 200..299) opened.inputStream else opened.errorStream
             val body = readBounded(stream, maxBytes) ?: return DeviceHttpResult.TooLarge
-            return DeviceHttpResult.Response(status, body, opened.getHeaderField("ETag"))
+            val retryAfter = opened.getHeaderField("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it >= 0L }
+            return DeviceHttpResult.Response(status, body, opened.getHeaderField("ETag"), retryAfter)
         } catch (_: SocketTimeoutException) {
             return DeviceHttpResult.Timeout
         } catch (_: IOException) {

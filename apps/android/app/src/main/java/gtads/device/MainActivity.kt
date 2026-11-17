@@ -54,6 +54,8 @@ class MainActivity : Activity() {
     private var playbackView: View? = null
     private var gate: PlaybackStateCoordinator? = null
     private var reporter: StatusReporter? = null
+    /** CX-087: Befehlsabruf nur im sichtbaren Vordergrund. */
+    private var commands: gtads.device.control.CommandPollingLoop? = null
 
     private val listener: (RegistrationScreenState) -> Unit = { render(it) }
 
@@ -106,11 +108,20 @@ class MainActivity : Activity() {
         gate?.start()
         startPlayback()
         reporter?.start()
+        if (commands == null) {
+            commands = try {
+                gtads.device.control.ControlRuntime.loop(this)
+            } catch (_: Exception) {
+                null
+            }
+        }
+        commands?.start()
     }
 
     override fun onStop() {
         // Keine Wiedergabe, kein Timer und kein Reporter ausserhalb des
         // sichtbaren Vordergrunds.
+        commands?.stop()
         reporter?.stop()
         gate?.stop()
         stopPlayback()

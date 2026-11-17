@@ -37,6 +37,15 @@ class SyncWorker(
             deadlineMs = SystemClock.elapsedRealtime() + SyncCoordinator.MAX_RUN_MS,
             isCancelled = { isStopped },
         )
+        // CX-087: derselbe eindeutige Hintergrundauftrag ruft auch ausstehende
+        // Befehle ab und wiederholt Quittungen (best effort, ohne eigenes Intervall).
+        try {
+            gtads.device.control.ControlRuntime.poller(applicationContext)?.pollOnce()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Befehlsabruf beeinflusst das Synchronisierungsergebnis nicht.
+        }
         return try {
             when (coordinator.run()) {
                 SyncRunResult.Activated,
