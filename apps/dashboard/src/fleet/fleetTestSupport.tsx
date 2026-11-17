@@ -1,6 +1,6 @@
 import { render } from "@testing-library/react";
 
-import type { FetchLike } from "../admin/adminApi";
+import type { AdminSessionRole, FetchLike } from "../admin/adminApi";
 import { AdminShell } from "../admin/AdminShell";
 import type {
   FleetGroup,
@@ -87,9 +87,12 @@ export function shellFetch(): FetchLike {
   };
 }
 
-export function renderFleet(transport: FleetTransport) {
+export function renderFleet(
+  transport: FleetTransport,
+  role?: AdminSessionRole,
+) {
   return render(
-    <AdminShell fetchImpl={shellFetch()}>
+    <AdminShell fetchImpl={shellFetch()} role={role}>
       <FleetPage transport={transport} />
     </AdminShell>,
   );
@@ -199,6 +202,8 @@ export const PATHS = {
   groups: "/v1/admin/taxi-groups",
   group: (id: string) => "/v1/admin/taxi-groups/" + id,
   tablets: "/v1/admin/tablets",
+  tabletActivation: (id: string) =>
+    "/v1/admin/tablets/" + id + "/activation",
   inventory: "/v1/admin/inventory",
   inventoryItem: (id: string) => "/v1/admin/inventory/" + id,
 } as const;

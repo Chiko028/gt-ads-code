@@ -123,7 +123,7 @@ function hasCompletePair(
  * kommen aus der vorhandenen AdminShell.
  */
 export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
-  const { invalidateSession } = useAdminSession();
+  const { invalidateSession, role } = useAdminSession();
 
   const mountedRef = useRef(true);
   const generationRef = useRef(0);
@@ -158,6 +158,10 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   const taxiSavingRef = useRef(false);
   const pairingRef = useRef(false);
   const taxiActivatingRef = useRef(false);
+  const [tabletActivatingId, setTabletActivatingId] = useState<string | null>(
+    null,
+  );
+  const tabletActivatingRef = useRef(false);
 
   const [newGroupName, setNewGroupName] = useState("");
   const [groupBusy, setGroupBusy] = useState(false);
@@ -615,6 +619,70 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
       taxiActivatingRef.current = false;
       if (isAlive(generation)) {
         setTaxiActivating(false);
+      }
+    }
+  }
+
+  async function handleTabletActivation(tablet: FleetTablet): Promise<void> {
+    if (tabletActivatingRef.current || unclearWriteRef.current) {
+      return;
+    }
+    // Massgeblich ist der zuletzt geladene bestaetigte Zustand, nicht ein
+    // moeglicherweise veralteter Zeilenwert.
+    const confirmed =
+      (tablets ?? []).find((item) => item.id === tablet.id) ?? tablet;
+    const nextActive = !confirmed.active;
+    const generation = generationRef.current;
+    tabletActivatingRef.current = true;
+    setTabletActivatingId(confirmed.id);
+    setActionError(null);
+    setNotice(null);
+    try {
+      const saved = await client.setTabletActive(
+        confirmed.id,
+        nextActive,
+        confirmed.revision,
+      );
+      if (!isAlive(generation)) {
+        return;
+      }
+      // Nur das betroffene Tablet uebernimmt den bestaetigten Zustand; die
+      // uebrigen Zeilen bleiben unveraendert.
+      setTablets((current) =>
+        current === null
+          ? current
+          : current.map((item) =>
+              item.id === confirmed.id
+                ? {
+                    ...item,
+                    active: saved.active,
+                    revision: saved.revision,
+                  }
+                : item,
+            ),
+      );
+      setNotice(saved.active ? "Tablet aktiviert." : "Tablet deaktiviert.");
+    } catch (error) {
+      if (!isAlive(generation)) {
+        return;
+      }
+      if (isUnauthorizedError(error)) {
+        return;
+      }
+      if (isFleetConflict(error)) {
+        setActionError(CONFLICT_MESSAGE);
+        await loadAll(generation);
+        return;
+      }
+      if (isUnclearWriteOutcome(error)) {
+        lockUnclearWrite();
+        return;
+      }
+      setActionError(messageFor(error));
+    } finally {
+      tabletActivatingRef.current = false;
+      if (isAlive(generation)) {
+        setTabletActivatingId(null);
       }
     }
   }
@@ -1086,6 +1154,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   }
 
   const availableTablets = (tablets ?? []).filter((item) => item.available);
+  const canManageTablets = role === "Admin";
   const selectedInventory =
     selectedDeviceId === null
       ? null
@@ -1371,6 +1440,55 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         </section>
       ) : null}
 
+      </section>
+
+      <section aria-label="Tablets">
+        <h2>Tablets</h2>
+
+        {tablets !== null && tablets.length === 0 ? (
+          <p>Keine Tablets vorhanden.</p>
+        ) : null}
+
+        {tablets !== null && tablets.length > 0 ? (
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Kennung</th>
+                <th scope="col">Bezeichnung</th>
+                <th scope="col">Verfügbarkeit</th>
+                <th scope="col">Status</th>
+                <th scope="col">Aktion</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tablets.map((tablet) => (
+                <tr key={tablet.id}>
+                  <td>{tablet.id}</td>
+                  <td>{tablet.label ?? MISSING}</td>
+                  <td>{tablet.available ? "Verfügbar" : "Nicht verfügbar"}</td>
+                  <td>{tablet.active ? "Aktiv" : "Inaktiv"}</td>
+                  <td>
+                    {canManageTablets ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleTabletActivation(tablet)}
+                        disabled={
+                          tabletActivatingId !== null || unclearWrite
+                        }
+                      >
+                        {tablet.active
+                          ? "Tablet deaktivieren"
+                          : "Tablet aktivieren"}
+                      </button>
+                    ) : (
+                      <span>Keine Änderungsaktion verfügbar</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
       </section>
 
       <section aria-label="Gruppen">

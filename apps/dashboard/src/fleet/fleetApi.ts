@@ -33,6 +33,8 @@ export const FLEET_PATHS = {
   groups: "/admin/taxi-groups",
   group: (id: string) => "/admin/taxi-groups/" + encodeURIComponent(id),
   tablets: "/admin/tablets",
+  tabletActivation: (id: string) =>
+    "/admin/tablets/" + encodeURIComponent(id) + "/activation",
   inventory: "/admin/inventory",
   inventoryItem: (deviceId: string) =>
     "/admin/inventory/" + encodeURIComponent(deviceId),
@@ -119,6 +121,16 @@ export interface TaxiActivationResult {
   readonly revision: number;
 }
 
+/**
+ * CX-140: Die bestehende Tablet-Aktivierungsroute bestaetigt ausschliesslich
+ * den Zustand und die neue Revision. Das optionale Taxi der Antwort bleibt
+ * fuer diese Ansicht ohne Bedeutung.
+ */
+export interface TabletActivationResult {
+  readonly active: boolean;
+  readonly revision: number;
+}
+
 /** CX-119: serverbestaetigte Gruppenmenge und Revision eines Taxis. */
 export interface TaxiGroupMembership {
   readonly taxiId: string;
@@ -158,6 +170,11 @@ export interface FleetClient {
     active: boolean,
     revision: number,
   ): Promise<TaxiActivationResult>;
+  setTabletActive(
+    id: string,
+    active: boolean,
+    expectedRevision: number,
+  ): Promise<TabletActivationResult>;
   listGroups(): Promise<FleetGroup[]>;
   createGroup(name: string): Promise<FleetGroup>;
   /**
@@ -349,6 +366,18 @@ export function parseTaxi(value: unknown): FleetTaxi {
 }
 
 function parseTaxiActivation(value: unknown): TaxiActivationResult {
+  const item = recordOf(value);
+  if (item === null) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  const active = item.active;
+  if (typeof active !== "boolean") {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  return { active, revision: revisionOf(item) };
+}
+
+function parseTabletActivation(value: unknown): TabletActivationResult {
   const item = recordOf(value);
   if (item === null) {
     throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
@@ -658,6 +687,19 @@ export function createFleetClient(
         await request(FLEET_PATHS.taxiActivation(id), "POST", {
           active,
           revision,
+        }),
+      );
+    },
+
+    async setTabletActive(
+      id: string,
+      active: boolean,
+      expectedRevision: number,
+    ): Promise<TabletActivationResult> {
+      return parseTabletActivation(
+        await request(FLEET_PATHS.tabletActivation(id), "PATCH", {
+          active,
+          expectedRevision,
         }),
       );
     },
