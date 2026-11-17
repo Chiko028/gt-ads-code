@@ -573,13 +573,26 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
       if (!isAlive(generation)) {
         return;
       }
-      setTaxis((current) => upsertBy(current, saved, (item) => item.id));
-      setTaxiForm(fromTaxi(saved));
-      setPairFirst(saved.tabletIds[0]);
-      setPairSecond(saved.tabletIds[1]);
-      setNotice(
-        nextActive ? "Taxi aktiviert." : "Taxi deaktiviert.",
-      );
+      // Die Aktivierungsroute bestaetigt nur active und revision. Die
+      // uebrigen Felder stammen aus dem zuletzt bestaetigten Datensatz;
+      // es wird keine Zeile aus einer unvollstaendigen Antwort gebaut.
+      const merged: FleetTaxi | null =
+        confirmed === null
+          ? null
+          : {
+              ...confirmed,
+              active: saved.active,
+              revision: saved.revision,
+            };
+      if (merged === null) {
+        await loadAll(generation);
+        return;
+      }
+      setTaxis((current) => upsertBy(current, merged, (item) => item.id));
+      setTaxiForm(fromTaxi(merged));
+      setPairFirst(merged.tabletIds[0]);
+      setPairSecond(merged.tabletIds[1]);
+      setNotice(saved.active ? "Taxi aktiviert." : "Taxi deaktiviert.");
     } catch (error) {
       if (!isAlive(generation)) {
         return;

@@ -109,6 +109,16 @@ export interface TaxiPatch {
   readonly revision: number;
 }
 
+/**
+ * CX-139: Die bestehende Aktivierungsroute bestaetigt ausschliesslich den
+ * Zustand und die neue Revision. Weitere Taxifelder bleiben unveraendert und
+ * werden aus dem bereits bestaetigten Datensatz uebernommen.
+ */
+export interface TaxiActivationResult {
+  readonly active: boolean;
+  readonly revision: number;
+}
+
 /** CX-119: serverbestaetigte Gruppenmenge und Revision eines Taxis. */
 export interface TaxiGroupMembership {
   readonly taxiId: string;
@@ -147,7 +157,7 @@ export interface FleetClient {
     id: string,
     active: boolean,
     revision: number,
-  ): Promise<FleetTaxi>;
+  ): Promise<TaxiActivationResult>;
   listGroups(): Promise<FleetGroup[]>;
   createGroup(name: string): Promise<FleetGroup>;
   /**
@@ -336,6 +346,18 @@ export function parseTaxi(value: unknown): FleetTaxi {
     tabletIds: tabletIdsOf(item),
     groupIds: stringArray(item.group_ids ?? item.groupIds),
   };
+}
+
+function parseTaxiActivation(value: unknown): TaxiActivationResult {
+  const item = recordOf(value);
+  if (item === null) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  const active = item.active;
+  if (typeof active !== "boolean") {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  return { active, revision: revisionOf(item) };
 }
 
 function parseTaxiList(value: unknown): FleetTaxi[] {
@@ -631,8 +653,8 @@ export function createFleetClient(
       id: string,
       active: boolean,
       revision: number,
-    ): Promise<FleetTaxi> {
-      return parseTaxi(
+    ): Promise<TaxiActivationResult> {
+      return parseTaxiActivation(
         await request(FLEET_PATHS.taxiActivation(id), "POST", {
           active,
           revision,
