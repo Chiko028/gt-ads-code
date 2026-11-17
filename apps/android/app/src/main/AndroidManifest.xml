@@ -13,5 +13,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- CX-090 / R-907: Boot-Einstieg erst nach Entsperrung (nicht directBootAware);
+             plant Synchronisierung und oeffnet den normalen Startpfad, kein Foreground-Service. -->
+        <receiver
+            android:name="gtads.device.boot.BootReceiver"
+            android:directBootAware="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>
