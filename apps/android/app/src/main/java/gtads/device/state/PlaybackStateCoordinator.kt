@@ -9,6 +9,8 @@ data class GateDecision(
     val displayRequired: Boolean,
     val reason: DecisionReason,
     val transitions: Long,
+    /** CX-100: persistenter Pausenzustand noch nicht wiederhergestellt; Wiedergabe gesperrt. */
+    val restorePending: Boolean = false,
 )
 
 /** Abbrechbare Zeitplanung des Display-Nachlaufs. */
@@ -47,6 +49,8 @@ class PlaybackStateCoordinator(
     private val periodicIntervalMillis: Long = DEFAULT_PERIODIC_INTERVAL_MILLIS,
     private val wallClock: () -> java.time.Instant = java.time.Instant::now,
     private val newEventId: () -> String = { java.util.UUID.randomUUID().toString() },
+    /** CX-100: Initialisierungsbarriere; null = keine Pausenanbindung (bisheriges Verhalten). */
+    private val pauseRestore: PauseRestore? = null,
 ) {
     /** Einzige Serialisierungsgrenze fuer Zustandswechsel und periodische Berichte. */
     private val lock = Any()
@@ -84,6 +88,8 @@ class PlaybackStateCoordinator(
         if (started) return@synchronized
         started = true
         readiness.start(observer)
+        pauseRestore?.ensureLoaded()
+        pauseRestore?.retry()
         evaluate(notifyAlways = true)
         schedulePeriodic()
     }
@@ -165,11 +171,27 @@ class PlaybackStateCoordinator(
     }
 
     private fun evaluate(notifyAlways: Boolean) {
+        val restore = pauseRestore?.state()
+        if (restore != null && restore !is PauseRestoreState.Loaded) {
+            // Barriere geschlossen: keine Auswertung, kein Pufferereignis, kein Start.
+            if (restore is PauseRestoreState.Failed) report("pausenspeicher_lesefehler")
+            val blocked = GateDecision(
+                playbackAllowed = false,
+                displayRequired = true,
+                reason = DecisionReason.PAUSED,
+                transitions = lastDecision?.transitions ?: 0L,
+                restorePending = true,
+            )
+            val previous = lastDecision
+            lastDecision = blocked
+            if (notifyAlways || previous != blocked) onDecision(blocked)
+            return
+        }
         val vehicle = readiness.current()
         val snapshot = machine.evaluate(
             StateInput(
                 vehicle = vehicle,
-                pauseActive = false,
+                pauseActive = (restore as? PauseRestoreState.Loaded)?.paused ?: false,
                 content = content(),
                 player = player(),
             ),

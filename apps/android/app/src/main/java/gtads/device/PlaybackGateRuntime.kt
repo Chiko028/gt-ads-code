@@ -67,6 +67,20 @@ object PlaybackGateRuntime {
     ): PlaybackStateCoordinator {
         val readiness: ReadinessSource = PowerConnectionReadinessSource(context)
         val snapshots = PlaybackRuntime.snapshotProvider(context)
+        // CX-100: Barriere bis der persistente Pausenzustand (CX-086) geladen ist.
+        var coordinator: PlaybackStateCoordinator? = null
+        val mainHandler = Handler(Looper.getMainLooper())
+        val restore = gtads.device.state.PauseRestore(
+            read = {
+                gtads.device.control.DeviceControlStore(context.applicationContext).use { store ->
+                    gtads.device.control.ControlStateAdapter(store).current().paused
+                }
+            },
+            // Kleiner lokaler Lesezugriff direkt im Lifecycle-Start: kein Zwischenzustand
+            // ohne geladenen Pausenstand; bei Lesefehler bleibt die Barriere geschlossen.
+            execute = { work -> work() },
+            onChange = { mainHandler.post { coordinator?.refresh() } },
+        )
         return PlaybackStateCoordinator(
             machine = PlaybackStateMachine(StateMachineConfig()),
             readiness = readiness,
@@ -79,7 +93,8 @@ object PlaybackGateRuntime {
             schedule = { delay, action -> HandlerScheduledTask(delay, action) },
             onDecision = onDecision,
             periodicMark = gtads.device.state.SharedPreferencesPeriodicStatusMark(context),
-        )
+            pauseRestore = restore,
+        ).also { coordinator = it }
     }
 
     private fun createRecorder(context: Context): StateChangeRecorder? {
