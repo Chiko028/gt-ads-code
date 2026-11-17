@@ -8,6 +8,7 @@ import gtads.device.manifest.ManifestLoad
 import gtads.device.manifest.ManifestRepository
 import gtads.device.manifest.VerifiedManifestState
 import gtads.device.manifest.VerifiedMedia
+import java.io.File
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -87,7 +88,7 @@ class SyncCoordinatorTest {
             ),
             FailureCase(
                 name = "Netzwerkabbruch beim Download",
-                download = { MediaDownloadResult.Retryable },
+                download = { _, _ -> MediaDownloadResult.Retryable },
                 expected = SyncRunResult.Transient,
             ),
         )
@@ -99,7 +100,7 @@ class SyncCoordinatorTest {
                 val previousMedia = local.mediaOf(previous).single()
                 local.writeMedia(previousMedia, previousBytes)
                 val repository = local.repository()
-                assertTrue(repository.activate(previous.manifest, previous.etag) is ManifestActivation.Activated)
+                assertTrue(repository.activate(previous.manifest, previous.etag, repository.beginRun()!!) is ManifestActivation.Activated)
                 val previousSha = repository.active()!!.artifactSha256
 
                 val next = local.state(nextBytes)
@@ -151,7 +152,7 @@ class SyncCoordinatorTest {
     private class FailureCase(
         val name: String,
         val fetch: ((VerifiedManifestState?) -> ManifestFetchResult)? = null,
-        val download: ((VerifiedMedia) -> MediaDownloadResult)? = null,
+        val download: ((File, VerifiedMedia) -> MediaDownloadResult)? = null,
         val freeSpace: Long = 10L * 1024L * 1024L * 1024L,
         val expected: SyncRunResult,
     )

@@ -41,6 +41,7 @@ class SyncWorker(
             when (coordinator.run()) {
                 SyncRunResult.Activated,
                 SyncRunResult.Unchanged,
+                SyncRunResult.Superseded,
                 SyncRunResult.Busy,
                 SyncRunResult.AuthenticationBlocked -> Result.success()
                 SyncRunResult.Transient,

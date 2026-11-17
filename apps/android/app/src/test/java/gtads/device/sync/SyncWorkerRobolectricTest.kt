@@ -78,7 +78,7 @@ class SyncWorkerRobolectricTest {
         val previousMedia = fixture.mediaOf(previous).single()
         fixture.writeMedia(previousMedia, previousBytes)
         val repository = fixture.repository()
-        assertTrue(repository.activate(previous.manifest, previous.etag) is ManifestActivation.Activated)
+        assertTrue(repository.activate(previous.manifest, previous.etag, repository.beginRun()!!) is ManifestActivation.Activated)
         val previousSha = repository.active()!!.artifactSha256
 
         val nextBytes = "SYN-worker-next".toByteArray()

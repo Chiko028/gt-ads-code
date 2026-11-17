@@ -10,6 +10,9 @@ import gtads.device.manifest.ManifestStoreFailure
 import gtads.device.manifest.VerifiedManifestState
 import gtads.device.manifest.VerifiedMedia
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.concurrent.CancellationException
 import java.util.concurrent.locks.ReentrantLock
@@ -20,15 +23,18 @@ import java.util.concurrent.locks.ReentrantLock
  * (atomare Aktivierung). Es gibt keine eigene Registrierung, Identitaet,
  * Manifestpruefung oder Downloadlogik.
  *
- * Alle tatsaechlichen Laeufe sind im Prozess ueber eine nicht blockierende
- * Sperre serialisiert. Fehler lassen den bisherigen aktiven Stand unveraendert.
+ * Jeder Lauf erhaelt beim Start eine lokal persistente, monoton steigende
+ * Generation. Die vorhandene atomare Aktivierung prueft diese Generation
+ * unmittelbar vor dem Zeigerwechsel; ein ueberholter Lauf kann den aktiven
+ * Stand daher nicht mehr ersetzen. Temporaere Dateien liegen ausschliesslich
+ * im laufeigenen Verzeichnis und werden nur dort bereinigt.
  */
 class SyncCoordinator(
     private val repository: ManifestRepository,
     private val mediaDirectory: File,
     private val fetchManifest: (VerifiedManifestState?) -> ManifestFetchResult,
     private val grantUrl: (VerifiedMedia) -> String?,
-    private val downloadMedia: (String, VerifiedMedia) -> MediaDownloadResult,
+    private val downloadMedia: (File, String, VerifiedMedia) -> MediaDownloadResult,
     private val freeSpaceBytes: () -> Long,
     private val authState: SyncAuthState,
     private val nowMs: () -> Long,
@@ -37,12 +43,22 @@ class SyncCoordinator(
 ) {
     fun run(): SyncRunResult {
         if (!RUN_LOCK.tryLock()) return SyncRunResult.Busy
+        var ownedDirectory: File? = null
         try {
             if (authState.isSuspended()) return SyncRunResult.AuthenticationBlocked
+
+            // Die Generation wird vor jedem Abruf und Download persistiert. Ein
+            // spaeter startender Lauf erhoeht sie und entwertet damit jeden
+            // noch laufenden aelteren Lauf.
+            val generation = repository.beginRun() ?: return SyncRunResult.Failed(SyncFailure.STORAGE)
+
             val loaded = repository.load()
             if (loaded is ManifestLoad.Failed) return SyncRunResult.Failed(SyncFailure.INTEGRITY)
             val previous = (loaded as? ManifestLoad.Active)?.active
             val previousState = repository.verifiedState()
+            val runDirectory = prepareRunDirectory(generation)
+                ?: return SyncRunResult.Failed(SyncFailure.STORAGE)
+            ownedDirectory = runDirectory
 
             if (cancelled()) throw CancellationException("sync cancelled")
             if (deadlineReached()) return SyncRunResult.Incomplete
@@ -72,17 +88,20 @@ class SyncCoordinator(
                     if (cancelled()) throw CancellationException("sync cancelled")
                     if (deadlineReached()) return SyncRunResult.Incomplete
                     val target = MediaDownloader.targetFile(mediaDirectory, media)
+                    // Bereits hashgepruefte Medien werden unveraendert wiederverwendet.
                     if (isComplete(target, media)) continue
 
-                    val part = MediaDownloader.partFile(mediaDirectory, media)
+                    val part = MediaDownloader.partFile(runDirectory, media)
                     val reusable = if (part.isFile && part.length() in 0L..media.sizeBytes) part.length() else 0L
                     val stillNeeded = media.sizeBytes - reusable
                     if (stillNeeded > 0L && freeSpaceBytes() < stillNeeded + STORAGE_RESERVE_BYTES) {
                         return SyncRunResult.Failed(SyncFailure.STORAGE_FULL)
                     }
                     val url = grantUrl(media) ?: return SyncRunResult.Failed(SyncFailure.GRANT_UNAVAILABLE)
-                    when (val result = downloadMedia(url, media)) {
-                        is MediaDownloadResult.Completed -> Unit
+                    when (val result = downloadMedia(runDirectory, url, media)) {
+                        is MediaDownloadResult.Completed -> if (!adopt(result.file, media)) {
+                            return SyncRunResult.Failed(SyncFailure.INTEGRITY)
+                        }
                         MediaDownloadResult.GrantExpired -> {
                             grantExpired = true
                             break
@@ -116,13 +135,22 @@ class SyncCoordinator(
             }
 
             if (cancelled()) throw CancellationException("sync cancelled")
-            return when (val activation = repository.activate(candidate.manifest, candidate.etag)) {
+            return when (val activation = repository.activate(candidate.manifest, candidate.etag, generation)) {
                 is ManifestActivation.Activated -> SyncRunResult.Activated
                 ManifestActivation.Unchanged -> SyncRunResult.Unchanged
-                is ManifestActivation.Rejected -> SyncRunResult.Failed(map(activation.code))
+                is ManifestActivation.Rejected ->
+                    if (activation.code == ManifestStoreFailure.SUPERSEDED) {
+                        SyncRunResult.Superseded
+                    } else {
+                        SyncRunResult.Failed(map(activation.code))
+                    }
             }
         } finally {
-            RUN_LOCK.unlock()
+            try {
+                ownedDirectory?.let { cleanupRunDirectory(it) }
+            } finally {
+                RUN_LOCK.unlock()
+            }
         }
     }
 
@@ -134,6 +162,74 @@ class SyncCoordinator(
     private fun cancelled(): Boolean = isCancelled()
 
     private fun deadlineReached(): Boolean = nowMs() >= deadlineMs
+
+    /** Legt das ausschliesslich diesem Lauf gehoerende temporaere Verzeichnis an. */
+    private fun prepareRunDirectory(generation: Long): File? {
+        val directory = runDirectoryFor(mediaDirectory, generation)
+        if (directory.exists()) directory.deleteRecursively()
+        if (!mediaDirectory.isDirectory && !mediaDirectory.mkdirs()) return null
+        return if (directory.mkdirs()) directory else null
+    }
+
+    /**
+     * Uebernimmt eine vollstaendig gepruefte Datei in den hashadressierten
+     * Medienbestand. Bereits vorhandene, hashgepruefte Zieldateien bleiben
+     * unangetastet; die eigene Kopie wird dann nur verworfen.
+     */
+    private fun adopt(file: File, media: VerifiedMedia): Boolean {
+        val target = MediaDownloader.targetFile(mediaDirectory, media)
+        if (isComplete(target, media)) {
+            file.delete()
+            return true
+        }
+        if (!file.isFile || file.length() != media.sizeBytes) return false
+        val hash = try {
+            sha256(file)
+        } catch (_: Exception) {
+            return false
+        }
+        if (hash != media.sha256) return false
+        return try {
+            Files.move(
+                file.toPath(),
+                target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+            true
+        } catch (_: AtomicMoveNotSupportedException) {
+            try {
+                Files.move(file.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                true
+            } catch (_: Exception) {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Bereinigt ausschliesslich das laufeigene Verzeichnis. Ein bereits
+     * uebernommenes Medium liegt ausserhalb und bleibt ebenso erhalten wie die
+     * temporaeren Dateien anderer, noch laufender Generationen.
+     */
+    private fun cleanupRunDirectory(directory: File) {
+        val children = directory.listFiles() ?: return
+        for (child in children) {
+            if (child.isDirectory) continue
+            try {
+                child.delete()
+            } catch (_: Exception) {
+                // Best-effort: der naechste Lauf verwendet ein neues Verzeichnis.
+            }
+        }
+        try {
+            directory.delete()
+        } catch (_: Exception) {
+            // Best-effort.
+        }
+    }
 
     private fun isComplete(file: File, media: VerifiedMedia): Boolean {
         if (!file.isFile || file.length() != media.sizeBytes) return false
@@ -171,7 +267,11 @@ class SyncCoordinator(
         const val MAX_RUN_MS = 8L * 60L * 1000L
 
         private const val BUFFER_BYTES = 16 * 1024
+        private const val RUN_DIRECTORY_PREFIX = "sync-run-"
         private val RUN_LOCK = ReentrantLock()
+
+        /** Temporaeres Verzeichnis genau einer Generation, nie gemeinsam genutzt. */
+        internal fun runDirectoryFor(mediaDirectory: File, generation: Long): File =
+            File(mediaDirectory, "$RUN_DIRECTORY_PREFIX$generation")
     }
 }
-

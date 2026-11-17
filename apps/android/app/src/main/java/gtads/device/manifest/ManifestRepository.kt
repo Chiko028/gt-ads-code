@@ -35,6 +35,9 @@ enum class ManifestStoreFailure {
 
     /** Schreiben im privaten App-Speicher ist fehlgeschlagen; bisheriger Stand bleibt. */
     STORAGE,
+
+    /** Ein neuerer lokaler Lauf hat diese Generation ueberholt; der Zeiger bleibt unveraendert. */
+    SUPERSEDED,
 }
 
 /**
@@ -116,6 +119,13 @@ class ManifestRepository internal constructor(
 
     private val lock = Any()
     private val pointer = AtomicFile(File(storeDirectory, POINTER_FILE))
+
+    /**
+     * Lokal persistente, monoton steigende Generation derselben Geraete-/Serverbindung.
+     * Sie liegt im selben privaten Aktivierungsspeicher wie der Zeiger und wird
+     * atomar ersetzt, bevor ein Lauf Downloads beginnt.
+     */
+    private val generationFile = AtomicFile(File(storeDirectory, GENERATION_FILE))
     private val artifactDirectory = File(storeDirectory, ARTIFACT_DIRECTORY)
 
     @Volatile
@@ -123,6 +133,20 @@ class ManifestRepository internal constructor(
 
     /** Aktueller Schnappschuss oder null, solange kein gueltiger Stand geladen/aktiviert ist. */
     fun active(): ActiveManifest? = current
+
+    /**
+     * Vergibt beim Start eines Laufs die naechste lokale Generation. Der Wert
+     * wird vor dem ersten Abruf atomar persistiert; nach einer Wiedereroeffnung
+     * des Speichers zaehlt der persistierte Wert weiter. null bedeutet, dass die
+     * Generation nicht sicher fortgeschrieben werden konnte.
+     */
+    fun beginRun(): Long? = synchronized(lock) {
+        val previous = readGeneration() ?: return@synchronized null
+        if (previous >= Long.MAX_VALUE - 1L) return@synchronized null
+        val next = previous + 1L
+        if (!writeGeneration(next)) return@synchronized null
+        next
+    }
 
     /** Re-verifizierter aktiver Stand inklusive ETag fuer den naechsten bedingten Abruf. */
     fun verifiedState(): VerifiedManifestState? = synchronized(lock) {
@@ -168,10 +192,15 @@ class ManifestRepository internal constructor(
 
     /**
      * Aktiviert ein geprueftes Artefakt mit seinem ETag, sobald saemtliche
-     * referenzierten Medien vollstaendig vorliegen. Aktivierungen sind im
-     * App-Prozess serialisiert; jeder Fehler laesst den bisherigen Stand stehen.
+     * referenzierten Medien vollstaendig vorliegen. Vergleich der lokalen
+     * Generation und Zeigerwechsel liegen in derselben kritischen Sektion und
+     * derselben atomaren Zeigerersetzung; ein ueberholter Lauf schreibt nie.
      */
-    fun activate(manifest: ManifestVerification.Verified, etag: String): ManifestActivation = synchronized(lock) {
+    fun activate(
+        manifest: ManifestVerification.Verified,
+        etag: String,
+        generation: Long,
+    ): ManifestActivation = synchronized(lock) {
         if (!validEtag(etag)) return ManifestActivation.Rejected(ManifestStoreFailure.INVALID_INPUT)
         val bytes = manifest.bytes()
         val artifactSha256 = sha256Hex(bytes)
@@ -195,6 +224,14 @@ class ManifestRepository internal constructor(
             stream = pointer.startWrite()
             stream.write(record)
             beforePointerSwap()
+            // Die Generation wird unmittelbar vor dem atomaren Ersetzen des
+            // Zeigers erneut aus dem persistierten Speicher gelesen. Ein
+            // neuerer Lauf hat sie dann bereits erhoeht.
+            if (!isCurrentGeneration(generation)) {
+                pointer.failWrite(stream)
+                stream = null
+                return ManifestActivation.Rejected(ManifestStoreFailure.SUPERSEDED)
+            }
             pointer.finishWrite(stream)
             stream = null
         } catch (_: Exception) {
@@ -205,6 +242,37 @@ class ManifestRepository internal constructor(
         val snapshot = ActiveManifest(bytes, artifactSha256, etag, parsed)
         current = snapshot
         ManifestActivation.Activated(snapshot)
+    }
+
+    private fun isCurrentGeneration(generation: Long): Boolean =
+        generation > 0L && readGeneration() == generation
+
+    private fun readGeneration(): Long? {
+        val bytes = try {
+            generationFile.readFully()
+        } catch (_: java.io.FileNotFoundException) {
+            return 0L
+        } catch (_: Exception) {
+            return null
+        }
+        if (bytes.size > MAX_GENERATION_BYTES) return null
+        val text = String(bytes, Charsets.US_ASCII).trim()
+        if (text.isEmpty() || !text.all { it in '0'..'9' }) return null
+        return text.toLongOrNull()
+    }
+
+    private fun writeGeneration(value: Long): Boolean {
+        if (!storeDirectory.isDirectory && !storeDirectory.mkdirs()) return false
+        var stream: FileOutputStream? = null
+        return try {
+            stream = generationFile.startWrite()
+            stream.write(value.toString().toByteArray(Charsets.US_ASCII))
+            generationFile.finishWrite(stream)
+            true
+        } catch (_: Exception) {
+            stream?.let { generationFile.failWrite(it) }
+            false
+        }
     }
 
     /** Unveraenderliches, hashadressiertes Artefakt; vorhandene gueltige Datei bleibt unberuehrt. */
@@ -280,6 +348,8 @@ class ManifestRepository internal constructor(
         internal const val STORE_DIRECTORY = "manifest-store"
         private const val ARTIFACT_DIRECTORY = "artifacts"
         private const val POINTER_FILE = "active.json"
+        private const val GENERATION_FILE = "generation"
+        private const val MAX_GENERATION_BYTES = 32
         private const val POINTER_SCHEMA = 1
         private const val MAX_ARTIFACT_BYTES = 1_048_576L
         private const val MAX_POINTER_BYTES = 256 * 1024

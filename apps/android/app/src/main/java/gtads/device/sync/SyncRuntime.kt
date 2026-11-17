@@ -50,13 +50,14 @@ object SyncRuntime {
             trustedPublicKey = configuration.trustedManifestKey,
             expectedTaxiId = configuration.taxiId,
         )
-        val downloader = MediaDownloader(context, binding.baseUrl)
         return SyncDependencies(
             repository = ManifestRepository(context, configuration.trustedManifestKey, configuration.taxiId),
             mediaDirectory = java.io.File(context.filesDir, MediaDownloader.MEDIA_DIRECTORY),
             fetchManifest = fetcher::fetch,
             grantUrl = configuration.grantUrl,
-            downloadMedia = downloader::download,
+            downloadMedia = { directory, url, media ->
+                MediaDownloader(directory, binding.baseUrl).download(url, media)
+            },
             freeSpaceBytes = { context.filesDir.usableSpace },
             authState = SyncAuthGate(context),
             nowMs = SystemClock::elapsedRealtime,

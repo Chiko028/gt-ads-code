@@ -116,7 +116,7 @@ internal class FakeSyncTransport(
 ) {
     var candidate: VerifiedManifestState? = null
     var fetchOverride: ((VerifiedManifestState?) -> ManifestFetchResult)? = null
-    var downloadOverride: ((VerifiedMedia) -> MediaDownloadResult)? = null
+    var downloadOverride: ((File, VerifiedMedia) -> MediaDownloadResult)? = null
     var fetchCalls = 0
     var downloadCalls = 0
     val downloadedHashes = mutableListOf<String>()
@@ -134,12 +134,12 @@ internal class FakeSyncTransport(
         }
     }
 
-    fun download(url: String, media: VerifiedMedia): MediaDownloadResult {
+    fun download(directory: File, url: String, media: VerifiedMedia): MediaDownloadResult {
         downloadCalls++
         downloadedHashes.add(media.sha256)
-        downloadOverride?.let { return it(media) }
+        downloadOverride?.let { return it(directory, media) }
         val content = contents[media.sha256] ?: return MediaDownloadResult.Retryable
-        val target = MediaDownloader.targetFile(mediaDirectory, media)
+        val target = MediaDownloader.targetFile(directory, media)
         target.writeBytes(content)
         return MediaDownloadResult.Completed(target, media.sha256, content.size.toLong())
     }

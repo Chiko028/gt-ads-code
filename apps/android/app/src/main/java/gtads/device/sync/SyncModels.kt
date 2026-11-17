@@ -37,6 +37,9 @@ sealed interface SyncRunResult {
     /** Der aktive Stand ist bereits aktuell; es wurde nichts geladen. */
     data object Unchanged : SyncRunResult
 
+    /** Ein neuerer Lauf hat diese Generation ueberholt; der Zeiger wurde nicht geaendert. */
+    data object Superseded : SyncRunResult
+
     /** Ein anderer Lauf haelt die prozessweite Sperre; dieser Lauf tut nichts. */
     data object Busy : SyncRunResult
 
@@ -92,7 +95,7 @@ class SyncDependencies(
     val mediaDirectory: java.io.File,
     val fetchManifest: (VerifiedManifestState?) -> ManifestFetchResult,
     val grantUrl: (VerifiedMedia) -> String?,
-    val downloadMedia: (String, VerifiedMedia) -> MediaDownloadResult,
+    val downloadMedia: (java.io.File, String, VerifiedMedia) -> MediaDownloadResult,
     val freeSpaceBytes: () -> Long,
     val authState: SyncAuthState,
     val nowMs: () -> Long,

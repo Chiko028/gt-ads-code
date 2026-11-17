@@ -107,7 +107,7 @@ class ManifestRepositoryTest {
 
         val repository = repository()
         assertEquals(ManifestLoad.Empty, repository.load())
-        val result = repository.activate(candidate, "\"SYN-etag-1\"")
+        val result = repository.activate(candidate, "\"SYN-etag-1\"", repository.beginRun()!!)
         assertTrue(result is ManifestActivation.Activated)
         val snapshot = repository.active()!!
         assertSame((result as ManifestActivation.Activated).active, snapshot)
@@ -129,7 +129,7 @@ class ManifestRepositoryTest {
         assertEquals(listOf(first, second), reloaded.media.map { it.sha256 to it.sizeBytes })
 
         // Identisches Artefakt loest keine neue Aktivierung aus.
-        assertEquals(ManifestActivation.Unchanged, restarted.activate(candidate, "\"SYN-etag-2\""))
+        assertEquals(ManifestActivation.Unchanged, restarted.activate(candidate, "\"SYN-etag-2\"", restarted.beginRun()!!))
         assertEquals("\"SYN-etag-1\"", repository().let { it.load(); it.active()!!.etag })
     }
 
@@ -144,7 +144,7 @@ class ManifestRepositoryTest {
     fun failuresLeaveActiveStateUnchangedAndOrphansAreNeverActivated() {
         val base = manifest(putMedia("SYN-base".toByteArray()))
         val repository = repository()
-        assertTrue(repository.activate(base, "\"SYN-base\"") is ManifestActivation.Activated)
+        assertTrue(repository.activate(base, "\"SYN-base\"", repository.beginRun()!!) is ManifestActivation.Activated)
         val before = repository.active()!!
 
         val cases = listOf(
@@ -167,7 +167,7 @@ class ManifestRepositoryTest {
         for (case in cases) {
             val candidate = case.prepare()
             failBeforeSwap = case.injectBeforeSwap
-            val result = repository.activate(candidate, "\"SYN-${case.name.length}\"")
+            val result = repository.activate(candidate, "\"SYN-${case.name.length}\"", repository.beginRun()!!)
             failBeforeSwap = false
             assertEquals(case.name, ManifestActivation.Rejected(case.expected), result)
             assertSame(case.name, before, repository.active())
