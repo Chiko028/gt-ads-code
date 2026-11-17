@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { useOptionalAdminSession } from "../admin/AdminShell";
 import { DevicesPanel } from "../devices/DevicesPanel";
 import { UsersPanel } from "../users/UsersPanel";
+import { PageErrorBoundary } from "./PageErrorBoundary";
 import { DASHBOARD_ROUTES } from "./routes";
 import type { RouteMatch } from "./routes";
 import { TaxiPageSlot } from "./TaxiPageSlot";
@@ -154,15 +155,20 @@ export function NavigationFrame({
           })}
         </ul>
       </nav>
-      {pageFor(
-        match,
-        taxiPage,
-        mediaPage,
-        campaignPage,
-        previewPage,
-        statisticPage,
-        operationsPage,
-      )}
+      {/* CX-144: Der vorhandene CX-064-Fehlerschutz umschliesst jede Route
+          (auch Geraete, Benutzer und Nicht-gefunden) und wird beim
+          Routenwechsel ueber resetKey zurueckgesetzt. */}
+      <PageErrorBoundary resetKey={activeRouteId ?? "not_found"}>
+        {pageFor(
+          match,
+          taxiPage,
+          mediaPage,
+          campaignPage,
+          previewPage,
+          statisticPage,
+          operationsPage,
+        )}
+      </PageErrorBoundary>
     </>
   );
 }
