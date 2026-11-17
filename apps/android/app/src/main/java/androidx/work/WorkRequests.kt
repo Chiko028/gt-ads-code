@@ -38,6 +38,9 @@ class OneTimeWorkRequestBuilder<W : ListenableWorker> {
         timeUnit: TimeUnit,
     ): OneTimeWorkRequestBuilder<W> = this
 
+    /** API-kompatibel zu WorkManager 2.9.1 (CX-094: Netzwerkbedingung des Uploads). */
+    fun setConstraints(constraints: Constraints): OneTimeWorkRequestBuilder<W> = this
+
     fun build(): OneTimeWorkRequest = OneTimeWorkRequest()
 }
 
