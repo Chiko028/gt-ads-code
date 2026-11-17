@@ -66,6 +66,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // CX-149: gespeicherte Geraetekonfiguration an Synchronisierung und Befehlsabruf binden.
+        gtads.device.config.DeviceRuntimeSetup.install()
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         setContentView(R.layout.activity_main)
 

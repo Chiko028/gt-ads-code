@@ -17,6 +17,16 @@ class SyncWorker(
     params: WorkerParameters,
 ) : Worker(appContext, params) {
     override fun doWork(): Result {
+        // CX-149: Konfiguration (Taxi, Manifestschluessel) im Hintergrund aktualisieren und an
+        // SyncRuntime/ControlRuntime binden; ein Fehler laesst die zuletzt gespeicherte gelten.
+        gtads.device.config.DeviceRuntimeSetup.install()
+        try {
+            gtads.device.config.DeviceRuntimeSetup.refresh(applicationContext)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Weiter mit gespeicherter Konfiguration.
+        }
         val dependencies = try {
             SyncRuntime.dependencies(applicationContext)
         } catch (cancelled: CancellationException) {
