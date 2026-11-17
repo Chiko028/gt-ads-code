@@ -64,20 +64,49 @@ describe("Android-Startbildschirm-Manifest", () => {
     });
   });
 
-  it("verbietet Klartext, Berechtigungen und weitere Komponenten", () => {
+  // 2026-11-17: Die App braucht inzwischen genau festgelegte Berechtigungen (Netz: Registrierung, Manifest,
+  // Befehle, Uploads; CX-146) und den Boot-Receiver (CX-090 / R-907). Statt "keine Berechtigung" gilt eine
+  // abschliessende Erlaubnisliste; Standort, Sensoren, Kamera, Mikrofon und Klartext bleiben verboten.
+  const ALLOWED_PERMISSIONS = [
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.INTERNET",
+    "android.permission.POST_NOTIFICATIONS",
+    "android.permission.RECEIVE_BOOT_COMPLETED",
+  ];
+  const ALLOWED_RECEIVERS = ["gtads.device.boot.BootReceiver"];
+
+  it("verbietet Klartext, nicht freigegebene Berechtigungen und weitere Komponenten", () => {
     withManifest((document) => {
       const applications = Array.from(document.getElementsByTagNameNS("*", "application"));
       expect(applications).toHaveLength(1);
       expect(applications[0].getAttributeNS(ANDROID_NS, "usesCleartextTraffic")).toBe("false");
 
       const elements = Array.from(document.documentElement.getElementsByTagNameNS("*", "*"));
-      const forbiddenComponents = ["activity-alias", "service", "receiver", "provider"];
-      for (const component of forbiddenComponents) {
+      for (const component of ["activity-alias", "service", "provider"]) {
         expect(elements.filter((element) => element.localName === component)).toEqual([]);
       }
-      expect(elements.filter((element) => element.localName.startsWith("uses-permission"))).toEqual(
-        [],
-      );
+      const receivers = elements.filter((element) => element.localName === "receiver");
+      for (const receiver of receivers) {
+        expect(ALLOWED_RECEIVERS).toContain(androidName(receiver));
+        expect(receiver.getAttributeNS(ANDROID_NS, "directBootAware")).not.toBe("true");
+      }
+
+      const permissions = elements
+        .filter((element) => element.localName.startsWith("uses-permission"))
+        .map(androidName);
+      for (const permission of permissions) {
+        expect(ALLOWED_PERMISSIONS).toContain(permission);
+      }
+      for (const forbidden of [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.BODY_SENSORS",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+      ]) {
+        expect(permissions).not.toContain(forbidden);
+      }
     });
   });
 });

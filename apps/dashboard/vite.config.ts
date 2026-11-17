@@ -19,5 +19,7 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // 2026-11-17: unter Serverlast rissen jsdom-Tests das 5-s-Standardlimit (z. B. NavigationFrame).
+    testTimeout: 20_000,
   },
 });
