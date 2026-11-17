@@ -56,6 +56,12 @@ import type { MediaUploadDeps } from "./mediaUpload.js";
 import type { MediaListDeps } from "./mediaList.js";
 import { registerHttpComposition } from "./composition.js";
 import {
+  createManifestRefresh,
+  manifestKeyFromConfig,
+  registerDeviceDeliveryRoutes,
+  startManifestDrain,
+} from "../modules/deviceDelivery/index.js";
+import {
   createOperationsAlarmAdapter,
   type OperationsAlarmAdapterOptions,
 } from "./operationsAlarmAdapter.js";
@@ -358,9 +364,14 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   // Medien-Upload (CX-031 / R-202). Der Adapter delegiert genau einmal an
   // die vorhandene CX-030-Grenze createMedia(options, input); die
   // allgemeine Modulkomposition bleibt CX-033 vorbehalten.
+  // CX-148: Manifest-Erzeugung (CX-041) mit dem konfigurierten Signierschluessel. Ohne
+  // Schluessel bleibt alles wie bisher (keine Manifeste, keine Auslieferung).
+  const manifestKey = manifestKeyFromConfig(config);
+  const manifestRefresh = createManifestRefresh(pool, config, manifestKey, options.now);
   const mediaServiceOptions: MediaServiceOptions = {
     pool,
     storageRoot: resolveMediaStorageRoot(),
+    ...(manifestRefresh ? { manifestRefresh } : {}),
   };
   const mediaUpload: MediaUploadDeps =
     options.mediaUpload ?? {
@@ -392,8 +403,22 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     telemetryIngest,
     onlineThresholdSeconds: config.onlineThresholdSeconds,
     now,
+    ...(manifestRefresh ? { manifestRefresh } : {}),
   });
   app.decorate("adminAuthService", adminAuthService);
+
+  // CX-148: Auslieferung an die Tablets (Konfiguration, Download-Freigabe, Download).
+  registerDeviceDeliveryRoutes(app, {
+    pool,
+    deviceAuth: deviceAuthService,
+    key: manifestKey,
+    downloadSecret: config.downloadSecret ?? null,
+    mediaOptions: mediaServiceOptions,
+    now,
+  });
+  if (manifestRefresh) {
+    startManifestDrain(app, manifestRefresh, (config.manifestDrainIntervalSeconds ?? 60) * 1000);
+  }
   app.decorate("devicesService", devicesService);
 
   // Geraeteauthentifizierung (U4); die Middleware nutzt denselben Service.

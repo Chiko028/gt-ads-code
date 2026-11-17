@@ -15,6 +15,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
+import type { ManifestRefreshTrigger } from "../modules/manifestRefresh/index.js";
 import type { AdminAuthService } from "../modules/adminAuth/service.js";
 import type { DeviceAuthService } from "../modules/deviceAuth/service.js";
 import {
@@ -90,6 +91,8 @@ export interface HttpCompositionDeps {
   onlineThresholdSeconds: number;
   /** Injizierbare Serveruhr; ohne Angabe gilt die reale Uhr. */
   now?: () => Date;
+  /** CX-148: Manifest-Neuberechnung (CX-041); ohne Signierschluessel nicht gesetzt. */
+  manifestRefresh?: ManifestRefreshTrigger;
 }
 
 export function registerHttpComposition(
@@ -128,7 +131,10 @@ export function registerHttpComposition(
 
     // CX-038: Kampagnenrouten. Die einzige Kampagnenpersistenz stellt ihr
     // additives Schema beim ersten Kampagnenzugriff idempotent bereit.
-    const campaignService = new CampaignService({ pool: deps.pool });
+    const campaignService = new CampaignService({
+      pool: deps.pool,
+      ...(deps.manifestRefresh ? { manifestRefresh: deps.manifestRefresh } : {}),
+    });
     registerCampaignRoutes(scope, {
       service: campaignService,
       adminAuth: deps.adminAuth,

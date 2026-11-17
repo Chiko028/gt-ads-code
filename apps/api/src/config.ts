@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { isValidPasswordHash } from "./crypto/password.js";
 
 /** Erlaubte Laufzeitumgebungen (AC-14, DATENTRENNUNG Abschnitt 2.1). */
@@ -27,6 +28,16 @@ export interface AppConfig {
   readonly onlineThresholdSeconds: number;
   readonly adminSessionTtlSeconds: number;
   readonly cookieSecure: boolean;
+  /**
+   * CX-148: Manifestsignatur (EC P-256, PKCS#8-PEM aus Datei) und Schluessel-ID. Beide oder keines;
+   * ohne Schluessel erzeugt der Server keine Manifeste und liefert keinen Manifestschluessel aus.
+   */
+  readonly manifestKeyId?: string | null;
+  readonly manifestSigningKeyPem?: string | null;
+  /** CX-148: HMAC-Geheimnis fuer Download-Tickets (CX-008), mindestens 32 Byte, aus Datei. */
+  readonly downloadSecret?: string | null;
+  /** CX-148: Takt des begrenzten Manifest-Laufs fuer offene Taxis. */
+  readonly manifestDrainIntervalSeconds?: number;
 }
 
 /**
@@ -159,6 +170,35 @@ function readAppEnv(env: NodeJS.ProcessEnv): AppEnv {
  * starten darf (AC-14): GT_ADS_ENV fehlt/prod/anderes, Pflichtgeheimnisse
  * fehlen oder der Passwort-Hash ist kein gültiger scrypt-Hash.
  */
+/** Liest eine Geheimnisdatei; der Inhalt erscheint nie in Fehlermeldungen. */
+function readSecretFile(env: NodeJS.ProcessEnv, name: string): string | null {
+  const path = env[name];
+  if (path === undefined || path.trim() === "") return null;
+  try {
+    return readFileSync(path.trim(), "utf8");
+  } catch {
+    throw new ConfigError(name + " zeigt auf keine lesbare Datei", [name]);
+  }
+}
+
+function readDeliveryConfig(env: NodeJS.ProcessEnv): Pick<AppConfig, "manifestKeyId" | "manifestSigningKeyPem" | "downloadSecret"> {
+  const keyId = env.GT_ADS_MANIFEST_KEY_ID?.trim() || null;
+  const pem = readSecretFile(env, "GT_ADS_MANIFEST_SIGNING_KEY_FILE");
+  if ((keyId === null) !== (pem === null)) {
+    throw new ConfigError("GT_ADS_MANIFEST_KEY_ID und GT_ADS_MANIFEST_SIGNING_KEY_FILE nur gemeinsam setzen",
+      ["GT_ADS_MANIFEST_KEY_ID", "GT_ADS_MANIFEST_SIGNING_KEY_FILE"]);
+  }
+  if (keyId !== null && !/^[A-Za-z0-9._-]{1,64}$/.test(keyId)) {
+    throw new ConfigError("GT_ADS_MANIFEST_KEY_ID ist ungueltig", ["GT_ADS_MANIFEST_KEY_ID"]);
+  }
+  const secret = readSecretFile(env, "GT_ADS_DOWNLOAD_SECRET_FILE");
+  const trimmedSecret = secret === null ? null : secret.trim();
+  if (trimmedSecret !== null && Buffer.byteLength(trimmedSecret, "utf8") < 32) {
+    throw new ConfigError("GT_ADS_DOWNLOAD_SECRET_FILE muss mindestens 32 Byte enthalten", ["GT_ADS_DOWNLOAD_SECRET_FILE"]);
+  }
+  return { manifestKeyId: keyId, manifestSigningKeyPem: pem, downloadSecret: trimmedSecret };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const appEnv = readAppEnv(env);
 
@@ -186,6 +226,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ),
     registrationCodePepper,
     adminPasswordHash,
+    ...readDeliveryConfig(env),
+    manifestDrainIntervalSeconds: readInteger(env, "GT_ADS_MANIFEST_DRAIN_INTERVAL_S", 60, 5, 86_400),
     registrationCodeTtlSeconds: readInteger(
       env,
       "GT_ADS_REG_CODE_TTL_S",
