@@ -64,7 +64,9 @@ function connectivityLabel(connectivity: string): string {
  * fetch-Abstraktion. Schreibende Aktionen werden nie automatisch wiederholt.
  */
 export function DevicesPanel() {
-  const { api } = useAdminSession();
+  const { api, role } = useAdminSession();
+  // CX-141: Identitaetswiderruf (devices.revoke) ist der Rolle Admin vorbehalten.
+  const canRevoke = role === "Admin";
 
   const [devices, setDevices] = useState<AdminDevice[] | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -196,7 +198,7 @@ export function DevicesPanel() {
 
   const confirmRevoke = useCallback(async () => {
     const id = selectedIdRef.current;
-    if (id === null || revokeBusyRef.current) {
+    if (!canRevoke || id === null || revokeBusyRef.current) {
       return;
     }
     revokeBusyRef.current = true;
@@ -242,7 +244,7 @@ export function DevicesPanel() {
     } else if (!detailOk) {
       setStaleMessage(STALE_DETAIL_MESSAGE);
     }
-  }, [api, loadList, loadDetail]);
+  }, [api, canRevoke, loadList, loadDetail]);
 
   const devicesRegion = (
     <section aria-label="Geräte">
@@ -376,12 +378,18 @@ export function DevicesPanel() {
               <dd>{known(detail.registrationCodeId)}</dd>
             </dl>
 
-            {revokeConfirmedId === null && detail.state !== "revoked" ? (
+            {canRevoke &&
+            revokeConfirmedId === null &&
+            detail.state !== "revoked" ? (
               confirmOpen ? (
                 <div role="group" aria-label="Sperrbestätigung">
                   <p>
                     Gerät <strong>{detail.id}</strong> wirklich sperren? Die
                     Sperrung kann nicht rückgängig gemacht werden.
+                  </p>
+                  <p>
+                    Der Identitätswiderruf wird durch ein späteres Aktivieren
+                    des Tablets nicht aufgehoben.
                   </p>
                   {revokeError !== null ? (
                     <p role="alert">{revokeError}</p>
