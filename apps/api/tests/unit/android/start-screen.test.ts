@@ -21,8 +21,7 @@ interface XmlDocument {
   getElementsByTagNameNS(namespace: string, localName: string): ArrayLike<XmlElement>;
 }
 
-function withManifest<T>(check: (document: XmlDocument) => T): T {
-  const xml = readFileSync(MANIFEST_PATH, "utf8");
+function withManifestXml<T>(xml: string, check: (document: XmlDocument) => T): T {
   const dom = new JSDOM(xml, { contentType: "text/xml" });
   try {
     const document = dom.window.document as XmlDocument;
@@ -36,6 +35,10 @@ function withManifest<T>(check: (document: XmlDocument) => T): T {
   } finally {
     dom.window.close();
   }
+}
+
+function withManifest<T>(check: (document: XmlDocument) => T): T {
+  return withManifestXml(readFileSync(MANIFEST_PATH, "utf8"), check);
 }
 
 const androidName = (element: XmlElement): string | null =>
@@ -73,7 +76,35 @@ describe("Android-Startbildschirm-Manifest", () => {
     "android.permission.POST_NOTIFICATIONS",
     "android.permission.RECEIVE_BOOT_COMPLETED",
   ];
-  const ALLOWED_RECEIVERS = ["gtads.device.boot.BootReceiver"];
+  const KIOSK_RECEIVER = "gtads.device.kiosk.KioskAdminReceiver";
+  const ALLOWED_RECEIVERS = ["gtads.device.boot.BootReceiver", KIOSK_RECEIVER];
+  // CX-150: Receiver, die nur mit genau dieser android:permission am selben Element erlaubt sind.
+  const REQUIRED_RECEIVER_PERMISSION: Record<string, string> = {
+    [KIOSK_RECEIVER]: "android.permission.BIND_DEVICE_ADMIN",
+  };
+
+  // Gemeinsame Receiver-Pruefung fuer das Originalmanifest und die synthetischen Negativfaelle.
+  // Liefert die Befunde je Receiver; leer bedeutet zulaessig.
+  function receiverProblems(document: XmlDocument): string[] {
+    const elements = Array.from(document.documentElement.getElementsByTagNameNS("*", "*"));
+    const problems: string[] = [];
+    for (const receiver of elements.filter((element) => element.localName === "receiver")) {
+      const name = androidName(receiver);
+      if (name === null || !ALLOWED_RECEIVERS.includes(name)) {
+        problems.push(`nicht erlaubter Receiver: ${name}`);
+        continue;
+      }
+      if (receiver.getAttributeNS(ANDROID_NS, "directBootAware") === "true") {
+        problems.push(`${name}: directBootAware`);
+      }
+      const required = REQUIRED_RECEIVER_PERMISSION[name];
+      if (required !== undefined) {
+        const actual = receiver.getAttributeNS(ANDROID_NS, "permission");
+        if (actual !== required) problems.push(`${name}: android:permission ${actual} statt ${required}`);
+      }
+    }
+    return problems;
+  }
 
   it("verbietet Klartext, nicht freigegebene Berechtigungen und weitere Komponenten", () => {
     withManifest((document) => {
@@ -85,11 +116,7 @@ describe("Android-Startbildschirm-Manifest", () => {
       for (const component of ["activity-alias", "service", "provider"]) {
         expect(elements.filter((element) => element.localName === component)).toEqual([]);
       }
-      const receivers = elements.filter((element) => element.localName === "receiver");
-      for (const receiver of receivers) {
-        expect(ALLOWED_RECEIVERS).toContain(androidName(receiver));
-        expect(receiver.getAttributeNS(ANDROID_NS, "directBootAware")).not.toBe("true");
-      }
+      expect(receiverProblems(document)).toEqual([]);
 
       const permissions = elements
         .filter((element) => element.localName.startsWith("uses-permission"))
@@ -108,5 +135,57 @@ describe("Android-Startbildschirm-Manifest", () => {
         expect(permissions).not.toContain(forbidden);
       }
     });
+  });
+
+  // CX-150: synthetische Manifeste im Speicher; das echte Android-Manifest bleibt unveraendert.
+  const synthetic = (applicationBody: string): string => `<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="${ANDROID_NS}" package="gtads.device">
+    <application android:usesCleartextTraffic="false">
+${applicationBody}
+    </application>
+</manifest>`;
+  const bootReceiver = `        <receiver android:name="gtads.device.boot.BootReceiver" android:exported="true" />`;
+  const kioskReceiver = (attributes: string) =>
+    `        <receiver android:name="${KIOSK_RECEIVER}" android:exported="true" ${attributes}>
+            <meta-data android:name="android.app.device_admin" android:resource="@xml/gtads_device_admin" />
+        </receiver>`;
+  const problemsOf = (xml: string) => withManifestXml(xml, receiverProblems);
+
+  it("CX-150: erlaubt den Kiosk-Receiver mit BIND_DEVICE_ADMIN und bleibt ohne ihn gueltig", () => {
+    expect(problemsOf(synthetic(bootReceiver))).toEqual([]);
+    expect(
+      problemsOf(synthetic(`${bootReceiver}\n${kioskReceiver('android:permission="android.permission.BIND_DEVICE_ADMIN"')}`)),
+    ).toEqual([]);
+  });
+
+  it("CX-150: lehnt den Kiosk-Receiver ohne oder mit falscher Berechtigung ab", () => {
+    expect(problemsOf(synthetic(kioskReceiver("")))).toEqual([
+      `${KIOSK_RECEIVER}: android:permission null statt android.permission.BIND_DEVICE_ADMIN`,
+    ]);
+    expect(problemsOf(synthetic(kioskReceiver('android:permission="android.permission.BIND_JOB_SERVICE"')))).toEqual([
+      `${KIOSK_RECEIVER}: android:permission android.permission.BIND_JOB_SERVICE statt android.permission.BIND_DEVICE_ADMIN`,
+    ]);
+  });
+
+  it("CX-150: die Berechtigung zaehlt nur am selben Receiver-Element, nicht als Textfund im Manifest", () => {
+    const elsewhere = synthetic(
+      `        <receiver android:name="gtads.device.boot.BootReceiver" android:exported="true" android:permission="android.permission.BIND_DEVICE_ADMIN" />
+${kioskReceiver("")}
+        <meta-data android:name="android.permission.BIND_DEVICE_ADMIN" android:value="android.permission.BIND_DEVICE_ADMIN" />`,
+    );
+    expect(elsewhere).toContain("android.permission.BIND_DEVICE_ADMIN");
+    expect(problemsOf(elsewhere)).toEqual([
+      `${KIOSK_RECEIVER}: android:permission null statt android.permission.BIND_DEVICE_ADMIN`,
+    ]);
+  });
+
+  it("CX-150: andere Receiver bleiben verboten, auch mit BIND_DEVICE_ADMIN", () => {
+    const foreign = synthetic(
+      `        <receiver android:name="gtads.device.kiosk.OtherAdminReceiver" android:permission="android.permission.BIND_DEVICE_ADMIN" />`,
+    );
+    expect(problemsOf(foreign)).toEqual(["nicht erlaubter Receiver: gtads.device.kiosk.OtherAdminReceiver"]);
+    expect(
+      problemsOf(synthetic(`        <receiver android:name="${KIOSK_RECEIVER}" android:permission="android.permission.BIND_DEVICE_ADMIN" android:directBootAware="true" />`)),
+    ).toEqual([`${KIOSK_RECEIVER}: directBootAware`]);
   });
 });
