@@ -42,6 +42,21 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1") { isTransitive = false }
     implementation("androidx.media3:media3-ui:1.4.1") { isTransitive = false }
 
+    implementation("androidx.work:work-runtime:2.9.1")
+    constraints {
+        // Offline-Versorgung enthaelt neuere, kompatible Versionen der WorkManager-Transitiven.
+        implementation("androidx.annotation:annotation-experimental:1.4.0")
+        implementation("androidx.core:core:1.13.1")
+        implementation("androidx.lifecycle:lifecycle-livedata:2.8.7")
+        implementation("androidx.lifecycle:lifecycle-service:2.8.7")
+        implementation("androidx.room:room-ktx:2.6.1")
+        implementation("androidx.room:room-runtime:2.6.1")
+        implementation("androidx.sqlite:sqlite-framework:2.4.0")
+        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+        implementation("androidx.collection:collection:1.2.0")
+        implementation("com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava")
+    }
+    testImplementation("androidx.work:work-testing:2.9.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.13")
 }

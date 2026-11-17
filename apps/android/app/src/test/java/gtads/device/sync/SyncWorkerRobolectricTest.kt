@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.ListenableWorker
 import androidx.work.WorkManager
 import androidx.work.testing.TestListenableWorkerBuilder
+import gtads.device.testsupport.initializeTestWorkManager
 import gtads.device.download.MediaDownloader
 import gtads.device.manifest.ManifestActivation
 import gtads.device.manifest.ManifestLoad
@@ -32,7 +33,7 @@ class SyncWorkerRobolectricTest {
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
         fixture = SyncFixture()
-        WorkManager.resetForTest()
+        initializeTestWorkManager(RuntimeEnvironment.getApplication())
         SyncRuntime.resetForTest()
         deleteRegistration()
     }
@@ -40,7 +41,7 @@ class SyncWorkerRobolectricTest {
     @After
     fun tearDown() {
         SyncRuntime.resetForTest()
-        WorkManager.resetForTest()
+        // echte WorkManager-Testinstanz wird je Test neu initialisiert
         fixture.cleanup()
         deleteRegistration()
     }
@@ -58,7 +59,7 @@ class SyncWorkerRobolectricTest {
             fixture.dependencies(transport, repository = repository)
         }
 
-        val first = TestListenableWorkerBuilder<SyncWorker>(context, SyncWorker::class.java).build().doWork()
+        val first = TestListenableWorkerBuilder.from(context, SyncWorker::class.java).build().doWork()
         assertTrue(first is ListenableWorker.Result.Success)
         assertEquals(1, transport.downloadCalls)
         assertNotNull(repository.active())
@@ -66,7 +67,7 @@ class SyncWorkerRobolectricTest {
             assertTrue(MediaDownloader.targetFile(fixture.mediaDirectory, media).isFile)
         }
 
-        val second = TestListenableWorkerBuilder<SyncWorker>(context, SyncWorker::class.java).build().doWork()
+        val second = TestListenableWorkerBuilder.from(context, SyncWorker::class.java).build().doWork()
         assertTrue(second is ListenableWorker.Result.Success)
         assertEquals("Zweiter Durchlauf darf keine Medien erneut laden", 1, transport.downloadCalls)
     }
@@ -90,7 +91,7 @@ class SyncWorkerRobolectricTest {
             fixture.dependencies(transport, freeSpace = 0L, repository = repository)
         }
 
-        val result = TestListenableWorkerBuilder<SyncWorker>(context, SyncWorker::class.java).build().doWork()
+        val result = TestListenableWorkerBuilder.from(context, SyncWorker::class.java).build().doWork()
 
         assertTrue(result is ListenableWorker.Result.Failure)
         val reloaded = repository.load()

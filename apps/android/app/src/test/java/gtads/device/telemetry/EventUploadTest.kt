@@ -4,6 +4,7 @@ import android.database.sqlite.SQLiteDatabase
 import androidx.work.ListenableWorker
 import androidx.work.WorkManager
 import androidx.work.testing.TestListenableWorkerBuilder
+import gtads.device.testsupport.initializeTestWorkManager
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -26,14 +27,14 @@ class EventUploadTest {
 
     @Before
     fun setUp() {
-        WorkManager.resetForTest()
+        initializeTestWorkManager(RuntimeEnvironment.getApplication())
         db = TelemetryEventDatabase(context, dbName).writableDatabase
     }
 
     @After
     fun tearDown() {
         EventUploadWorker.factory = null
-        WorkManager.resetForTest()
+        // echte WorkManager-Testinstanz wird je Test neu initialisiert
         db.close()
         context.deleteDatabase(dbName)
     }
@@ -102,17 +103,17 @@ class EventUploadTest {
         val gate = InMemoryUploadGate()
         var calls = 0
         EventUploadWorker.factory = { coordinator(gate) { calls++; EventTransportResult.Retryable(120L) } }
-        val first = TestListenableWorkerBuilder(context, EventUploadWorker::class.java).build().doWork()
+        val first = TestListenableWorkerBuilder.from(context, EventUploadWorker::class.java).build().doWork()
         assertTrue(first is ListenableWorker.Result.Retry)
         assertEquals(listOf("w1"), ids())
 
         // Retry-After-Untergrenze: eine fruehere Ausfuehrung sendet nicht (keine Schleife).
         now += 119_000L
-        val early = TestListenableWorkerBuilder(context, EventUploadWorker::class.java).build().doWork()
+        val early = TestListenableWorkerBuilder.from(context, EventUploadWorker::class.java).build().doWork()
         assertTrue(early is ListenableWorker.Result.Retry)
         assertEquals(1, calls)
         now += 1_000L
-        TestListenableWorkerBuilder(context, EventUploadWorker::class.java).build().doWork()
+        TestListenableWorkerBuilder.from(context, EventUploadWorker::class.java).build().doWork()
         assertEquals(2, calls)
         assertEquals(30L, EventUploadScheduler.BACKOFF_SECONDS)
     }
@@ -130,7 +131,7 @@ class EventUploadTest {
             // Keine automatische unmittelbare Wiederholung.
             val before = calls
             EventUploadWorker.factory = { coordinator(gate) { calls++; EventTransportResult.Accepted(setOf("x1", "x2")) } }
-            val worker = TestListenableWorkerBuilder(context, EventUploadWorker::class.java).build().doWork()
+            val worker = TestListenableWorkerBuilder.from(context, EventUploadWorker::class.java).build().doWork()
             assertTrue(worker is ListenableWorker.Result.Success)
             assertEquals(before, calls)
             assertEquals(listOf("x1", "x2"), ids())

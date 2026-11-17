@@ -1,18 +1,17 @@
-package androidx.work.testing
+// Frueher lag hier eine lokale Nachbildung von androidx.work.testing.TestListenableWorkerBuilder.
+// Seit der Umstellung auf die echte WorkManager-Bibliothek 2.9.1 (work-testing) stammt diese
+// Klasse aus der Bibliothek; die Datei enthaelt nur noch die gemeinsame Testinitialisierung.
+package gtads.device.testsupport
 
 import android.content.Context
-import androidx.work.ListenableWorker
-import androidx.work.WorkerParameters
+import androidx.work.Configuration
+import androidx.work.testing.SynchronousExecutor
+import androidx.work.testing.WorkManagerTestInitHelper
 
-/** Lokaler WorkManager-Testbaustein fuer die Offline-Testumgebung. */
-class TestListenableWorkerBuilder<W : ListenableWorker>(
-    private val context: Context,
-    private val workerClass: Class<W>,
-) {
-    @Suppress("UNCHECKED_CAST")
-    fun build(): W {
-        val constructor = workerClass.getConstructor(Context::class.java, WorkerParameters::class.java)
-        return constructor.newInstance(context, WorkerParameters()) as W
-    }
+/** Initialisiert je Test eine echte WorkManager-Testinstanz mit synchronem Executor. */
+fun initializeTestWorkManager(context: Context) {
+    WorkManagerTestInitHelper.initializeTestWorkManager(
+        context,
+        Configuration.Builder().setExecutor(SynchronousExecutor()).build(),
+    )
 }
-
