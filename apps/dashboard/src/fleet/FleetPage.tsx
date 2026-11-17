@@ -25,7 +25,7 @@ import {
   isUnclearWriteOutcome,
 } from "./fleetApi";
 
-const MISSING = "Nicht erfasst";
+const MISSING = "nicht hinterlegt";
 const NOT_ASSIGNED = "Nicht belegt";
 const UNEXPECTED_MESSAGE = "Ein unerwarteter Fehler ist aufgetreten.";
 const UNCLEAR_WRITE_MESSAGE =
@@ -143,6 +143,19 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   const [groups, setGroups] = useState<FleetGroup[] | null>(null);
   const [tablets, setTablets] = useState<FleetTablet[] | null>(null);
   const [inventory, setInventory] = useState<FleetInventoryItem[] | null>(null);
+  /**
+   * CX-142: Die Inventarliste ist eine eigene, paginierte Ansicht. Cursor,
+   * Verlauf und Ladezustand bleiben getrennt von den uebrigen Listen, damit
+   * ein Seitenwechsel nie Daten verschiedener Seiten mischt.
+   */
+  const [inventoryNextCursor, setInventoryNextCursor] = useState<string | null>(
+    null,
+  );
+  const [inventoryHistory, setInventoryHistory] = useState<
+    readonly (string | null)[]
+  >([]);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [inventoryError, setInventoryError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -188,6 +201,8 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   const taxiFormRef = useRef<TaxiFormState | null>(null);
   const selectedDeviceIdRef = useRef<string | null>(null);
   const inventoryRequestSeqRef = useRef(0);
+  const inventoryPageSeqRef = useRef(0);
+  const inventoryCursorRef = useRef<string | null>(null);
   const [inventorySerial, setInventorySerial] = useState("");
   const [inventoryType, setInventoryType] = useState("");
   const [inventoryNote, setInventoryNote] = useState("");
@@ -285,27 +300,72 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     }
   }
 
+  /**
+   * CX-142: laedt genau eine Seite ueber den vorhandenen Cursor. Jede neue
+   * Anfrage erhoeht die Sequenz; eine spaetere Antwort einer frueheren Seite
+   * findet damit keine gueltige Sequenz mehr und veraendert nichts. Der
+   * Cursor wird erst nach einer bestaetigten Antwort uebernommen.
+   */
+  const loadInventoryPage = useCallback(
+    async (cursor: string | null): Promise<FleetInventoryItem[] | null> => {
+      const seq = ++inventoryPageSeqRef.current;
+      const generation = generationRef.current;
+      setInventoryLoading(true);
+      setInventoryError(null);
+      try {
+        const page = await client.listInventory({ after: cursor });
+        if (!isAlive(generation) || seq !== inventoryPageSeqRef.current) {
+          return null;
+        }
+        setInventory(page.items);
+        setInventoryNextCursor(page.nextCursor);
+        inventoryCursorRef.current = cursor;
+        return page.items;
+      } catch (error) {
+        if (!isAlive(generation) || seq !== inventoryPageSeqRef.current) {
+          return null;
+        }
+        // 401 laeuft ausschliesslich ueber die zentrale AdminShell.
+        if (!isUnauthorizedError(error)) {
+          setInventoryError(messageFor(error));
+        }
+        return null;
+      } finally {
+        if (isAlive(generation) && seq === inventoryPageSeqRef.current) {
+          setInventoryLoading(false);
+        }
+      }
+    },
+    [client, isAlive],
+  );
+
   const loadAll = useCallback(
     async (generation: number): Promise<boolean> => {
       const seq = ++loadSeqRef.current;
       setLoading(true);
       setLoadError(null);
       try {
-        const [nextTaxis, nextGroups, nextTablets, nextInventory] =
-          await Promise.all([
-            client.listTaxis(),
-            client.listGroups(),
-            client.listTablets(),
-            client.listInventory(),
-          ]);
+        // CX-142: Inventarseite und uebrige Listen starten gemeinsam; die
+        // Inventarliste behaelt jedoch Sequenz und Fehlerzustand fuer sich.
+        const inventoryPromise = loadInventoryPage(
+          inventoryCursorRef.current,
+        );
+        const [nextTaxis, nextGroups, nextTablets] = await Promise.all([
+          client.listTaxis(),
+          client.listGroups(),
+          client.listTablets(),
+        ]);
         if (!isAlive(generation) || seq !== loadSeqRef.current) {
           return false;
         }
         setTaxis(nextTaxis);
         setGroups(nextGroups);
         setTablets(nextTablets);
-        setInventory(nextInventory);
-        if (seq >= unlockMinSeqRef.current) {
+        const nextInventory = await inventoryPromise;
+        if (!isAlive(generation) || seq !== loadSeqRef.current) {
+          return false;
+        }
+        if (nextInventory !== null && seq >= unlockMinSeqRef.current) {
           const wasLocked = unclearWriteRef.current;
           unclearWriteRef.current = false;
           setUnclearWrite(false);
@@ -332,7 +392,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         }
       }
     },
-    [client, isAlive],
+    [client, isAlive, loadInventoryPage],
   );
 
   useEffect(() => {
@@ -343,6 +403,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
       mountedRef.current = false;
       generationRef.current += 1;
       loadSeqRef.current += 1;
+      inventoryPageSeqRef.current += 1;
     };
   }, [loadAll]);
 
@@ -1153,6 +1214,50 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
     void loadAll(generation);
   }
 
+  /**
+   * CX-142: Seitenwechsel ueber den Cursor des Endpunkts. Die gewaehlte
+   * Seite wird sofort geleert, damit weder alte noch neue Zeilen gemischt
+   * erscheinen; die Antwort der zuletzt gewaehlten Seite gewinnt.
+   */
+  function showInventoryPage(
+    cursor: string | null,
+    history: readonly (string | null)[],
+  ): void {
+    if (inventoryBusyRef.current || unclearWriteRef.current) {
+      return;
+    }
+    closeInventoryEdit();
+    setInventoryHistory(history);
+    if (inventoryCursorRef.current !== cursor) {
+      setInventory(null);
+      setInventoryNextCursor(null);
+    }
+    void loadInventoryPage(cursor);
+  }
+
+  function showNextInventoryPage(): void {
+    const cursor = inventoryNextCursor;
+    if (cursor === null) {
+      return;
+    }
+    showInventoryPage(cursor, [...inventoryHistory, inventoryCursorRef.current]);
+  }
+
+  function showPreviousInventoryPage(): void {
+    if (inventoryHistory.length === 0) {
+      return;
+    }
+    const cursor = inventoryHistory[inventoryHistory.length - 1] ?? null;
+    showInventoryPage(cursor, inventoryHistory.slice(0, -1));
+  }
+
+  function retryInventory(): void {
+    if (inventoryLoading) {
+      return;
+    }
+    void loadInventoryPage(inventoryCursorRef.current);
+  }
+
   const availableTablets = (tablets ?? []).filter((item) => item.available);
   const canManageTablets = role === "Admin";
   const selectedInventory =
@@ -1675,7 +1780,21 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
           <a href="#/geraete">Geräteansicht</a>.
         </p>
 
-        {inventory !== null && inventory.length === 0 ? (
+        {inventoryLoading ? <p>Inventar wird geladen …</p> : null}
+
+        {inventoryError !== null ? (
+          <div role="alert">
+            <p>{inventoryError}</p>
+            <button type="button" onClick={retryInventory}>
+              Inventar erneut laden
+            </button>
+          </div>
+        ) : null}
+
+        {inventory !== null &&
+        inventory.length === 0 &&
+        inventoryError === null &&
+        !inventoryLoading ? (
           <p>Keine Geräte im Inventar.</p>
         ) : null}
 
@@ -1735,6 +1854,23 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
             </tbody>
           </table>
         ) : null}
+
+        <div>
+          <button
+            type="button"
+            onClick={showPreviousInventoryPage}
+            disabled={inventoryHistory.length === 0}
+          >
+            Vorherige Seite
+          </button>
+          <button
+            type="button"
+            onClick={showNextInventoryPage}
+            disabled={inventoryNextCursor === null}
+          >
+            Nächste Seite
+          </button>
+        </div>
 
         {confirmDeactivateId !== null ? (
           <section aria-label="Tablet-Deaktivierung bestätigen">

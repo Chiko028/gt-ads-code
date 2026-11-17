@@ -84,6 +84,12 @@ export interface FleetInventoryItem {
   readonly revision: number;
 }
 
+/** CX-142: eine Seite mit dem unveraenderten Cursor des Endpunkts. */
+export interface FleetInventoryPage {
+  readonly items: FleetInventoryItem[];
+  readonly nextCursor: string | null;
+}
+
 /** CX-044: ein geordneter Eintrag des veroeffentlichten Sollplans. */
 export interface PlayoutPreviewEntry {
   readonly mediaId: string;
@@ -189,7 +195,10 @@ export interface FleetClient {
   ): Promise<TaxiGroupMembership>;
   renameGroup(id: string, name: string, revision: number): Promise<FleetGroup>;
   listTablets(): Promise<FleetTablet[]>;
-  listInventory(): Promise<FleetInventoryItem[]>;
+  /** CX-142: genau eine Seite der geschuetzten Inventarliste. */
+  listInventory(options?: {
+    readonly after?: string | null;
+  }): Promise<FleetInventoryPage>;
   getPlayoutPreview(taxiId: string): Promise<PlayoutPreview>;
   updateInventoryItem(
     deviceId: string,
@@ -478,12 +487,27 @@ function parseInventory(value: unknown): FleetInventoryItem {
   };
 }
 
-function parseInventoryList(value: unknown): FleetInventoryItem[] {
+/**
+ * CX-129 liefert items und optional nextCursor; fehlt der Cursor, ist die
+ * Liste vollstaendig. Ein leerer oder fremdtypiger Cursor ist ungueltig.
+ */
+function parseInventoryPage(value: unknown): FleetInventoryPage {
   const body = recordOf(value);
   if (body === null || !Array.isArray(body.items)) {
     throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
   }
-  return body.items.map(parseInventory);
+  const rawCursor = body.nextCursor;
+  if (
+    rawCursor !== undefined &&
+    rawCursor !== null &&
+    (typeof rawCursor !== "string" || rawCursor.trim() === "")
+  ) {
+    throw new AdminApiError("invalid_response", INVALID_RESPONSE_MESSAGE);
+  }
+  return {
+    items: body.items.map(parseInventory),
+    nextCursor: typeof rawCursor === "string" ? rawCursor : null,
+  };
 }
 
 function parsePlayoutPreview(value: unknown): PlayoutPreview {
@@ -744,8 +768,15 @@ export function createFleetClient(
       return parseTabletList(await request(FLEET_PATHS.tablets, "GET"));
     },
 
-    async listInventory(): Promise<FleetInventoryItem[]> {
-      return parseInventoryList(await request(FLEET_PATHS.inventory, "GET"));
+    async listInventory(options?: {
+      readonly after?: string | null;
+    }): Promise<FleetInventoryPage> {
+      const after = options?.after ?? null;
+      const path =
+        after === null
+          ? FLEET_PATHS.inventory
+          : FLEET_PATHS.inventory + "?after=" + encodeURIComponent(after);
+      return parseInventoryPage(await request(path, "GET"));
     },
 
     async updateInventoryItem(

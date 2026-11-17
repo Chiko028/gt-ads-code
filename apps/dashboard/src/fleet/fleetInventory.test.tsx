@@ -42,7 +42,7 @@ function deferred<T>(): Deferred<T> {
 }
 
 describe("CX-037 Inventar", () => {
-  it("zeigt null als Nicht erfasst und speichert Seriennummer, Gerätetyp und Austauschvermerk ohne die Geräteidentität zu ändern", async () => {
+  it("zeigt fehlende Werte als nicht hinterlegt und speichert Seriennummer, Gerätetyp und Austauschvermerk ohne die Geräteidentität zu ändern", async () => {
     const user = userEvent.setup();
 
     const items: FleetInventoryItem[] = [
@@ -101,7 +101,7 @@ describe("CX-037 Inventar", () => {
     await screen.findByText("d-1");
     const firstRow = screen.getByText("d-1").closest("tr");
     expect(firstRow).not.toBeNull();
-    expect(firstRow?.textContent ?? "").toContain("Nicht erfasst");
+    expect(firstRow?.textContent ?? "").toContain("nicht hinterlegt");
     const secondRow = screen.getByText("d-2").closest("tr");
     expect(secondRow?.textContent ?? "").toContain("SN-ALT");
     expect(secondRow?.textContent ?? "").toContain("Inaktiv");
@@ -150,7 +150,7 @@ describe("CX-037 Inventar", () => {
     expect(server.count("PATCH", PATHS.inventoryItem("d-1"))).toBe(1);
 
     // Leere Felder werden bewusst als null gesendet und wieder als
-    // "Nicht erfasst" dargestellt.
+    // "nicht hinterlegt" dargestellt.
     await user.clear(serialInput);
     await user.clear(screen.getByLabelText("Gerätetyp"));
     await user.clear(screen.getByLabelText("Austauschvermerk"));
@@ -158,7 +158,7 @@ describe("CX-037 Inventar", () => {
       within(inventoryRegion).getByRole("button", { name: "Speichern" }),
     );
 
-    await screen.findAllByText("Nicht erfasst");
+    await screen.findAllByText("nicht hinterlegt");
     expect(server.bodyOf("PATCH", PATHS.inventoryItem("d-1"))).toEqual({
       serial_number: null,
       device_type: null,
@@ -169,7 +169,7 @@ describe("CX-037 Inventar", () => {
       screen.getByRole("region", { name: "Inventar" }),
     ).getByRole("table");
     const updatedRow = within(inventoryTable).getByText("d-1").closest("tr");
-    expect(updatedRow?.textContent ?? "").toContain("Nicht erfasst");
+    expect(updatedRow?.textContent ?? "").toContain("nicht hinterlegt");
   });
 
   it("sperrt den Gerätewechsel während des Speicherns und bindet die verspätete Antwort an das Gerät", async () => {
