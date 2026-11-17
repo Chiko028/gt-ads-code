@@ -11,6 +11,7 @@ import gtads.device.registration.RegistrationDeviceInfo
 import gtads.device.registration.RegistrationOutcome
 import gtads.device.registration.RegistrationRepository
 import gtads.device.registration.RegistrationState
+import gtads.device.sync.SyncScheduler
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -39,6 +40,9 @@ object RegistrationProcess {
 
     @Volatile
     private var coordinatorFactory: ((Context, String) -> RegistrationCoordinator)? = null
+
+    @Volatile
+    private var registrationHook: (Context) -> Unit = { SyncScheduler.onRegistrationConfirmed(it) }
 
     /** Meldet den aktuellen Zustand sofort (auf dem Hauptthread) und spaeter jede Aenderung. */
     fun observe(listener: (RegistrationScreenState) -> Unit) {
@@ -93,6 +97,13 @@ object RegistrationProcess {
                 RegistrationState.Unknown
             }
             val screen = mapState(state, coordinator.outcome())
+            if (screen is RegistrationScreenState.Registered) {
+                try {
+                    registrationHook(app)
+                } catch (_: Exception) {
+                    // Die Anzeige des erfolgreichen Uebergangs darf nicht an der Planung scheitern.
+                }
+            }
             synchronized(lock) {
                 running = false
                 last = screen
@@ -113,6 +124,7 @@ object RegistrationProcess {
         }
         listeners.clear()
         coordinatorFactory = factory
+        registrationHook = {}
         executor = testExecutor
     }
 
@@ -124,6 +136,7 @@ object RegistrationProcess {
         }
         listeners.clear()
         coordinatorFactory = null
+        registrationHook = { SyncScheduler.onRegistrationConfirmed(it) }
         executor = newExecutor()
     }
 

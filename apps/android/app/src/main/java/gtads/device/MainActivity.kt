@@ -8,6 +8,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import gtads.device.sync.SyncScheduler
 
 /**
  * Minimale native Registrierungsoberflaeche. Sie enthaelt keine eigene
@@ -50,6 +51,15 @@ class MainActivity : Activity() {
         render(RegistrationScreenState.Loading)
         RegistrationProcess.observe(listener)
         RegistrationProcess.load(this)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        try {
+            SyncScheduler.ensurePeriodic(this)
+        } catch (_: Exception) {
+            // Ohne WorkManager bleibt die Registrierung nutzbar.
+        }
     }
 
     override fun onDestroy() {

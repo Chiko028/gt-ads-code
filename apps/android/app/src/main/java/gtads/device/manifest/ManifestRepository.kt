@@ -124,6 +124,14 @@ class ManifestRepository internal constructor(
     /** Aktueller Schnappschuss oder null, solange kein gueltiger Stand geladen/aktiviert ist. */
     fun active(): ActiveManifest? = current
 
+    /** Re-verifizierter aktiver Stand inklusive ETag fuer den naechsten bedingten Abruf. */
+    fun verifiedState(): VerifiedManifestState? = synchronized(lock) {
+        val active = current ?: return@synchronized null
+        val verified = verifyManifest(active.bytes(), trustedPublicKey, expectedTaxiId)
+            as? ManifestVerification.Verified ?: return@synchronized null
+        VerifiedManifestState(verified, active.etag)
+    }
+
     /**
      * Laedt beim Start ausschliesslich den atomar veroeffentlichten Zeiger und
      * prueft das referenzierte Artefakt (CX-073) sowie dessen Medien erneut.

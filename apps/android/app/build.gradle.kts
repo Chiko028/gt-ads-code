@@ -29,6 +29,9 @@ android {
     }
 }
 
+// WorkManager 2.9.1 ist im Offline-Cache des Runners nicht vorhanden und
+// ohne Netz nicht aufloesbar; die API-kompatible Minimalimplementierung
+// liegt unter src/main/java/androidx/work.
 dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.13")
