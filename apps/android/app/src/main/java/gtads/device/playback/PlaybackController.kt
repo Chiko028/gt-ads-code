@@ -181,7 +181,9 @@ class PlaybackController internal constructor(
     fun progressSample(): gtads.device.watchdog.PlaybackProgress? {
         if (!running || playingGeneration == null) return null
         val (generation, position) = adapter?.progress() ?: return null
-        return gtads.device.watchdog.PlaybackProgress(generation, position.coerceAtLeast(0L))
+        // REV-199: -1 (unbekannt) bleibt als fehlende Messung erhalten, statt als Position 0 zu gelten.
+        val measured = if (position < 0L) gtads.device.watchdog.PlaybackProgress.UNKNOWN_POSITION else position
+        return gtads.device.watchdog.PlaybackProgress(generation, measured)
     }
 
     /** CX-089: aktuelle, bereits gepruefte Planung des laufenden Spots. */

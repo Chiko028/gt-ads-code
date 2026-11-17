@@ -91,7 +91,14 @@ data class PlaybackProgress(
 ) {
     init {
         require(generation >= 0L) { "generation darf nicht negativ sein" }
-        require(positionMillis >= 0L) { "positionMillis darf nicht negativ sein" }
+        require(positionMillis >= 0L || positionMillis == UNKNOWN_POSITION) { "positionMillis darf nicht negativ sein" }
+    }
+
+    /** REV-199: Der Player kennt seine Position nicht (Port meldet -1) - fehlende Messung, kein Wert. */
+    val positionUnknown: Boolean get() = positionMillis == UNKNOWN_POSITION
+
+    companion object {
+        const val UNKNOWN_POSITION = -1L
     }
 }
 
@@ -198,6 +205,12 @@ class PlaybackWatchdog(
 
     private fun evaluate(now: Long, progress: PlaybackProgress): Action {
         val previous = lastProgress
+        if (progress.positionUnknown && previous != null && previous.generation == progress.generation) {
+            // REV-199: unbekannte Position ist eine fehlende Messung - weder Fortschritt noch Stillstand.
+            // Kein Wiederherstellungsversuch und kein Budgetverbrauch allein wegen fehlender Messwerte.
+            lastProgressAt = now
+            return Action.Done(WatchdogOutcome(WatchdogStatus.WAITING, attempts.size))
+        }
         if (previous == null || previous != progress) {
             lastProgress = progress
             lastProgressAt = now
