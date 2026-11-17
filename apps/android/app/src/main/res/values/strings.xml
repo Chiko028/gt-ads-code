@@ -17,4 +17,7 @@
     <string name="registration_action_register">Registrieren</string>
     <!-- Neutraler technischer Leerzustand der Offline-Wiedergabe; kein Ersatzinhalt. -->
     <string name="playback_message_empty">Keine lokalen Inhalte verfuegbar</string>
+    <!-- CX-092 / R-909: eingebauter statischer Fallback, keine Kampagne, kein Download. -->
+    <string name="playback_fallback_brand" translatable="false">GT-Ads</string>
+    <string name="playback_fallback_description">Statischer GT-Ads-Platzhalter</string>
 </resources>

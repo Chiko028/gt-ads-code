@@ -113,7 +113,11 @@
         android:layout_height="match_parent"
         android:gravity="center"
         android:padding="24dp"
-        android:text="@string/playback_message_empty"
-        android:textSize="18sp"
+        android:background="#FF1E1E1E"
+        android:contentDescription="@string/playback_fallback_description"
+        android:text="@string/playback_fallback_brand"
+        android:textColor="#FFF5F5F5"
+        android:textSize="48sp"
+        android:textStyle="bold"
         android:visibility="gone" />
 </FrameLayout>

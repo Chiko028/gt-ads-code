@@ -64,7 +64,8 @@ class PlaybackWatchdogMonitor(
             if (!running) return
         }
         val snapshot = state()
-        val outcome = if (snapshot == null) {
+        // CX-092: der statische Fallback ist kein Video-Player und wird nie neu gestartet.
+        val outcome = if (snapshot == null || controller.isStaticFallback()) {
             null
         } else {
             watchdog.check(

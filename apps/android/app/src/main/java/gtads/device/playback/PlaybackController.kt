@@ -38,7 +38,9 @@ enum class PlaybackUiState {
  * fehlender oder unvollstaendiger Kandidat ersetzt die laufende Auswahl nicht.
  * Fehlende oder fehlerhafte Medien werden hoechstens einmal je Durchlauf
  * uebersprungen; ist die Auswahl vollstaendig leer, wird angehalten und
- * [PlaybackUiState.EMPTY] gemeldet (kein Ersatzspot, kein R-909-Fallback).
+ * [PlaybackUiState.EMPTY] gemeldet. Die Activity zeigt dann den eingebauten
+ * statischen GT-Ads-Platzhalter (CX-092 / R-909): keine Kampagnenwiedergabe,
+ * keine Spotkennung, kein Download.
  */
 class PlaybackController internal constructor(
     private val adapterFactory: (PlaybackObserver) -> LocalMediaPlayerAdapter,
@@ -168,6 +170,13 @@ class PlaybackController internal constructor(
         }
     }
 
+    /**
+     * CX-092: Wiedergabe ist erlaubt, der Scheduler liefert aber keinen gueltigen
+     * lokalen Eintrag; angezeigt wird der statische Platzhalter. Fuer den
+     * Watchdog ist das kein festhaengender Video-Player.
+     */
+    fun isStaticFallback(): Boolean = running && state == PlaybackUiState.EMPTY
+
     /** CX-089: Fortschrittsprobe der laufenden Wiedergabe (Generation, Position) oder null. */
     fun progressSample(): gtads.device.watchdog.PlaybackProgress? {
         if (!running || playingGeneration == null) return null
@@ -227,6 +236,8 @@ class PlaybackController internal constructor(
         val participants = current.slots
         if (participants.isEmpty()) {
             publish(PlaybackUiState.EMPTY)
+            // CX-092: begrenzter Termin, damit ein neu aktivierter Stand den Fallback abloest.
+            scheduleIdleRecheck(current)
             return
         }
         var cursor = previous
