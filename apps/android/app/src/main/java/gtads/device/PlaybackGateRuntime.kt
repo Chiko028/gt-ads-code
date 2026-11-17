@@ -71,6 +71,7 @@ object PlaybackGateRuntime {
             displayGraceMillis = DEFAULT_DISPLAY_GRACE_MILLIS,
             schedule = { delay, action -> HandlerScheduledTask(delay, action) },
             onDecision = onDecision,
+            periodicMark = gtads.device.state.SharedPreferencesPeriodicStatusMark(context),
         )
     }
 

@@ -1,5 +1,8 @@
 package gtads.device.state
 
+/** CX-099: Standardintervall des periodischen Statusberichts (30 Minuten, wie U5). */
+const val DEFAULT_PERIODIC_INTERVAL_MILLIS: Long = 30L * 60L * 1_000L
+
 /** Sichtbare Entscheidung des Zustandsautomaten fuer Activity und Player. */
 data class GateDecision(
     val playbackAllowed: Boolean,
@@ -39,7 +42,25 @@ class PlaybackStateCoordinator(
         { _, _ -> ScheduledTask { } },
     private val onDecision: (GateDecision) -> Unit = {},
     private val onStorageError: (String) -> Unit = {},
+    /** CX-099: Markierung des letzten gespeicherten periodischen Berichts; null = kein periodischer Bericht. */
+    private val periodicMark: PeriodicStatusMark? = null,
+    private val periodicIntervalMillis: Long = DEFAULT_PERIODIC_INTERVAL_MILLIS,
+    private val wallClock: () -> java.time.Instant = java.time.Instant::now,
+    private val newEventId: () -> String = { java.util.UUID.randomUUID().toString() },
 ) {
+    /** Einzige Serialisierungsgrenze fuer Zustandswechsel und periodische Berichte. */
+    private val lock = Any()
+
+    /** Noch nicht erfolgreich gespeicherter periodischer Bericht; behaelt seine Ereignis-ID. */
+    private class PendingReport(
+        val eventId: String,
+        val occurredAt: java.time.Instant,
+        val snapshot: StateSnapshot,
+        val vehicle: VehicleReadiness,
+    )
+
+    private var pendingReport: PendingReport? = null
+    private var periodicTask: ScheduledTask? = null
     private var started = false
     private var lastDecision: GateDecision? = null
     private var lastRecordedTransitions: Long? = null
@@ -56,25 +77,88 @@ class PlaybackStateCoordinator(
     private val observer: (VehicleReadiness) -> Unit = { refresh() }
 
     /** Startet die Anbindung; wiederholte Aufrufe sind wirkungslos. */
-    fun start() {
-        if (started) return
+    fun start() = synchronized(lock) {
+        if (started) return@synchronized
         started = true
         readiness.start(observer)
         evaluate(notifyAlways = true)
+        schedulePeriodic()
     }
 
     /** Meldet Beobachter und Display-Timer ab; mehrfach aufrufbar. */
-    fun stop() {
-        if (!started) return
+    fun stop() = synchronized(lock) {
+        if (!started) return@synchronized
         started = false
         cancelDisplayTask()
+        cancelPeriodicTask()
         readiness.stop()
     }
 
     /** Wertet erneut aus, etwa nach einer abgeschlossenen Registrierung. */
-    fun refresh() {
-        if (!started) return
+    fun refresh() = synchronized(lock) {
+        if (!started) return@synchronized
         evaluate(notifyAlways = false)
+    }
+
+    /**
+     * CX-099: periodischer Ausloeser. Laeuft ueber dieselbe Sperre wie
+     * Zustandswechsel: erst wird ein etwaiger Wechsel gespeichert, danach
+     * hoechstens ein Bericht des aktuellen Zustands. Verpasste Intervalle
+     * werden zu genau einem Bericht zusammengefasst. Ein fehlgeschlagener
+     * Insert behaelt seine Ereignis-ID fuer den naechsten Ausloeser; keine
+     * enge Wiederholungsschleife.
+     */
+    fun periodicTick() = synchronized(lock) {
+        if (!started) return@synchronized
+        evaluate(notifyAlways = false)
+        val mark = periodicMark ?: return@synchronized
+        val now = wallClock()
+        val last = mark.lastStored()
+        val due = pendingReport != null || last == null ||
+            !now.isBefore(last.plusMillis(periodicIntervalMillis))
+        if (!due) return@synchronized
+        val pending = pendingReport ?: run {
+            val vehicle = readiness.current()
+            val snapshot = machine.snapshot() ?: return@synchronized
+            PendingReport(newEventId(), now, snapshot, vehicle).also { pendingReport = it }
+        }
+        try {
+            val target = recorder()
+            if (target == null) {
+                report("kein_geraetebezug")
+                return@synchronized
+            }
+            when (val result = target.record(pending.snapshot, pending.vehicle, pending.eventId, pending.occurredAt)) {
+                StateChangeRecordResult.stored, StateChangeRecordResult.duplicate -> {
+                    // Erst nach erfolgreichem Commit fortschreiben.
+                    mark.markStored(now)
+                    pendingReport = null
+                }
+                else -> report("puffer_" + result.name)
+            }
+        } catch (error: Throwable) {
+            report(error.javaClass.simpleName.ifEmpty { "speicherfehler" })
+        }
+    }
+
+    private fun schedulePeriodic() {
+        if (periodicMark == null) return
+        cancelPeriodicTask()
+        periodicTask = schedule(periodicIntervalMillis) {
+            synchronized(lock) { periodicTask = null }
+            periodicTick()
+            synchronized(lock) { if (started) schedulePeriodic() }
+        }
+    }
+
+    private fun cancelPeriodicTask() {
+        val task = periodicTask ?: return
+        periodicTask = null
+        try {
+            task.cancel()
+        } catch (_: Exception) {
+            // Abbruch ist best effort.
+        }
     }
 
     private fun evaluate(notifyAlways: Boolean) {

@@ -40,8 +40,21 @@ class StateChangeRecorder(
         require(deviceId.isNotBlank()) { "deviceId must not be blank" }
     }
 
-    fun record(snapshot: StateSnapshot, vehicle: VehicleReadiness): StateChangeRecordResult {
-        val payload = payload(snapshot, vehicle, newEventId(), occurredAt(clock()))
+    fun record(snapshot: StateSnapshot, vehicle: VehicleReadiness): StateChangeRecordResult =
+        record(snapshot, vehicle, newEventId(), clock())
+
+    /**
+     * CX-099: Schreibt mit vorgegebener Ereignis-ID und Zeitpunkt. Eine
+     * Wiederholung desselben Berichts nutzt dieselben Bytes und bleibt durch
+     * die idempotente Insert-Funktion genau einmal gespeichert.
+     */
+    fun record(
+        snapshot: StateSnapshot,
+        vehicle: VehicleReadiness,
+        eventId: String,
+        occurredAt: Instant,
+    ): StateChangeRecordResult {
+        val payload = payload(snapshot, vehicle, eventId, occurredAt(occurredAt))
         database.beginTransaction()
         try {
             val appended = store.append(payload.first, deviceId, payload.second)
