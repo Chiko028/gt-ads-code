@@ -282,8 +282,12 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         setPairSecond(null);
       } else {
         setTaxiForm(fromTaxi(confirmed));
-        setPairFirst(confirmed.tabletIds[0]);
-        setPairSecond(confirmed.tabletIds[1]);
+        // CX-138: Ein Paar-Entwurf bleibt beim Nachladen erhalten, solange das
+        // bestaetigte Taxi unveraendert ist; nur eine neue Revision ersetzt ihn.
+        if (confirmed.revision !== form.revision) {
+          setPairFirst(confirmed.tabletIds[0]);
+          setPairSecond(confirmed.tabletIds[1]);
+        }
       }
     }
     const deviceId = selectedDeviceIdRef.current;
@@ -581,9 +585,9 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isFleetConflict(error)) {
+        // CX-138: Belegung entscheidet der Server. Entwurf und bestaetigtes
+        // Paar bleiben unveraendert; Aktualisieren erfolgt nur bewusst.
         setActionError(CONFLICT_MESSAGE);
-        setTaxiForm(null);
-        await loadAll(generation);
         return;
       }
       if (isUnclearWriteOutcome(error)) {
@@ -1295,6 +1299,14 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
             taxi.groupIds.includes(membershipGroup.id),
         );
 
+  /** Eine gewaehlte Kennung bleibt waehlbar, auch wenn die aktuelle Liste sie nicht enthaelt. */
+  function missingSelection(id: string | null) {
+    if (id === null || (tablets ?? []).some((tablet) => tablet.id === id)) {
+      return null;
+    }
+    return <option value={id}>{id + " (nicht in der aktuellen Liste)"}</option>;
+  }
+
   function groupNames(ids: readonly string[]): string {
     if (ids.length === 0) {
       return "Keine";
@@ -1477,6 +1489,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                   }
                 >
                   <option value="">{NOT_ASSIGNED}</option>
+                  {missingSelection(pairFirst)}
                   {(tablets ?? []).map((tablet) => (
                     <option
                       key={tablet.id}
@@ -1501,6 +1514,7 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                   }
                 >
                   <option value="">{NOT_ASSIGNED}</option>
+                  {missingSelection(pairSecond)}
                   {(tablets ?? []).map((tablet) => (
                     <option
                       key={tablet.id}
