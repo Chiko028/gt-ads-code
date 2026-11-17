@@ -63,6 +63,34 @@ class PauseRestore(
         if (state is PauseRestoreState.Failed && !loading) ensureLoaded()
     }
 
+    /**
+     * REV-200: Nach dem erfolgreichen Laden den gespeicherten wirksamen Zustand erneut lesen und uebernehmen
+     * (Aufhebung, Ablauf der Hoechstdauer, spaetere Fernpause). Reines Lesen: nichts wird geschrieben oder
+     * quittiert. Ein Lesefehler laesst den bisherigen Stand unveraendert; [onChange] nur bei tatsaechlicher Aenderung.
+     */
+    fun resync() {
+        synchronized(this) {
+            if (state !is PauseRestoreState.Loaded || loading) return
+        }
+        execute {
+            val paused = try {
+                read()
+            } catch (_: Exception) {
+                return@execute
+            }
+            val changed = synchronized(this) {
+                val current = state
+                if (current is PauseRestoreState.Loaded && !loading && current.paused != paused) {
+                    state = PauseRestoreState.Loaded(paused)
+                    true
+                } else {
+                    false
+                }
+            }
+            if (changed) onChange()
+        }
+    }
+
     /** Nach dem erfolgreichen Laden: spaetere lokale Pausenwechsel (CX-087) uebernehmen. */
     @Synchronized
     fun update(paused: Boolean) {

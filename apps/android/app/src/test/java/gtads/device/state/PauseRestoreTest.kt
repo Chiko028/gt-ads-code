@@ -50,9 +50,9 @@ class PauseRestoreTest {
     }
 
     /** Persistiert eine angewandte Fernpause wie CX-086/CX-087 und liefert die Zahl ausstehender Quittungen. */
-    private fun persistPause(paused: Boolean): Int =
+    private fun persistPause(paused: Boolean, revision: Long = 1): Int =
         DeviceControlService(DeviceControlStore(context, dbName), binding).use { service ->
-            service.apply(DeviceControlCommand.SetPause("11111111-1111-4111-8111-111111111111", binding.deviceId, binding.taxiId, 1, paused))
+            service.apply(DeviceControlCommand.SetPause("11111111-1111-4111-8111-%012d".format(revision), binding.deviceId, binding.taxiId, revision, paused))
             service.pendingAcknowledgements().size
         }
 
@@ -115,7 +115,9 @@ class PauseRestoreTest {
 
     @Test
     fun withoutPauseThePlayerStartsExactlyOnceAfterRestore() {
-        val r = rig { false }
+        // REV-200: echter Pausenspeicher mit gespeichertem inaktivem Zustand statt konstantem Boolean.
+        val acksBefore = persistPause(false)
+        val r = rig { storedPaused() }
         r.gate.start()
         assertEquals(0, r.port.playCalls)
         r.runLoad()
@@ -127,6 +129,32 @@ class PauseRestoreTest {
         r.gate.start()
         r.runLoad()
         assertEquals(1, r.port.playCalls)
+        assertEquals(acksBefore, pendingAcks())
+    }
+
+    @Test
+    fun restoredPauseFollowsLaterLiftAndRenewedPauseWithoutAcknowledging() {
+        // REV-200: Eine beim Start aktive Pause darf nicht eingefroren bleiben.
+        persistPause(true)
+        val r = rig { storedPaused() }
+        r.gate.start()
+        r.runLoad()
+        assertEquals(false, r.gate.decision()!!.playbackAllowed)
+        assertEquals(0, r.port.playCalls)
+
+        val acksBefore = persistPause(false, revision = 2)
+        r.gate.refresh()
+        r.runLoad()
+        assertEquals("aufgehobene Pause gibt die Wiedergabe frei", true, r.gate.decision()!!.playbackAllowed)
+        assertEquals(1, r.port.playCalls)
+
+        persistPause(true, revision = 3)
+        r.gate.periodicTick()
+        r.runLoad()
+        assertEquals("erneute Pause wird auch ueber den periodischen Ausloeser uebernommen", false, r.gate.decision()!!.playbackAllowed)
+        assertEquals(DecisionReason.PAUSED, r.gate.decision()!!.reason)
+        // Das Nachlesen erzeugt selbst keine zusaetzlichen Quittungen.
+        assertEquals(acksBefore + 1, pendingAcks())
     }
 
     @Test

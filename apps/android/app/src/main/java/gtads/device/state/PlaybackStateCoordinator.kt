@@ -106,6 +106,7 @@ class PlaybackStateCoordinator(
     /** Wertet erneut aus, etwa nach einer abgeschlossenen Registrierung. */
     fun refresh() = synchronized(lock) {
         if (!started) return@synchronized
+        pauseRestore?.resync() // REV-200: gespeicherten Pausenzustand nicht einfrieren
         evaluate(notifyAlways = false)
     }
 
@@ -119,6 +120,7 @@ class PlaybackStateCoordinator(
      */
     fun periodicTick() = synchronized(lock) {
         if (!started) return@synchronized
+        pauseRestore?.resync() // REV-200: Ablauf/Aufhebung der Pause auch ohne anderen Ausloeser uebernehmen
         evaluate(notifyAlways = false)
         val mark = periodicMark ?: return@synchronized
         val now = wallClock()
