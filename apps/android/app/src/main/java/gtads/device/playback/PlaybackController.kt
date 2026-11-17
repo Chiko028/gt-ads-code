@@ -384,8 +384,10 @@ class PlaybackController internal constructor(
         val limit = stopAt ?: return
         val nowUtc = clock.instant()
         val elapsed = monotonicMillis() - slotStartedMono
-        val outsideWindow = nowUtc.isBefore(currentSlot.startAt) || !nowUtc.isBefore(currentSlot.endAt)
-        if (outsideWindow || !nowUtc.isBefore(limit) || elapsed >= currentSlot.durationMs) {
+        // REV-195: Laufzeitberechtigung aus dem Planer (dieselbe Regel wie bei der Auswahl), nur die
+        // spotbezogenen Grenzen (stopAt, Spotdauer) bleiben hier.
+        val stillPlayable = planner.isPlayable(currentSlot)
+        if (!stillPlayable || !nowUtc.isBefore(limit) || elapsed >= currentSlot.durationMs) {
             advanceFrom(previousPosition, null)
         } else {
             scheduleCheck()

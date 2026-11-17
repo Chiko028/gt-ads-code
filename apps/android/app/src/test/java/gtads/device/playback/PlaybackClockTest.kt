@@ -114,6 +114,24 @@ class PlaybackClockTest {
     }
 
     @Test
+    fun clockEventInsideWindowIsReevaluatedWithPlannerRuleWithoutRestart() {
+        // REV-195: Ein Uhrereignis innerhalb des bisherigen Fensters bewertet den laufenden Spot mit
+        // derselben Planerregel neu: weiterlaufen ohne Neustart, aber ab exakter Endgrenze stoppen.
+        val r = rig(start.plusSeconds(30))
+        r.controller.start()
+        r.clock.now = start.plusSeconds(300)
+        r.controller.onClockChanged()
+        assertEquals(0, r.port.stopCalls)
+        assertEquals(1, r.port.prepared.size)
+        assertTrue(PlaybackPlanner(r.clock).isPlayable(manifestSlot(0, mediaFixture(directory, byteArrayOf(7, 7, 7)), 3_600_000L, start, end)))
+
+        r.clock.now = end
+        r.controller.onClockChanged()
+        assertEquals("Endgrenze ist exklusiv wie im Planer", 1, r.port.stopCalls)
+        assertEquals(PlaybackUiState.EMPTY, r.states.last())
+    }
+
+    @Test
     fun backwardJumpOrTimezoneChangeNeverStartsOutsideWindowAndAvoidsTightLoop() {
         val r = rig(start.plusSeconds(30))
         r.controller.start()

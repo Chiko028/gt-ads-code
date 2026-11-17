@@ -31,7 +31,7 @@ fun planNextSlot(snapshot: ActiveManifest, nowUtc: Instant, previousPosition: In
     val first = if (previousPosition == null || previousPosition !in 0 until count) 0 else (previousPosition + 1) % count
     for (step in 0 until count) {
         val slot = slots[(first + step) % count]
-        if (nowUtc.isBefore(slot.startAt) || !nowUtc.isBefore(slot.endAt)) continue
+        if (!slotPlayableAt(slot, nowUtc)) continue
         val spotEnd = saturatingPlus(nowUtc, slot.durationMs)
         val stopAt = if (spotEnd.isBefore(slot.endAt)) spotEnd else slot.endAt
         return PlaybackDecision.Play(slot, stopAt)
@@ -39,10 +39,20 @@ fun planNextSlot(snapshot: ActiveManifest, nowUtc: Instant, previousPosition: In
     return PlaybackDecision.Empty
 }
 
+/**
+ * Einzige Laufzeitberechtigung eines Slots (`startAt <= nowUtc < endAt`). REV-195: Planung und
+ * Neubewertung eines laufenden Spots verwenden dieselbe Regel; keine zweite Fensterpruefung.
+ */
+fun slotPlayableAt(slot: ManifestSlot, nowUtc: Instant): Boolean =
+    !nowUtc.isBefore(slot.startAt) && nowUtc.isBefore(slot.endAt)
+
 /** Planer mit injizierbarer Uhr; liest die Zeit bei jedem Aufruf neu (Zeitspruenge). */
 class PlaybackPlanner(private val clock: Clock = Clock.systemUTC()) {
     fun next(snapshot: ActiveManifest, previousPosition: Int?): PlaybackDecision =
         planNextSlot(snapshot, clock.instant(), previousPosition)
+
+    /** REV-195: Ist der Slot nach der aktuellen Uhr (auch nach Zeit-/Zeitzonenwechseln) noch zulaessig? */
+    fun isPlayable(slot: ManifestSlot): Boolean = slotPlayableAt(slot, clock.instant())
 }
 
 private fun saturatingPlus(instant: Instant, millis: Long): Instant = try {
