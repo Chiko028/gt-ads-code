@@ -48,6 +48,7 @@ class PlaybackController internal constructor(
     private val listener: (PlaybackUiState) -> Unit = {},
     private val monotonicMillis: () -> Long = { SystemClock.elapsedRealtime() },
     private val tickMs: Long = DEFAULT_TICK_MS,
+    private val playbackPermitted: () -> Boolean = { true },
 ) {
     /** Produktive Verdrahtung: lokaler Speicher, Main-Looper, Systemuhren. */
     constructor(context: Context, listener: (PlaybackUiState) -> Unit) : this(
@@ -56,6 +57,20 @@ class PlaybackController internal constructor(
         snapshots = PlaybackRuntime.snapshotProvider(context),
         timer = HandlerPlaybackTimer(),
         listener = listener,
+    )
+
+    /** Produktive Verdrahtung mit externer CX-083-Freigabe. */
+    constructor(
+        context: Context,
+        listener: (PlaybackUiState) -> Unit,
+        playbackPermitted: () -> Boolean,
+    ) : this(
+        adapterFactory = { observer -> LocalMediaPlayerAdapter(context.applicationContext, observer) },
+        clock = Clock.systemUTC(),
+        snapshots = PlaybackRuntime.snapshotProvider(context),
+        timer = HandlerPlaybackTimer(),
+        listener = listener,
+        playbackPermitted = playbackPermitted,
     )
 
     private val planner = PlaybackPlanner(clock)
@@ -78,6 +93,11 @@ class PlaybackController internal constructor(
     /** Startet genau eine Wiedergabeschleife; wiederholte Aufrufe sind wirkungslos. */
     fun start() {
         if (running) return
+        if (!playbackPermitted()) {
+            // CX-083-Freigabe: ohne Bereitschaft ON wird nicht gestartet.
+            publish(PlaybackUiState.IDLE)
+            return
+        }
         running = true
         skipped.clear()
         snapshot = null

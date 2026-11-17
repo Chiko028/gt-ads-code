@@ -9,9 +9,13 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import gtads.device.heartbeat.HeartbeatRuntime
+import gtads.device.heartbeat.StatusReporter
 import gtads.device.playback.PlaybackController
 import gtads.device.playback.PlaybackRuntime
 import gtads.device.playback.PlaybackUiState
+import gtads.device.state.GateDecision
+import gtads.device.state.PlaybackStateCoordinator
 import gtads.device.sync.SyncScheduler
 
 /**
@@ -24,7 +28,14 @@ import gtads.device.sync.SyncScheduler
  * Media3-PlayerView ohne Bedienelemente die Anzeige. Activity-Stopp beendet
  * Wiedergabe und Timer; ein erneuter Start liest den neuesten aktivierten
  * Stand. Es gibt keine Kiosk-Sperre, keinen Foreground-Service und keine
- * Hintergrundwiedergabe (R-904 bis R-907 bleiben spaetere Pakete).
+ * Hintergrundwiedergabe.
+ *
+ * CX-085 bindet den CX-083-Zustandsautomaten in genau diesen Lifecycle ein:
+ * Die Wiedergabe startet nur bei freigegebener Bereitschaft, der
+ * Display-Nachlauf folgt der konfigurierten Frist ueber das Fenster-Flag
+ * KEEP_SCREEN_ON (keine globalen Geraeteeinstellungen, keine
+ * Administratorrechte). Der StatusReporter laeuft nur zwischen onStart und
+ * onStop.
  */
 class MainActivity : Activity() {
     private lateinit var statusText: TextView
@@ -41,6 +52,8 @@ class MainActivity : Activity() {
 
     private var playback: PlaybackController? = null
     private var playbackView: View? = null
+    private var gate: PlaybackStateCoordinator? = null
+    private var reporter: StatusReporter? = null
 
     private val listener: (RegistrationScreenState) -> Unit = { render(it) }
 
@@ -68,7 +81,13 @@ class MainActivity : Activity() {
 
         registerButton.setOnClickListener { submit() }
 
-        playback = PlaybackRuntime.createController(this) { state -> renderPlayback(state) }
+        gate = PlaybackGateRuntime.create(this) { decision -> applyGate(decision) }
+        playback = PlaybackRuntime.createController(
+            this,
+            { state -> renderPlayback(state) },
+            { gate?.decision()?.playbackAllowed ?: true },
+        )
+        reporter = HeartbeatRuntime.create(this)
 
         render(RegistrationScreenState.Loading)
         RegistrationProcess.observe(listener)
@@ -82,24 +101,34 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             // Ohne WorkManager bleibt die Registrierung nutzbar.
         }
-        // Liest den aktuellen aktivierten Stand und startet genau eine Schleife.
+        // Der Zustandsautomat wertet aus; der Controller prueft dieselbe
+        // Freigabe zusaetzlich in start().
+        gate?.start()
         startPlayback()
+        reporter?.start()
     }
 
     override fun onStop() {
-        // Keine Wiedergabe und kein Timer ausserhalb des sichtbaren Vordergrunds.
+        // Keine Wiedergabe, kein Timer und kein Reporter ausserhalb des
+        // sichtbaren Vordergrunds.
+        reporter?.stop()
+        gate?.stop()
         stopPlayback()
         super.onStop()
     }
 
     override fun onDestroy() {
+        gate?.stop()
+        gate = null
+        reporter?.stop()
+        reporter = null
         playback?.stop()
         playback = null
         RegistrationProcess.remove(listener)
         super.onDestroy()
     }
 
-    /** Testbarer Einstiegspunkt; identisch zum Lifecycle-Aufruf in onStart. */
+    /** Testbarer Einstiegspunkt; ohne Zustandsanbindung identisch zu onStart. */
     internal fun startPlayback() {
         playback?.start()
     }
@@ -107,6 +136,23 @@ class MainActivity : Activity() {
     /** Testbarer Einstiegspunkt; identisch zum Lifecycle-Aufruf in onStop. */
     internal fun stopPlayback() {
         playback?.stop()
+    }
+
+    /**
+     * Uebernimmt die Entscheidung des Zustandsautomaten. Wiedergabe folgt
+     * playbackAllowed, der Displaybedarf ausschliesslich dem Fenster-Flag.
+     */
+    private fun applyGate(decision: GateDecision) {
+        if (decision.playbackAllowed) {
+            playback?.start()
+        } else {
+            playback?.stop()
+        }
+        if (decision.displayRequired) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     private fun submit() {
@@ -151,8 +197,13 @@ class MainActivity : Activity() {
         deviceIdValue.text = state.deviceId
         serverUrlValue.text = state.serverUrl
         // Registrierung kann waehrend der Activity abgeschlossen werden; dann
-        // startet die Wiedergabe ohne Activity-Neustart, sofern ein Stand da ist.
-        playback?.start()
+        // wertet der Zustandsautomat sofort neu aus.
+        val current = gate
+        if (current != null) {
+            current.refresh()
+        } else {
+            playback?.start()
+        }
     }
 
     private fun renderPlayback(state: PlaybackUiState) {

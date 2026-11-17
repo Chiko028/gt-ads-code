@@ -40,7 +40,16 @@ object PlaybackRuntime {
     }
 
     fun createController(context: Context, listener: (PlaybackUiState) -> Unit): PlaybackController =
-        overrides?.controllerFactory?.invoke(context, listener) ?: PlaybackController(context, listener)
+        createController(context, listener) { true }
+
+    /** Wie oben, zusaetzlich mit der CX-083-Wiedergabefreigabe. */
+    fun createController(
+        context: Context,
+        listener: (PlaybackUiState) -> Unit,
+        playbackPermitted: () -> Boolean,
+    ): PlaybackController =
+        overrides?.controllerFactory?.invoke(context, listener)
+            ?: PlaybackController(context, listener, playbackPermitted)
 
     fun createSurface(activity: Activity): View =
         overrides?.surfaceFactory?.invoke(activity) ?: createMedia3PlaybackSurface(activity)
