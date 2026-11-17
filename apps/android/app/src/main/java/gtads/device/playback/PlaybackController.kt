@@ -49,6 +49,8 @@ class PlaybackController internal constructor(
     private val monotonicMillis: () -> Long = { SystemClock.elapsedRealtime() },
     private val tickMs: Long = DEFAULT_TICK_MS,
     private val playbackPermitted: () -> Boolean = { true },
+    /** CX-098: Android-Zeit-/Zeitzonenaenderungen; lebenszyklusgebunden angemeldet. */
+    private val clockChanges: ClockChangeSource = NoClockChanges,
 ) {
     /** Produktive Verdrahtung: lokaler Speicher, Main-Looper, Systemuhren. */
     constructor(context: Context, listener: (PlaybackUiState) -> Unit) : this(
@@ -57,6 +59,7 @@ class PlaybackController internal constructor(
         snapshots = PlaybackRuntime.snapshotProvider(context),
         timer = HandlerPlaybackTimer(),
         listener = listener,
+        clockChanges = AndroidClockChangeSource(context),
     )
 
     /** Produktive Verdrahtung mit externer CX-083-Freigabe. */
@@ -71,6 +74,7 @@ class PlaybackController internal constructor(
         timer = HandlerPlaybackTimer(),
         listener = listener,
         playbackPermitted = playbackPermitted,
+        clockChanges = AndroidClockChangeSource(context),
     )
 
     private val planner = PlaybackPlanner(clock)
@@ -80,6 +84,7 @@ class PlaybackController internal constructor(
     private var adapter: LocalMediaPlayerAdapter? = null
     private var attachedView: View? = null
     private var timerHandle: PlaybackTimer.Cancellable? = null
+    private var clockSubscription: PlaybackTimer.Cancellable? = null
     private var snapshot: ActiveManifest? = null
     private var slot: ManifestSlot? = null
     private var stopAt: Instant? = null
@@ -99,6 +104,12 @@ class PlaybackController internal constructor(
             return
         }
         running = true
+        clockSubscription?.cancel()
+        clockSubscription = try {
+            clockChanges.subscribe { onClockChanged() }
+        } catch (_: Exception) {
+            null
+        }
         skipped.clear()
         snapshot = null
         slot = null
@@ -109,6 +120,7 @@ class PlaybackController internal constructor(
         if (current == null) {
             // Noch kein aktivierter Stand (z. B. nicht registriert): Anzeige unveraendert.
             running = false
+            unsubscribeClock()
             publish(PlaybackUiState.IDLE)
             return
         }
@@ -118,6 +130,7 @@ class PlaybackController internal constructor(
     /** Beendet Wiedergabe und Timer und gibt den Player frei; mehrfach aufrufbar. */
     fun stop() {
         running = false
+        unsubscribeClock()
         cancelTimer()
         playingGeneration = null
         slot = null
@@ -127,6 +140,32 @@ class PlaybackController internal constructor(
         skipped.clear()
         releaseAdapter()
         publish(PlaybackUiState.IDLE)
+    }
+
+    /**
+     * CX-098: Wanduhr oder Zeitzone hat sich geaendert. Alte Zeitplanung wird
+     * verworfen; ein laufender Spot ausserhalb seines Fensters wird sofort
+     * beendet, sonst genau ein neuer begrenzter Termin gesetzt.
+     */
+    fun onClockChanged() {
+        if (!running) return
+        cancelTimer()
+        if (slot == null) {
+            // Kein laufender Spot (z. B. EMPTY): vorhandenen Scheduler erneut fragen.
+            selectNext(previousPosition)
+            return
+        }
+        reevaluateRunningSlot()
+    }
+
+    private fun unsubscribeClock() {
+        val subscription = clockSubscription ?: return
+        clockSubscription = null
+        try {
+            subscription.cancel()
+        } catch (_: Exception) {
+            // Abmeldung ist best effort.
+        }
     }
 
     /** Bindet die sichtbare Media3-Ansicht; null loest die Bindung. */
@@ -182,6 +221,7 @@ class PlaybackController internal constructor(
             val decision = planner.next(current, cursor)
             if (decision !is PlaybackDecision.Play) {
                 publish(PlaybackUiState.EMPTY)
+                scheduleIdleRecheck(current)
                 return
             }
             val position = decision.position
@@ -302,15 +342,45 @@ class PlaybackController internal constructor(
     private fun onTimer() {
         timerHandle = null
         if (!running) return
+        if (slot == null) {
+            // Begrenzter Leerlauftermin: Scheduler erneut fragen.
+            selectNext(previousPosition)
+            return
+        }
+        reevaluateRunningSlot()
+    }
+
+    /**
+     * Exklusive Endgrenzen gelten auch fuer laufende Spots; ein Rueckwaertssprung
+     * vor den Fensterbeginn beendet den Spot ebenfalls sofort.
+     */
+    private fun reevaluateRunningSlot() {
         val currentSlot = slot ?: return
         val limit = stopAt ?: return
         val nowUtc = clock.instant()
         val elapsed = monotonicMillis() - slotStartedMono
-        if (!nowUtc.isBefore(limit) || elapsed >= currentSlot.durationMs) {
+        val outsideWindow = nowUtc.isBefore(currentSlot.startAt) || !nowUtc.isBefore(currentSlot.endAt)
+        if (outsideWindow || !nowUtc.isBefore(limit) || elapsed >= currentSlot.durationMs) {
             advanceFrom(previousPosition, null)
         } else {
             scheduleCheck()
         }
+    }
+
+    /**
+     * CX-098: Ohne zulaessigen Spot genau ein begrenzter Termin bis zum naechsten
+     * Fensterbeginn, mindestens [tickMs], hoechstens [MAX_IDLE_RECHECK_MS]; keine
+     * enge Wiederholungsschleife.
+     */
+    private fun scheduleIdleRecheck(current: ActiveManifest) {
+        cancelTimer()
+        val nowMs = clock.millis()
+        val nextStart = current.slots
+            .map { it.startAt.toEpochMilli() - nowMs }
+            .filter { it > 0L }
+            .minOrNull() ?: MAX_IDLE_RECHECK_MS
+        val delay = nextStart.coerceIn(tickMs, MAX_IDLE_RECHECK_MS)
+        timerHandle = timer.schedule(delay) { onTimer() }
     }
 
     private fun cancelTimer() {
@@ -331,5 +401,6 @@ class PlaybackController internal constructor(
 
     private companion object {
         const val DEFAULT_TICK_MS = 1_000L
+        const val MAX_IDLE_RECHECK_MS = 60_000L
     }
 }
