@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -28,6 +29,7 @@ internal class ExoPlayerPort(context: Context) : LocalPlayerPort {
     private var callbacks: LocalPlayerPort.Callbacks? = null
 
     private var player: ExoPlayer? = null
+    private var attachedView: PlaybackSurface? = null
     private var generation = 0L
     private var released = false
 
@@ -61,6 +63,7 @@ internal class ExoPlayerPort(context: Context) : LocalPlayerPort {
         exoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
         exoPlayer.prepare()
         player = exoPlayer
+        attachedView?.bindPlayer(exoPlayer)
     }
 
     override fun play() = onMainThread {
@@ -79,6 +82,20 @@ internal class ExoPlayerPort(context: Context) : LocalPlayerPort {
         releasePlayer()
     }
 
+    /** Bindet die optionale Oberflaeche an den aktuellen Player; null loest die Bindung. */
+    override fun attachView(view: View?) = onMainThread {
+        if (released) {
+            (view as? PlaybackSurface)?.bindPlayer(null)
+            return@onMainThread
+        }
+        val target = view as? PlaybackSurface
+        if (attachedView !== target) {
+            attachedView?.bindPlayer(null)
+        }
+        attachedView = target
+        target?.bindPlayer(player)
+    }
+
     private fun applyAudioDisabled(exoPlayer: ExoPlayer) {
         exoPlayer.volume = 0f
         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
@@ -88,6 +105,7 @@ internal class ExoPlayerPort(context: Context) : LocalPlayerPort {
     }
 
     private fun releasePlayer() {
+        attachedView?.bindPlayer(null)
         player?.release()
         player = null
     }

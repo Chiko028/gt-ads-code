@@ -15,4 +15,6 @@
     <string name="registration_label_device_id">Geraetekennung</string>
     <string name="registration_label_registered_server">Serveradresse</string>
     <string name="registration_action_register">Registrieren</string>
+    <!-- Neutraler technischer Leerzustand der Offline-Wiedergabe; kein Ersatzinhalt. -->
+    <string name="playback_message_empty">Keine lokalen Inhalte verfuegbar</string>
 </resources>

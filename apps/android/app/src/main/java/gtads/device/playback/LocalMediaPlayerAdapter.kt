@@ -1,6 +1,7 @@
 package gtads.device.playback
 
 import android.content.Context
+import android.view.View
 import gtads.device.download.MediaDownloader
 import gtads.device.manifest.ActiveManifest
 import gtads.device.manifest.VerifiedMedia
@@ -71,6 +72,9 @@ interface LocalPlayerPort {
     fun stop()
     fun release()
 
+    /** Bindet optional eine Ansicht an den Player; Standard ist keine Oberflaeche. */
+    fun attachView(view: View?) {}
+
     interface Callbacks {
         fun onEnded(generation: Long)
         fun onError(generation: Long, reason: PlaybackRejection)
@@ -98,9 +102,13 @@ class LocalMediaPlayerAdapter internal constructor(
     private val observer: PlaybackObserver? = null,
 ) {
     /** Produktive Verdrahtung: private Medienablage aus CX-075/CX-076. */
-    constructor(context: Context) : this(
+    constructor(context: Context) : this(context, null)
+
+    /** Produktive Verdrahtung mit optionalem Beobachter fuer die Activity-Schleife. */
+    internal constructor(context: Context, observer: PlaybackObserver?) : this(
         File(context.filesDir, MediaDownloader.MEDIA_DIRECTORY),
         ExoPlayerPort(context.applicationContext),
+        observer,
     )
 
     private enum class State { IDLE, PREPARED, PLAYING, RELEASED }
@@ -160,6 +168,18 @@ class LocalMediaPlayerAdapter internal constructor(
         } catch (_: Exception) {
             state = State.IDLE
             PrepareResult.Rejected(PlaybackRejection.PLAYER_ERROR)
+        }
+    }
+
+    /** Bindet eine sichtbare Ansicht an den Player-Port; null loest die Bindung. */
+    fun attachView(view: View?) {
+        synchronized(lock) {
+            if (state == State.RELEASED) return
+            try {
+                port.attachView(view)
+            } catch (_: Exception) {
+                // Ohne Oberflaeche bleibt die Wiedergabe moeglich.
+            }
         }
     }
 

@@ -1,96 +1,119 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <LinearLayout
+    <ScrollView
+        android:id="@+id/registration_scroll"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="24dp">
-
-        <TextView
-            android:id="@+id/registration_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/registration_message_not_registered"
-            android:textSize="18sp" />
+        android:layout_height="match_parent">
 
         <LinearLayout
-            android:id="@+id/registration_form"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical">
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/registration_label_server_url" />
-
-            <EditText
-                android:id="@+id/server_url_input"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:autofillHints="url"
-                android:hint="@string/registration_label_server_url"
-                android:inputType="textUri"
-                android:maxLines="1" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/registration_label_code" />
-
-            <EditText
-                android:id="@+id/registration_code_input"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:importantForAutofill="noExcludeDescendants"
-                android:inputType="textPassword|textNoSuggestions"
-                android:maxLines="1"
-                android:saveEnabled="false" />
-
-            <Button
-                android:id="@+id/registration_button"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/registration_action_register" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/registration_registered"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:visibility="gone">
+            android:padding="24dp">
 
             <TextView
+                android:id="@+id/registration_status"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="@string/registration_message_success"
+                android:text="@string/registration_message_not_registered"
                 android:textSize="18sp" />
 
-            <TextView
+            <LinearLayout
+                android:id="@+id/registration_form"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="@string/registration_label_device_id" />
+                android:orientation="vertical">
 
-            <TextView
-                android:id="@+id/registered_device_id"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textIsSelectable="true" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/registration_label_server_url" />
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/registration_label_registered_server" />
+                <EditText
+                    android:id="@+id/server_url_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:autofillHints="url"
+                    android:hint="@string/registration_label_server_url"
+                    android:inputType="textUri"
+                    android:maxLines="1" />
 
-            <TextView
-                android:id="@+id/registered_server_url"
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/registration_label_code" />
+
+                <EditText
+                    android:id="@+id/registration_code_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:importantForAutofill="noExcludeDescendants"
+                    android:inputType="textPassword|textNoSuggestions"
+                    android:maxLines="1"
+                    android:saveEnabled="false" />
+
+                <Button
+                    android:id="@+id/registration_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/registration_action_register" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/registration_registered"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:textIsSelectable="true" />
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/registration_message_success"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/registration_label_device_id" />
+
+                <TextView
+                    android:id="@+id/registered_device_id"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textIsSelectable="true" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/registration_label_registered_server" />
+
+                <TextView
+                    android:id="@+id/registered_server_url"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textIsSelectable="true" />
+            </LinearLayout>
         </LinearLayout>
-    </LinearLayout>
-</ScrollView>
+    </ScrollView>
+
+    <FrameLayout
+        android:id="@+id/playback_surface"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/black"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/playback_empty"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:padding="24dp"
+        android:text="@string/playback_message_empty"
+        android:textSize="18sp"
+        android:visibility="gone" />
+</FrameLayout>
