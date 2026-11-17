@@ -54,6 +54,9 @@ class MainActivity : Activity() {
     private var playbackView: View? = null
     private var gate: PlaybackStateCoordinator? = null
     private var reporter: StatusReporter? = null
+    /** CX-091: Kiosk-Adapter; nur Release + lokale Konfiguration + Device Owner. */
+    private var kiosk: gtads.device.kiosk.KioskPolicy? = null
+
     /** CX-089: Wiedergabe-Watchdog nur im aktiven Wiedergabelebenszyklus. */
     private var watchdogMonitor: gtads.device.watchdog.PlaybackWatchdogMonitor? = null
     @Volatile
@@ -147,6 +150,14 @@ class MainActivity : Activity() {
         }
         commands?.start()
         watchdogMonitor?.start()
+        if (kiosk == null) {
+            kiosk = gtads.device.kiosk.KioskPolicy(
+                gtads.device.kiosk.AndroidKioskPlatform(this),
+                gtads.device.kiosk.SharedPreferencesKioskConfig(this),
+                packageName,
+            )
+        }
+        kiosk?.onActivityStarted()
     }
 
     override fun onStop() {
