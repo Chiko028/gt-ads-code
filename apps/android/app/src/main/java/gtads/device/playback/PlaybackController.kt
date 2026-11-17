@@ -168,6 +168,20 @@ class PlaybackController internal constructor(
         }
     }
 
+    /** CX-089: Fortschrittsprobe der laufenden Wiedergabe (Generation, Position) oder null. */
+    fun progressSample(): gtads.device.watchdog.PlaybackProgress? {
+        if (!running || playingGeneration == null) return null
+        val (generation, position) = adapter?.progress() ?: return null
+        return gtads.device.watchdog.PlaybackProgress(generation, position.coerceAtLeast(0L))
+    }
+
+    /** CX-089: aktuelle, bereits gepruefte Planung des laufenden Spots. */
+    fun currentPlanning(): PlaybackDecision {
+        val current = slot ?: return PlaybackDecision.Empty
+        val limit = stopAt ?: return PlaybackDecision.Empty
+        return PlaybackDecision.Play(current, limit)
+    }
+
     /** Bindet die sichtbare Media3-Ansicht; null loest die Bindung. */
     fun attachView(view: View?) {
         attachedView = view

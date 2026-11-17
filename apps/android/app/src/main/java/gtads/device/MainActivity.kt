@@ -54,6 +54,11 @@ class MainActivity : Activity() {
     private var playbackView: View? = null
     private var gate: PlaybackStateCoordinator? = null
     private var reporter: StatusReporter? = null
+    /** CX-089: Wiedergabe-Watchdog nur im aktiven Wiedergabelebenszyklus. */
+    private var watchdogMonitor: gtads.device.watchdog.PlaybackWatchdogMonitor? = null
+    @Volatile
+    private var watchdogFault = false
+
     /** CX-087: Befehlsabruf nur im sichtbaren Vordergrund. */
     private var commands: gtads.device.control.CommandPollingLoop? = null
 
@@ -83,13 +88,36 @@ class MainActivity : Activity() {
 
         registerButton.setOnClickListener { submit() }
 
-        gate = PlaybackGateRuntime.create(this) { decision -> applyGate(decision) }
+        gate = PlaybackGateRuntime.create(
+            this,
+            { decision -> applyGate(decision) },
+            {
+                if (watchdogFault) gtads.device.state.PlayerCondition.ERROR else gtads.device.state.PlayerCondition.OK
+            },
+        )
         playback = PlaybackRuntime.createController(
             this,
             { state -> renderPlayback(state) },
             { gate?.decision()?.playbackAllowed ?: true },
         )
         reporter = HeartbeatRuntime.create(this)
+        watchdogMonitor = playback?.let { controller ->
+            val handler = android.os.Handler(android.os.Looper.getMainLooper())
+            gtads.device.watchdog.PlaybackWatchdogMonitor(
+                controller = controller,
+                state = { gate?.stateSnapshot() },
+                watchdog = gtads.device.watchdog.PlaybackWatchdog(gtads.device.watchdog.ControllerPlaybackRecovery(controller)),
+                schedule = { delay, action ->
+                    val runnable = Runnable { action() }
+                    handler.postDelayed(runnable, delay)
+                    AutoCloseable { handler.removeCallbacks(runnable) }
+                },
+                onFault = { fault ->
+                    watchdogFault = fault
+                    gate?.refresh()
+                },
+            )
+        }
 
         render(RegistrationScreenState.Loading)
         RegistrationProcess.observe(listener)
@@ -116,11 +144,13 @@ class MainActivity : Activity() {
             }
         }
         commands?.start()
+        watchdogMonitor?.start()
     }
 
     override fun onStop() {
         // Keine Wiedergabe, kein Timer und kein Reporter ausserhalb des
         // sichtbaren Vordergrunds.
+        watchdogMonitor?.stop()
         commands?.stop()
         reporter?.stop()
         gate?.stop()
@@ -129,6 +159,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        watchdogMonitor?.stop()
+        watchdogMonitor = null
         gate?.stop()
         gate = null
         reporter?.stop()

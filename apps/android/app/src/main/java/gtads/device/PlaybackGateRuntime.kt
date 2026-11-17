@@ -45,11 +45,16 @@ object PlaybackGateRuntime {
         overrides = null
     }
 
-    fun create(context: Context, onDecision: (GateDecision) -> Unit): PlaybackStateCoordinator? {
+    fun create(
+        context: Context,
+        onDecision: (GateDecision) -> Unit,
+        /** CX-089: technischer Playerzustand (Watchdog), Standard OK. */
+        playerCondition: () -> gtads.device.state.PlayerCondition = { gtads.device.state.PlayerCondition.OK },
+    ): PlaybackStateCoordinator? {
         val app = context.applicationContext
         overrides?.let { return it.factory(app, onDecision) }
         return try {
-            createProduction(app, onDecision)
+            createProduction(app, onDecision, playerCondition)
         } catch (_: Exception) {
             null
         }
@@ -58,6 +63,7 @@ object PlaybackGateRuntime {
     private fun createProduction(
         context: Context,
         onDecision: (GateDecision) -> Unit,
+        playerCondition: () -> gtads.device.state.PlayerCondition,
     ): PlaybackStateCoordinator {
         val readiness: ReadinessSource = PowerConnectionReadinessSource(context)
         val snapshots = PlaybackRuntime.snapshotProvider(context)
@@ -67,6 +73,7 @@ object PlaybackGateRuntime {
             content = {
                 if (snapshots() != null) ContentAvailability.VALID else ContentAvailability.NONE
             },
+            player = playerCondition,
             recorder = { createRecorder(context) },
             displayGraceMillis = DEFAULT_DISPLAY_GRACE_MILLIS,
             schedule = { delay, action -> HandlerScheduledTask(delay, action) },

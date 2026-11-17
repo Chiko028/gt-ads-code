@@ -33,6 +33,12 @@ internal class ExoPlayerPort(context: Context) : LocalPlayerPort {
     private var generation = 0L
     private var released = false
 
+    /** CX-089: Position nur auf dem Main-Thread lesen; sonst unbekannt. */
+    override fun currentPositionMs(): Long {
+        if (Looper.myLooper() != Looper.getMainLooper()) return -1L
+        return player?.currentPosition?.coerceAtLeast(0L) ?: -1L
+    }
+
     override fun setCallbacks(callbacks: LocalPlayerPort.Callbacks?) {
         this.callbacks = callbacks
     }

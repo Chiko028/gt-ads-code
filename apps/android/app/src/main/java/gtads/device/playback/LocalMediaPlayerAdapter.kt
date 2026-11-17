@@ -75,6 +75,9 @@ interface LocalPlayerPort {
     /** Bindet optional eine Ansicht an den Player; Standard ist keine Oberflaeche. */
     fun attachView(view: View?) {}
 
+    /** CX-089: aktuelle Wiedergabeposition in ms oder -1, wenn unbekannt. */
+    fun currentPositionMs(): Long = -1L
+
     interface Callbacks {
         fun onEnded(generation: Long)
         fun onError(generation: Long, reason: PlaybackRejection)
@@ -112,6 +115,12 @@ class LocalMediaPlayerAdapter internal constructor(
     )
 
     private enum class State { IDLE, PREPARED, PLAYING, RELEASED }
+
+    /** CX-089: Generation und Position der laufenden Wiedergabe, sonst null. */
+    fun progress(): Pair<Long, Long>? = synchronized(lock) {
+        if (state != State.PLAYING) return@synchronized null
+        generation to port.currentPositionMs()
+    }
 
     private val lock = Any()
     private var state = State.IDLE

@@ -71,6 +71,9 @@ class PlaybackStateCoordinator(
     val storageError: String?
         get() = storage
 
+    /** CX-089: letzte Entscheidung des Zustandsautomaten fuer den Watchdog. */
+    fun stateSnapshot(): StateSnapshot? = synchronized(lock) { machine.snapshot() }
+
     /** Aktuelle Entscheidung oder null, solange nicht gestartet wurde. */
     fun decision(): GateDecision? = lastDecision
 
