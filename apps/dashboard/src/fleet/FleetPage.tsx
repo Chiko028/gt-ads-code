@@ -124,6 +124,8 @@ function hasCompletePair(
  */
 export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   const { invalidateSession, role } = useAdminSession();
+  // CX-143: Inventarbearbeitung (devices.inventory) nur fuer Admin.
+  const canEditInventory = role === "Admin";
 
   const mountedRef = useRef(true);
   const generationRef = useRef(0);
@@ -156,6 +158,9 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   >([]);
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryError, setInventoryError] = useState<string | null>(null);
+  // CX-143: Konflikt haelt den Entwurf; Neuladen verwirft ihn erst nach Bestaetigung.
+  const [inventoryConflict, setInventoryConflict] = useState(false);
+  const [confirmInventoryReload, setConfirmInventoryReload] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1004,9 +1009,11 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   function startInventoryEdit(item: FleetInventoryItem): void {
     // Waehrend eines laufenden Inventarschreibvorgangs und solange ein
     // Ausgang unklar ist, darf das bearbeitete Geraet nicht wechseln.
-    if (inventoryBusyRef.current || unclearWriteRef.current) {
+    if (!canEditInventory || inventoryBusyRef.current || unclearWriteRef.current) {
       return;
     }
+    setInventoryConflict(false);
+    setConfirmInventoryReload(false);
     setSelectedDeviceId(item.deviceId);
     setInventorySerial(item.serialNumber ?? "");
     setInventoryType(item.deviceType ?? "");
@@ -1017,6 +1024,8 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
   }
 
   function closeInventoryEdit(): void {
+    setInventoryConflict(false);
+    setConfirmInventoryReload(false);
     setSelectedDeviceId(null);
     setInventorySerial("");
     setInventoryType("");
@@ -1110,9 +1119,9 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
         return;
       }
       if (isFleetConflict(error)) {
+        // Kein automatisches Ueberschreiben: Eingaben bleiben zum Vergleich.
         setActionError(CONFLICT_MESSAGE);
-        closeInventoryEdit();
-        await loadAll(generation);
+        setInventoryConflict(true);
         return;
       }
       if (isUnclearWriteOutcome(error)) {
@@ -1833,13 +1842,15 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
                   <td>{displayOrMissing(item.replacementNote)}</td>
                   <td>{item.adminActive ? "Aktiv" : "Inaktiv"}</td>
                   <td>
-                    <button
-                      type="button"
-                      onClick={() => startInventoryEdit(item)}
-                      disabled={inventoryBusy || unclearWrite}
-                    >
-                      Bearbeiten
-                    </button>
+                    {canEditInventory ? (
+                      <button
+                        type="button"
+                        onClick={() => startInventoryEdit(item)}
+                        disabled={inventoryBusy || unclearWrite}
+                      >
+                        Bearbeiten
+                      </button>
+                    ) : null}
                     {item.adminActive ? (
                       <button
                         type="button"
@@ -1917,6 +1928,40 @@ export function FleetPage({ transport, fetchImpl }: FleetPageProps) {
             >
               Abbrechen
             </button>
+          </section>
+        ) : null}
+
+        {selectedInventory !== null && inventoryConflict ? (
+          <section aria-label="Inventarkonflikt">
+            <p>
+              Der Datensatz wurde inzwischen geändert. Ihre Eingaben bleiben
+              erhalten; der aktuelle Serverstand wird nur auf Wunsch geladen.
+            </p>
+            {confirmInventoryReload ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() =>
+                    showInventoryPage(inventoryCursorRef.current, inventoryHistory)
+                  }
+                >
+                  Entwurf verwerfen und neu laden
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmInventoryReload(false)}
+                >
+                  Entwurf behalten
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmInventoryReload(true)}
+              >
+                Serverstand neu laden
+              </button>
+            )}
           </section>
         ) : null}
 
