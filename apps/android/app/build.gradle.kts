@@ -33,14 +33,13 @@ android {
 // ohne Netz nicht aufloesbar; die API-kompatible Minimalimplementierung
 // liegt unter src/main/java/androidx/work.
 dependencies {
-    // Die Offline-Versorgung enthaelt die Media3-AARs, aber nicht deren
-    // externe Transitiventkette (AndroidX Core, Guava, RecyclerView). Der
-    // Adapter kapselt Media3 hinter einem injizierbaren Port und die
-    // JVM-Tests ersetzen diesen Port; daher werden nur die tatsaechlich
-    // benoetigten Media3-Module ohne Transitiven gebunden.
-    implementation("androidx.media3:media3-common:1.4.1") { isTransitive = false }
-    implementation("androidx.media3:media3-exoplayer:1.4.1") { isTransitive = false }
-    implementation("androidx.media3:media3-ui:1.4.1") { isTransitive = false }
+    // Media3 wird mit seinen Transitiven gebunden: media3-exoplayer benoetigt
+    // zur Laufzeit datasource/decoder/extractor sowie Guava (ListenableFuture,
+    // auch von WorkManager vorausgesetzt), media3-ui benoetigt RecyclerView.
+    // Alle diese Artefakte liegen in der Offline-Versorgung.
+    implementation("androidx.media3:media3-common:1.4.1")
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
 
     implementation("androidx.work:work-runtime:2.9.1")
     constraints {
