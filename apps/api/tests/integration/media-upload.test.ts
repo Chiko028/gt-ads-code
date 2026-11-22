@@ -1,3 +1,6 @@
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import type { FastifyInstance, FastifyServerOptions } from "fastify";
 import { Pool } from "pg";
@@ -13,12 +16,16 @@ import {
 } from "vitest";
 import { CONFIG_DEFAULTS, type AppConfig } from "../../src/config.js";
 import { hashPassword } from "../../src/crypto/password.js";
-import { migrateUp } from "../../src/db/migrate.js";
+import { migrateLatest } from "../../src/db/migrate.js";
 import { createServer } from "../../src/http/server.js";
-import type { MediaUploadDeps } from "../../src/http/mediaUpload.js";
+import {
+  MEDIA_UPLOAD_MAX_BYTES,
+  type MediaUploadDeps,
+} from "../../src/http/mediaUpload.js";
 import { ADMIN_SESSION_COOKIE } from "../../src/modules/adminAuth/middleware.js";
 import {
   MediaProfileRejectedError,
+  createMedia,
   type CreateMediaInput,
   type MediaProfileMetadata,
   type MediaServiceOptions,
@@ -90,7 +97,7 @@ beforeAll(async () => {
   await maintenancePool.query("create database " + quoteIdentifier(databaseName));
 
   pool = new Pool({ ...base, database: databaseName });
-  await migrateUp(pool);
+  await migrateLatest(pool);
 
   config = {
     ...CONFIG_DEFAULTS,
@@ -102,7 +109,9 @@ beforeAll(async () => {
 }, 60_000);
 
 beforeEach(async () => {
-  await pool.query("truncate table audit_events, admin_sessions restart identity cascade");
+  await pool.query(
+    "truncate table audit_events, admin_sessions, media_objects restart identity cascade",
+  );
 });
 
 afterEach(async () => {
@@ -251,6 +260,20 @@ function captureStream(): { stream: Writable; text: () => string } {
   return { stream, text: () => chunks.join("") };
 }
 
+
+/** Liefert synthetische Chunks, ohne einen grossen Gesamtpuffer anzulegen. */
+function* syntheticChunks(
+  totalBytes: number,
+  chunkBytes = 1024 * 1024,
+): Generator<Buffer> {
+  const chunk = Buffer.alloc(chunkBytes, 0x5a);
+  let remaining = totalBytes;
+  while (remaining > 0) {
+    const size = Math.min(chunkBytes, remaining);
+    remaining -= size;
+    yield size === chunkBytes ? chunk : chunk.subarray(0, size);
+  }
+}
 describe("CX-031 Upload-HTTP-Adapter", () => {
   it("verweigert ohne Sitzung trotz behaupteter Admin-Rollenheader 401 und mit gueltiger Sitzung plus fremdem Origin 403, jeweils vor Bodyparser und createMedia", async () => {
     const upload = uploadDouble(readyMedia("SYN-CX031-Spot.mp4"));
@@ -360,9 +383,8 @@ describe("CX-031 Upload-HTTP-Adapter", () => {
     expect(response.body).not.toContain("/objects/");
   });
 
-  it("beantwortet falschen Content-Type mit 415, unbekannte Queryparameter und einen 129-Zeichen-Namen mit 400 sowie 20.000.001 Bytes ohne Content-Length mit 413; genau 20.000.000 Bytes passieren die Grenze", async () => {
-    const accepted = readyMedia("SYN-CX031-Grenze.mp4");
-    const upload = uploadDouble(accepted);
+  it("beantwortet falschen Content-Type mit 415, unbekannte Queryparameter und einen 129-Zeichen-Namen mit 400, jeweils ohne createMedia", async () => {
+    const upload = uploadDouble(readyMedia("SYN-CX031-Grenze.mp4"));
     const app = await buildApp({ mediaUpload: upload.deps });
     const cookie = await loginCookie(app);
 
@@ -406,38 +428,75 @@ describe("CX-031 Upload-HTTP-Adapter", () => {
       expect(typeof body.error.request_id).toBe("string");
       expect(upload.spy).not.toHaveBeenCalled();
     }
+  });
 
-    // Genau die Grenze, als Strom ohne Content-Length.
-    const exact = Buffer.alloc(20_000_000, 0x41);
-    const acceptedResponse = await app.inject({
+  it("laesst einen synthetischen gueltigen Upload oberhalb der frueheren 20-MB-Grenze bis zur bestehenden Formatpruefung und Medienspeicherung durch", async () => {
+    const created = readyMedia("SYN-CX157-Grenze.mp4");
+    const upload = uploadDouble(created);
+    const app = await buildApp({ mediaUpload: upload.deps });
+    const cookie = await loginCookie(app);
+    const bytes = 20_000_001;
+
+    const response = await app.inject({
       method: "POST",
-      url: UPLOAD_URL + "?name=SYN-CX031-Grenze.mp4",
+      url: UPLOAD_URL + "?name=SYN-CX157-Grenze.mp4",
       headers: uploadHeaders(cookie, { origin: ORIGIN }),
-      payload: Readable.from([exact]),
+      payload: Readable.from(syntheticChunks(bytes)),
       remoteAddress: "192.0.2.246",
     });
-    expect(acceptedResponse.statusCode).toBe(201);
-    expect(upload.spy).toHaveBeenCalledTimes(1);
-    expect(upload.received.byteLength).toBe(20_000_000);
-    expect(upload.received.equals(exact)).toBe(true);
 
-    // Ein Byte mehr, ebenfalls ohne Content-Length.
-    const over = Buffer.alloc(20_000_001, 0x42);
-    const overResponse = await app.inject({
-      method: "POST",
-      url: UPLOAD_URL,
-      headers: uploadHeaders(cookie, { origin: ORIGIN }),
-      payload: Readable.from([over]),
-      remoteAddress: "192.0.2.247",
-    });
-    expect(overResponse.statusCode).toBe(413);
-    const overBody = overResponse.json() as {
-      error: { code: string; message: string; request_id: string };
-    };
-    expect(overBody.error.code).toBe("invalid_request");
-    expect(typeof overBody.error.request_id).toBe("string");
+    expect(response.statusCode).toBe(201);
+    // Die vorhandene createMedia-Grenze ist die Formatpruefung und
+    // Medienspeicherung; ihr wurden die Bytes oberhalb der frueheren Grenze
+    // tatsaechlich und unveraendert geliefert.
     expect(upload.spy).toHaveBeenCalledTimes(1);
-  });
+    expect(upload.received.byteLength).toBe(bytes);
+    expect(upload.received.byteLength).toBeGreaterThan(20_000_000);
+    const input = upload.calls[0] as CreateMediaInput;
+    expect(input.metadata).toBeUndefined();
+  }, 30_000);
+
+  it("weist eine waehrend des Einlesens ueberschrittene Grenze ohne Content-Length mit 413 ab und hinterlaesst weder temporaere Dateien noch einen Mediendatensatz", async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), "cx157-upload-"));
+    try {
+      let serviceCalls = 0;
+      const deps: MediaUploadDeps = {
+        serviceOptions: { pool, storageRoot },
+        createMedia: async (options, input) => {
+          serviceCalls += 1;
+          return createMedia(options, input);
+        },
+      };
+      const app = await buildApp({ mediaUpload: deps });
+      const cookie = await loginCookie(app);
+
+      // Ohne Content-Length: die Grenze wird erst beim Einlesen der
+      // synthetischen Chunks tatsaechlich ueberschritten.
+      const response = await app.inject({
+        method: "POST",
+        url: UPLOAD_URL,
+        headers: uploadHeaders(cookie, { origin: ORIGIN }),
+        payload: Readable.from(syntheticChunks(MEDIA_UPLOAD_MAX_BYTES + 1)),
+        remoteAddress: "192.0.2.247",
+      });
+
+      expect(response.statusCode).toBe(413);
+      const body = response.json() as {
+        error: { code: string; message: string; request_id: string };
+      };
+      expect(body.error.code).toBe("invalid_request");
+      expect(typeof body.error.request_id).toBe("string");
+      expect(serviceCalls).toBe(0);
+
+      const rows = await pool.query(
+        "select count(*)::int as count from media_objects",
+      );
+      expect(rows.rows[0].count).toBe(0);
+      expect(await readdir(storageRoot, { recursive: true })).toEqual([]);
+    } finally {
+      await rm(storageRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it("beantwortet einen typisierten Profilfehler mit 422 und einen unerwarteten Fehler bereinigt mit 500, ohne SQL- oder Pfadmarker in Antwort und Logs", async () => {
     const profileError = new MediaProfileRejectedError([

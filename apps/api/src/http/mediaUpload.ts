@@ -7,7 +7,7 @@
  * pro Anfrage wird dessen oeffentliche createMedia-Schnittstelle genau einmal
  * aufgerufen. Der Adapter erfindet weder Profilmetadaten noch Speicherpfade.
  *
- * Der Content-Type-Parser und die 20-MB-Grenze sind auf den gekapselten
+ * Der Content-Type-Parser und die Medienprofilgrenze sind auf den gekapselten
  * Plugin-Kontext dieser Route beschraenkt; globale Parser bleiben unveraendert.
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -16,6 +16,7 @@ import {
   MediaInputError,
   MediaNotFoundError,
   MediaProfileRejectedError,
+  MediaStorageError,
   isMediaId,
   type CreateMediaInput,
   type DeleteMediaOptions,
@@ -23,6 +24,7 @@ import {
   type MediaServiceOptions,
   type ReadyMedia,
 } from "../modules/media/index.js";
+import { MEDIA_MAX_SIZE_BYTES } from "../modules/media/profile.js";
 import { hasAction } from "./accessPolicy.js";
 import { assertSameOriginForWrite } from "./authorization.js";
 import { ApiError } from "./errors.js";
@@ -34,13 +36,67 @@ export const MEDIA_UPLOAD_PATH = "/v1/admin/media";
 /** Einzige registrierte Loeschroute (siehe Rechtekern-Katalog). */
 export const MEDIA_DELETE_PATH = "/v1/admin/media/:id";
 
-/** Dezimale 20 MB laut R-202 und CX-003-Profil. */
-export const MEDIA_UPLOAD_MAX_BYTES = 20_000_000;
+/**
+ * Obergrenze des Uploads: exakt die Medienprofilgrenze aus CX-155 / R-202
+ * (einschliesslich, dezimale 1.000 MB). Es gibt keine zweite Festlegung.
+ */
+export const MEDIA_UPLOAD_MAX_BYTES = MEDIA_MAX_SIZE_BYTES;
 
 /** Obergrenze des optionalen Anzeigenamens. */
 export const MEDIA_UPLOAD_MAX_NAME_LENGTH = 128;
 
 const OCTET_STREAM = "application/octet-stream";
+
+/**
+ * Der produktive Groessenpruefer hat die Medienprofilgrenze ueberschritten.
+ * Der Adapter bildet diesen internen Fehler auf den vorhandenen 413-Fehler ab
+ * und gibt keine Meldung, Pfade oder Bytezahlen nach aussen.
+ */
+export class MediaUploadTooLargeError extends Error {
+  constructor() {
+    super("Upload ueberschreitet die Medienprofilgrenze.");
+    this.name = "MediaUploadTooLargeError";
+  }
+}
+
+/**
+ * Produktiver Groessenpruefer des Upload-Adapters.
+ *
+ * Er zaehlt ausschliesslich die tatsaechlich gelieferten Bytes und nicht die
+ * behauptete Content-Length. Beim ersten Byte oberhalb der Grenze bricht er
+ * ab. Chunks werden unveraendert weitergereicht; es entsteht kein zusaetzlicher
+ * Gesamtpuffer. Die Vorgabe ist die Medienprofilgrenze aus CX-155.
+ */
+export async function* enforceMediaUploadLimit(
+  source: AsyncIterable<Uint8Array>,
+  limit: number = MEDIA_UPLOAD_MAX_BYTES,
+): AsyncGenerator<Uint8Array> {
+  let total = 0;
+  for await (const chunk of source) {
+    if (!(chunk instanceof Uint8Array)) {
+      throw ApiError.invalidRequest();
+    }
+    total += chunk.byteLength;
+    if (total > limit) {
+      throw new MediaUploadTooLargeError();
+    }
+    yield chunk;
+  }
+}
+
+/**
+ * Erkennt den Groessenfehler sowohl direkt als auch in der vorhandenen
+ * Speichergrenze eingekapselt (CX-030 bewahrt die Ursache auf).
+ */
+function isMediaUploadTooLarge(error: unknown): boolean {
+  if (error instanceof MediaUploadTooLargeError) {
+    return true;
+  }
+  return (
+    error instanceof MediaStorageError &&
+    error.cause instanceof MediaUploadTooLargeError
+  );
+}
 
 /**
  * Schmale, typisierte Servicegrenze. Die Produktionsverdrahtung bindet die
@@ -166,7 +222,7 @@ async function handleUpload(
       // Ohne optionalen Namen wird keine Bezeichnung erfunden; der bestehende
       // CX-030-Service entscheidet ueber die Gueltigkeit.
       displayName: name ?? "",
-      content: bufferedContent(body),
+      content: enforceMediaUploadLimit(bufferedContent(body)),
       // Der HTTP-Adapter fuehrt keine Medienanalyse durch. Profilmetadaten
       // stammen aus dem vorhandenen serverseitigen Leser der Modulkomposition
       // (CX-033); bis dahin wird kein Metadatensatz vorgetaeuscht.
@@ -175,6 +231,9 @@ async function handleUpload(
       actorId: principal.id,
     });
   } catch (error) {
+    if (isMediaUploadTooLarge(error)) {
+      throw new ApiError("invalid_request", { statusCode: 413 });
+    }
     if (error instanceof MediaProfileRejectedError) {
       // Bestehender typisierter Profilfehler: bereinigt als 422.
       throw new ApiError("invalid_request", { statusCode: 422 });
