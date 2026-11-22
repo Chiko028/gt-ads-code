@@ -343,7 +343,11 @@ class MediaDownloaderTest {
             FailureCase(
                 name = "groesse_ueber_servergrenze",
                 partBytes = null,
-                mediaOverride = VerifiedMedia.of(MEDIA_ID, sha256Hex(mediaBytes), 20_000_001L)!!,
+                mediaOverride = VerifiedMedia.of(
+                    MEDIA_ID,
+                    sha256Hex(mediaBytes),
+                    MediaDownloader.MAX_MEDIA_BYTES + 1L,
+                )!!,
                 response = ResponseSpec(status = 200, body = mediaBytes),
                 expectedPartLength = null,
                 expect = { it == MediaDownloadResult.InvalidInput },
@@ -387,6 +391,41 @@ class MediaDownloaderTest {
                 assertTrue("${case.name}: Stream nicht geschlossen", connection.streams.all { it.closed })
             }
         }
+    }
+
+    @Test
+    fun grenzeEntsprichtServerUndProfilpruefung() {
+        assertEquals(1_000_000_000L, MediaDownloader.MAX_MEDIA_BYTES)
+    }
+
+    @Test
+    fun siebenunddreissigKommaFuenfMegabyteWerdenVollstaendigAbgerufen() {
+        val bytes = syntheticMedia(37_500_000, 11)
+        val media = VerifiedMedia.of(MEDIA_ID, sha256Hex(bytes), bytes.size.toLong())!!
+        val directory = folder.newFolder("grosses_medium")
+        val server = FakeServer(
+            listOf(
+                ResponseSpec(
+                    status = 200,
+                    body = bytes,
+                    headers = mapOf("Content-Length" to bytes.size.toString()),
+                ),
+            ),
+        )
+
+        val result = MediaDownloader(directory, BASE_URL, server::open) { false }
+            .download(GRANT, media)
+
+        assertTrue("$result", result is MediaDownloadResult.Completed)
+        val completed = result as MediaDownloadResult.Completed
+        assertEquals(37_500_000L, completed.sizeBytes)
+        assertEquals(media.sha256, completed.sha256)
+        val target = MediaDownloader.targetFile(directory, media)
+        assertEquals(37_500_000L, target.length())
+        assertEquals(media.sha256, sha256Hex(target))
+        assertFalse(MediaDownloader.partFile(directory, media).exists())
+        assertEquals(1, server.connections.size)
+        assertTrue(server.connections.single().disconnected)
     }
 
     private inner class FailureCase(
@@ -453,6 +492,19 @@ class MediaDownloaderTest {
     private fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes)
             .joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+
+    private fun sha256Hex(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(16 * 1024)
+        file.inputStream().use { input ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+    }
 
     private companion object {
         const val BASE_URL = "https://gtads.example.invalid/basis"

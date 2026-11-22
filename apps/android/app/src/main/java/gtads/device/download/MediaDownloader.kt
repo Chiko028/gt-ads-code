@@ -308,7 +308,8 @@ class MediaDownloader internal constructor(
 
     companion object {
         const val TIMEOUT_MS = 15_000
-        const val MAX_MEDIA_BYTES = 20_000_000L
+        /** Gleiche Obergrenze wie Server-Upload und Profilpruefung (L-01). */
+        const val MAX_MEDIA_BYTES = 1_000_000_000L
         private const val API_VERSION = "1"
         private const val BUFFER_BYTES = 16 * 1024
         internal const val MEDIA_DIRECTORY = "media-downloads"
