@@ -82,8 +82,12 @@ class RegistrationCoordinator internal constructor(
             return awaitAttempt(running)
         }
 
+        // Die Registrierung ist das Enrollment: Nur hier darf die geraeteeigene
+        // Identitaet bei fehlendem Alias einmalig entstehen (vorhandene bleibt).
+        // Ohne diese Erzeugung haette ein frisch installiertes Geraet nie einen
+        // Schluessel und jeder Versuch endete ohne Anfrage als unklar.
         val publicKey = try {
-            identity.publicKeySpki()
+            identity.initializeForEnrollment()
         } catch (_: Exception) {
             return conclude(
                 RegistrationState.Failed(RegistrationFailure.IDENTITY_UNAVAILABLE),

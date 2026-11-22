@@ -11,6 +11,10 @@ android {
         applicationId = "gtads.device"
         minSdk = 26
         targetSdk = 35
+        // Pflicht: Registrierung und Heartbeat senden app_version; ohne versionName
+        // war sie leer und der Server lehnte die Registrierung als ungueltig ab.
+        versionCode = 1
+        versionName = "0.1.0"
     }
 
     compileOptions {

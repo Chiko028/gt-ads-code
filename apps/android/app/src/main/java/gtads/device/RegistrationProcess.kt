@@ -179,7 +179,7 @@ object RegistrationProcess {
                 model = Build.MODEL,
                 osVersion = Build.VERSION.RELEASE,
                 sdkInt = Build.VERSION.SDK_INT,
-                appVersion = packageInfo.versionName ?: "",
+                appVersion = registrationAppVersion(packageInfo.versionName),
                 appFlavor = APP_FLAVOR,
             ),
             transport = { bytes -> DeviceRegistrationTransport(baseUrl).send(bytes) },
@@ -195,3 +195,7 @@ object RegistrationProcess {
             Thread(runnable, "device-registration").apply { isDaemon = true }
         }
 }
+
+/** Nie leer: der Server verlangt 1..64 Zeichen (wie der Heartbeat-Fallback "0"). */
+internal fun registrationAppVersion(versionName: String?): String =
+    versionName?.trim()?.takeIf { it.isNotEmpty() }?.take(64) ?: "0"
