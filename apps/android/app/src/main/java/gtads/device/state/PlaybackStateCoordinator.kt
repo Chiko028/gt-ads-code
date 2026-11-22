@@ -70,6 +70,8 @@ class PlaybackStateCoordinator(
     private var lastRecordedTransitions: Long? = null
     private var displayTask: ScheduledTask? = null
     private var storage: String? = null
+    /** CX-153: Anzahl abgeschlossener Auswertungen; trennt Startversuche voneinander. */
+    private var evaluations = 0L
 
     /** Letzter sichtbarer Speicherfehler oder null. */
     val storageError: String?
@@ -80,6 +82,23 @@ class PlaybackStateCoordinator(
 
     /** Aktuelle Entscheidung oder null, solange nicht gestartet wurde. */
     fun decision(): GateDecision? = lastDecision
+
+    /** CX-153: fortlaufende Nummer der zuletzt abgeschlossenen Auswertung. */
+    fun evaluationCount(): Long = synchronized(lock) { evaluations }
+
+    /**
+     * CX-153: neue Auswertung ausschliesslich fuer einen konkreten
+     * Wiedergabestart. Der Beobachter wird bewusst nicht erneut aufgerufen:
+     * der Startpfad prueft das Ergebnis selbst und darf nicht rekursiv in
+     * [onDecision] laufen. Ohne gestartete Anbindung gibt es keine gueltige
+     * Entscheidung (null); der Aufrufer muss dann sperren.
+     */
+    fun evaluateForStart(): GateDecision? = synchronized(lock) {
+        if (!started) return@synchronized null
+        pauseRestore?.resync()
+        evaluate(notifyAlways = false, notify = false)
+        lastDecision
+    }
 
     private val observer: (VehicleReadiness) -> Unit = { refresh() }
 
@@ -172,7 +191,8 @@ class PlaybackStateCoordinator(
         }
     }
 
-    private fun evaluate(notifyAlways: Boolean) {
+    private fun evaluate(notifyAlways: Boolean, notify: Boolean = true) {
+        evaluations += 1L
         val restore = pauseRestore?.state()
         if (restore != null && restore !is PauseRestoreState.Loaded) {
             // Barriere geschlossen: keine Auswertung, kein Pufferereignis, kein Start.
@@ -186,7 +206,7 @@ class PlaybackStateCoordinator(
             )
             val previous = lastDecision
             lastDecision = blocked
-            if (notifyAlways || previous != blocked) onDecision(blocked)
+            if (notify && (notifyAlways || previous != blocked)) onDecision(blocked)
             return
         }
         val vehicle = readiness.current()
@@ -208,7 +228,7 @@ class PlaybackStateCoordinator(
         )
         val previous = lastDecision
         lastDecision = decision
-        if (notifyAlways || previous != decision) {
+        if (notify && (notifyAlways || previous != decision)) {
             onDecision(decision)
         }
     }

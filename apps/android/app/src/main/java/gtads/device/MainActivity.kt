@@ -53,6 +53,11 @@ class MainActivity : Activity() {
     private var playback: PlaybackController? = null
     private var playbackView: View? = null
     private var gate: PlaybackStateCoordinator? = null
+    /** CX-153: nur zwischen onStart und onStop duerfen Entscheidungen starten. */
+    @Volatile
+    private var playbackActive = false
+    /** CX-153: Auswertungsstand vor dem aktuellen Startversuch. */
+    private var startAttemptBaseline = 0L
     private var reporter: StatusReporter? = null
     /** CX-091: Kiosk-Adapter; nur Release + lokale Konfiguration + Device Owner. */
     private var kiosk: gtads.device.kiosk.KioskPolicy? = null
@@ -103,7 +108,9 @@ class MainActivity : Activity() {
         playback = PlaybackRuntime.createController(
             this,
             { state -> renderPlayback(state) },
-            { gate?.decision()?.playbackAllowed ?: true },
+            // CX-153: jeder tatsaechliche Start wertet die Bereitschaft neu aus;
+            // fehlende oder fehlerhafte Entscheidungen sperren.
+            PlaybackGateRuntime.playbackPermitted(this) { gate },
         )
         reporter = HeartbeatRuntime.create(this)
         watchdogMonitor = playback?.let { controller ->
@@ -136,9 +143,16 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             // Ohne WorkManager bleibt die Registrierung nutzbar.
         }
-        // Der Zustandsautomat wertet aus; der Controller prueft dieselbe
-        // Freigabe zusaetzlich in start().
-        gate?.start()
+        // CX-153: Nur der aktive Lebenszyklus darf Entscheidungen umsetzen;
+        // der Basisstand trennt diesen Startversuch von frueheren.
+        playbackActive = true
+        startAttemptBaseline = gate?.evaluationCount() ?: 0L
+        try {
+            gate?.start()
+        } catch (_: Throwable) {
+            // Auswertungsfehler bleiben ein technischer Status, kein Absturz.
+            PlaybackGateRuntime.reportTechnicalStatus(this, PlaybackGateRuntime.STATUS_EVALUATION_FAILED)
+        }
         startPlayback()
         reporter?.start()
         if (commands == null) {
@@ -163,6 +177,7 @@ class MainActivity : Activity() {
     override fun onStop() {
         // Keine Wiedergabe, kein Timer und kein Reporter ausserhalb des
         // sichtbaren Vordergrunds.
+        playbackActive = false
         watchdogMonitor?.stop()
         commands?.stop()
         reporter?.stop()
@@ -172,6 +187,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        playbackActive = false
         watchdogMonitor?.stop()
         watchdogMonitor = null
         gate?.stop()
@@ -184,8 +200,11 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    /** Testbarer Einstiegspunkt; ohne Zustandsanbindung identisch zu onStart. */
+    /** Testbarer Einstiegspunkt; jeder Aufruf beginnt einen neuen Startversuch. */
     internal fun startPlayback() {
+        // CX-153: eine neue Bewertung gehoert zu genau diesem Startversuch.
+        playbackActive = true
+        startAttemptBaseline = gate?.evaluationCount() ?: 0L
         playback?.start()
     }
 
@@ -199,6 +218,12 @@ class MainActivity : Activity() {
      * playbackAllowed, der Displaybedarf ausschliesslich dem Fenster-Flag.
      */
     private fun applyGate(decision: GateDecision) {
+        // CX-153: verspaetete oder ueberholte Entscheidungen duerfen weder
+        // starten noch den aktuellen Zustand ueberschreiben.
+        if (!playbackActive) return
+        val current = gate ?: return
+        if (decision !== current.decision()) return
+        if (current.evaluationCount() <= startAttemptBaseline) return
         if (decision.playbackAllowed) {
             playback?.start()
         } else {
@@ -254,12 +279,8 @@ class MainActivity : Activity() {
         serverUrlValue.text = state.serverUrl
         // Registrierung kann waehrend der Activity abgeschlossen werden; dann
         // wertet der Zustandsautomat sofort neu aus.
-        val current = gate
-        if (current != null) {
-            current.refresh()
-        } else {
-            playback?.start()
-        }
+        // CX-153: ohne Gate gibt es keine Freigabe und damit keinen Start.
+        gate?.refresh()
     }
 
     private fun renderPlayback(state: PlaybackUiState) {

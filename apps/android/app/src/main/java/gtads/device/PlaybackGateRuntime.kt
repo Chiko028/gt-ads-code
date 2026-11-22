@@ -15,6 +15,7 @@ import gtads.device.state.ReadinessSource
 import gtads.device.state.ScheduledTask
 import gtads.device.state.StateChangeRecorder
 import gtads.device.state.StateMachineConfig
+import gtads.device.telemetry.TechnicalStatusStore
 import gtads.device.telemetry.TelemetryEventDatabase
 
 /**
@@ -43,6 +44,57 @@ object PlaybackGateRuntime {
 
     internal fun resetForTest() {
         overrides = null
+    }
+
+    /** CX-153: geheimnisfreier technischer Status des Wiedergabe-Gates. */
+    internal const val STATUS_COMPONENT = "wiedergabe_gate"
+    internal const val STATUS_DECISION_MISSING = "entscheidung_fehlt"
+    internal const val STATUS_EVALUATION_FAILED = "auswertung_fehlgeschlagen"
+
+    /**
+     * CX-153: Wiedergabefreigabe fuer genau einen Startversuch.
+     *
+     * Jeder Aufruf wertet den aktuellen Bereitschaftszustand neu aus. Eine
+     * frueher positive Entscheidung wird nie wiederverwendet: fehlt die
+     * Anbindung, ist sie nicht gestartet oder wirft die Auswertung, bleibt
+     * die Wiedergabe gesperrt und der technische Status nennt den Grund.
+     */
+    internal fun playbackPermitted(
+        context: Context,
+        gate: () -> PlaybackStateCoordinator?,
+    ): () -> Boolean {
+        val app = context.applicationContext
+        return {
+            try {
+                val decision = gate()?.evaluateForStart()
+                if (decision == null) {
+                    reportTechnicalStatus(app, STATUS_DECISION_MISSING)
+                    false
+                } else {
+                    clearTechnicalStatus(app)
+                    decision.playbackAllowed
+                }
+            } catch (_: Throwable) {
+                reportTechnicalStatus(app, STATUS_EVALUATION_FAILED)
+                false
+            }
+        }
+    }
+
+    internal fun reportTechnicalStatus(context: Context, code: String) {
+        try {
+            TechnicalStatusStore(context.applicationContext).report(STATUS_COMPONENT, code)
+        } catch (_: Exception) {
+            // Der Statuspfad darf die Wiedergabeentscheidung nicht veraendern.
+        }
+    }
+
+    private fun clearTechnicalStatus(context: Context) {
+        try {
+            TechnicalStatusStore(context.applicationContext).clear(STATUS_COMPONENT)
+        } catch (_: Exception) {
+            // Ein nicht loeschbarer Status ist kein Startfehler.
+        }
     }
 
     fun create(
