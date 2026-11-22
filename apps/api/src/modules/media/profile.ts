@@ -8,8 +8,9 @@
  * Binärformatanalyse.
  *
  * Profil (L-01): MP4, H.264, 1920x1080, 30 fps, ohne Audiospur, maximal
- * 20.000.000 Byte (dezimale 20 MB). 15 Sekunden sind laut L-03 ein Standard und
- * keine harte Uploadgrenze; die Dauer wird daher nur auf Plausibilität geprüft.
+ * 1.000.000.000 Byte (dezimale 1.000 MB, einschließlich). 15 Sekunden sind laut
+ * L-03 ein Standard und keine harte Uploadgrenze; die Dauer wird daher nur
+ * auf Plausibilität geprüft.
  *
  * Die Funktion ist rein: keine Seiteneffekte, keine Mutation der Eingabe, keine
  * I/O, kein Logging.
@@ -53,7 +54,11 @@ const REQUIRED_VIDEO_CODEC = "h264";
 const REQUIRED_WIDTH = 1920;
 const REQUIRED_HEIGHT = 1080;
 const REQUIRED_FRAME_RATE = 30;
-const MAX_SIZE_BYTES = 20_000_000;
+/**
+ * Obergrenze der zulässigen Dateigröße in Byte; die Grenze ist einschließlich.
+ * CX-155 / R-202: 1.000.000.000 Byte (dezimale 1.000 MB).
+ */
+export const MEDIA_MAX_SIZE_BYTES = 1_000_000_000;
 
 type FieldKind = "text" | "positiveInteger" | "nonNegativeInteger" | "positiveNumber";
 
@@ -210,11 +215,11 @@ export function validateMediaProfile(input: unknown): MediaProfileResult {
     });
   }
 
-  if (metadata.sizeBytes > MAX_SIZE_BYTES) {
+  if (metadata.sizeBytes > MEDIA_MAX_SIZE_BYTES) {
     errors.push({
       code: "file_too_large",
       field: "sizeBytes",
-      message: "Die Dateigröße überschreitet die zulässigen 20 MB.",
+      message: "Die Dateigröße überschreitet die zulässigen 1.000 MB.",
     });
   }
 

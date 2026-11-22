@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  MEDIA_MAX_SIZE_BYTES,
   validateMediaProfile,
   type MediaProfileError,
   type MediaProfileErrorCode,
@@ -48,7 +49,7 @@ function codesOf(input: unknown): MediaProfileErrorCode[] {
 }
 
 describe("CX-003 Medienprofilprüfung: Annahme", () => {
-  it("akzeptiert einen synthetischen 15-Sekunden-Spot (MP4, H.264, 1920x1080, 30/1 fps, ohne Ton, unter 20 MB)", () => {
+  it("akzeptiert einen synthetischen 15-Sekunden-Spot (MP4, H.264, 1920x1080, 30/1 fps, ohne Ton, unter 1.000 MB)", () => {
     const input = validInput();
     const result = validateMediaProfile(input);
     expect(result).toEqual({ valid: true });
@@ -169,7 +170,7 @@ describe("CX-003 Medienprofilprüfung: einzelne Profilverstöße", () => {
       frameRateDenominator: 1,
       audioStreamCount: 1,
       durationSeconds: 15,
-      sizeBytes: 20_000_001,
+      sizeBytes: 1_000_000_001,
     });
     expect(result.valid).toBe(false);
     if (result.valid) {
@@ -195,12 +196,12 @@ describe("CX-003 Medienprofilprüfung: Dateigröße", () => {
     expect(validateMediaProfile(validInput({ sizeBytes: 19_999_999 }))).toEqual({ valid: true });
   });
 
-  it("lehnt 20.000.001 Byte mit file_too_large ab", () => {
-    const errors = errorsOf(validInput({ sizeBytes: 20_000_001 }));
+  it("lehnt 1.000.000.001 Byte mit file_too_large ab", () => {
+    const errors = errorsOf(validInput({ sizeBytes: 1_000_000_001 }));
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("file_too_large");
     expect(errors[0].field).toBe("sizeBytes");
-    expect(errors[0].message).toContain("20 MB");
+    expect(errors[0].message).toContain("1.000 MB");
   });
 
   const invalidSizes: ReadonlyArray<{ name: string; value: number }> = [
@@ -435,3 +436,65 @@ describe("CX-003 Medienprofilprüfung: Reproduzierbarkeit und Reinheit", () => {
     expect(typeof (result as { then?: unknown }).then).toBe("undefined");
   });
 });
+
+describe("CX-155 / R-202 Medienprofilgrenze", () => {
+  it("exportiert die Obergrenze als 1.000.000.000 Byte", () => {
+    expect(MEDIA_MAX_SIZE_BYTES).toBe(1_000_000_000);
+  });
+
+  it("akzeptiert ansonsten profilgerechte Metadaten mit 37.500.000 Byte ohne große Datei", () => {
+    const result = validateMediaProfile(validInput({ sizeBytes: 37_500_000 }));
+    expect(result).toEqual({ valid: true });
+  });
+
+  it("akzeptiert genau 1.000.000.000 Byte als einschließende Grenze", () => {
+    expect(validateMediaProfile(validInput({ sizeBytes: 1_000_000_000 }))).toEqual({
+      valid: true,
+    });
+  });
+
+  it("lehnt 1.000.000.001 Byte mit file_too_large ab und nennt 1.000 MB", () => {
+    const errors = errorsOf(validInput({ sizeBytes: 1_000_000_001 }));
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("file_too_large");
+    expect(errors[0].field).toBe("sizeBytes");
+    expect(errors[0].message).toContain("1.000 MB");
+  });
+
+  const regressions: ReadonlyArray<{
+    name: string;
+    patch: Partial<MediaProfileInput>;
+    code: MediaProfileErrorCode;
+  }> = [
+    {
+      name: "vorhandene Tonspur",
+      patch: { audioStreamCount: 1 },
+      code: "audio_not_allowed",
+    },
+    {
+      name: "falscher Codec",
+      patch: { videoCodec: "hevc" },
+      code: "unsupported_video_codec",
+    },
+    {
+      name: "falsche Auflösung",
+      patch: { width: 1280, height: 720 },
+      code: "unsupported_resolution",
+    },
+    {
+      name: "falsche Bildrate",
+      patch: { frameRateNumerator: 25 },
+      code: "unsupported_frame_rate",
+    },
+  ];
+
+  it.each(regressions)(
+    "behält bei zulässiger Dateigröße die Ablehnung $name als $code",
+    ({ patch, code }) => {
+      const errors = errorsOf(validInput({ ...patch, sizeBytes: 37_500_000 }));
+      expect(errors).toHaveLength(1);
+      expect(errors[0].code).toBe(code);
+    },
+  );
+});
+
