@@ -19,16 +19,29 @@ import type {
   UploadTransport,
   UploadTransportErrorKind,
 } from "./uploadTransport";
-import {
-  MEDIA_UPLOAD_MAX_BYTES,
-  createXhrUploadTransport,
-} from "./uploadTransport";
+import { createXhrUploadTransport } from "./uploadTransport";
 
 const UNKNOWN = "Unbekannt";
 const UNEXPECTED_MESSAGE = "Ein unerwarteter Fehler ist aufgetreten.";
 const NO_FILE_MESSAGE = "Bitte zuerst eine Datei auswählen.";
-const OVERSIZE_MESSAGE =
-  "Die Datei ist zu groß. Maximal erlaubt sind 20.000.000 Bytes; sie wurde nicht gesendet.";
+/**
+ * CX-158 / R-206: exakte Obergrenze des Medienprofils (CX-155 / R-202, L-01),
+ * einschliesslich. Der Wert entspricht serverseitig MEDIA_MAX_SIZE_BYTES;
+ * das Servermodul wird bewusst nicht in das Browser-Bundle importiert.
+ * Bewusst nicht der 20-MB-Wert der lokalen Kampagnenvorschau (CX-040),
+ * die eine andere Funktion erfuellt. Die Pruefung hier ist nur eine
+ * Vorab-Rueckmeldung; die abschliessende Ablehnung bleibt beim Server (z. B. 413).
+ */
+export const MEDIA_UPLOAD_PROFILE_MAX_BYTES = 1_000_000_000;
+
+/** Bytezahl mit deutschen Tausenderpunkten, ohne Intl-Abhaengigkeit. */
+function groupThousands(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
+const OVERSIZE_MESSAGE = `Die Datei ist zu groß. Maximal erlaubt sind ${groupThousands(
+  MEDIA_UPLOAD_PROFILE_MAX_BYTES,
+)} Bytes; sie wurde nicht gesendet.`;
 const INVALID_UPLOAD_RESPONSE =
   "Die Upload-Antwort des Servers war ungültig. Ein Erfolg ist nicht bestätigt.";
 const UNCLEAR_UPLOAD_MESSAGE =
@@ -95,7 +108,9 @@ function statusLabel(status: string | null): string {
 
 function uploadErrorForStatus(status: number): string {
   if (status === 413) {
-    return "Der Server hat die Datei als zu groß abgelehnt (413).";
+    return `Der Server hat die Datei als zu groß abgelehnt (413). Maximal erlaubt sind ${groupThousands(
+      MEDIA_UPLOAD_PROFILE_MAX_BYTES,
+    )} Bytes.`;
   }
   if (status === 415) {
     return "Der Server hat den Dateityp abgelehnt (415).";
@@ -309,8 +324,8 @@ export function MediaPage({ fetchImpl, uploadTransport }: MediaPageProps) {
       setUploadError(NO_FILE_MESSAGE);
       return;
     }
-    // Die exakte CX-031-Grenze wird vor dem Versand geprueft.
-    if (file.size > MEDIA_UPLOAD_MAX_BYTES) {
+    // Die exakte CX-155-Profilgrenze wird vor dem Versand geprueft.
+    if (file.size > MEDIA_UPLOAD_PROFILE_MAX_BYTES) {
       setPhase("error");
       setProgress(null);
       setUploadSuccess(null);
@@ -396,7 +411,7 @@ export function MediaPage({ fetchImpl, uploadTransport }: MediaPageProps) {
           Hochladen
         </button>
       </form>
-      <p>Maximal 20.000.000 Bytes pro Datei.</p>
+      <p>Maximal {groupThousands(MEDIA_UPLOAD_PROFILE_MAX_BYTES)} Bytes pro Datei.</p>
 
       {phase === "uploading" ? (
         determinate && percent !== null ? (

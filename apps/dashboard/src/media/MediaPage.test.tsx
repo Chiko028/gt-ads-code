@@ -21,10 +21,8 @@ import type {
   UploadXhrLike,
   XhrProgressEventLike,
 } from "./uploadTransport";
-import {
-  MEDIA_UPLOAD_MAX_BYTES,
-  createXhrUploadTransport,
-} from "./uploadTransport";
+import { MEDIA_UPLOAD_PROFILE_MAX_BYTES } from "./MediaPage";
+import { createXhrUploadTransport } from "./uploadTransport";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -131,7 +129,7 @@ class FakeTransport implements UploadTransport {
   }
 }
 
-/** Datei mit exakt gewuenschter Groesse, ohne 20 MB wirklich zu allokieren. */
+/** Datei mit exakt gewuenschter Groesse, ohne die Grenze wirklich zu allokieren. */
 function mediaFile(name: string, size: number): File {
   const file = new File([new Uint8Array(4)], name, { type: "video/mp4" });
   Object.defineProperty(file, "size", { value: size });
@@ -344,19 +342,20 @@ describe("CX-039 Medienseite", () => {
     expect(transport.calls).toHaveLength(1);
   });
 
-  it("weist Uebergroesse vor dem Versand ab und laesst exakt die CX-031-Grenze zu", async () => {
+  it("weist Uebergroesse vor dem Versand ab und laesst exakt die CX-155-Profilgrenze zu", async () => {
     const server = createServer();
     const transport = new FakeTransport();
     const { region } = await openMediaPage(server, transport);
 
-    await chooseFile(region, mediaFile("zu-gross.mp4", MEDIA_UPLOAD_MAX_BYTES + 1));
+    await chooseFile(region, mediaFile("zu-gross.mp4", MEDIA_UPLOAD_PROFILE_MAX_BYTES + 1));
     const user = userEvent.setup();
     await user.click(within(region).getByRole("button", { name: "Hochladen" }));
 
     expect(transport.calls).toHaveLength(0);
     const oversizeAlert = within(region).getByRole("alert");
     expect(oversizeAlert.textContent).toMatch(/zu groß/i);
-    expect(oversizeAlert.textContent).toMatch(/20\.000\.000/);
+    expect(MEDIA_UPLOAD_PROFILE_MAX_BYTES).toBe(1_000_000_000);
+    expect(oversizeAlert.textContent).toContain("1.000.000.000");
     expect(within(region).queryByText(/Upload bestätigt/)).toBeNull();
     cleanup();
 
@@ -365,7 +364,7 @@ describe("CX-039 Medienseite", () => {
     const boundary = await openMediaPage(boundaryServer, boundaryTransport);
     await chooseFile(
       boundary.region,
-      mediaFile("grenze.mp4", MEDIA_UPLOAD_MAX_BYTES),
+      mediaFile("grenze.mp4", MEDIA_UPLOAD_PROFILE_MAX_BYTES),
     );
     await userEvent
       .setup()
