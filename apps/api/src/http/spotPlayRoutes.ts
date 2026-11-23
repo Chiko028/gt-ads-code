@@ -169,6 +169,7 @@ export function registerSpotPlayRoutes(
         accepted: result.acceptedPlayIds.length,
         inserted: result.insertedPlayIds.length,
         duplicate_play_ids: result.duplicatePlayIds,
+        accepted_play_ids: result.acceptedPlayIds,
       });
     },
   });

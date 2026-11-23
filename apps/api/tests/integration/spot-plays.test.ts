@@ -336,12 +336,14 @@ describe("CX-159 POST /v1/device/spot-plays", () => {
     expect(first.json().accepted).toBe(1);
     expect(first.json().inserted).toBe(1);
     expect(first.json().duplicate_play_ids).toEqual([]);
+    expect(first.json().accepted_play_ids).toEqual([payload.play_id]);
 
     const second = await postSpotPlays(token, { plays: [payload] });
     expect(second.statusCode).toBe(200);
     expect(second.json().accepted).toBe(1);
     expect(second.json().inserted).toBe(0);
     expect(second.json().duplicate_play_ids).toEqual([payload.play_id]);
+    expect(second.json().accepted_play_ids).toEqual([payload.play_id]);
 
     const rows = await pool.query(
       "select play_id::text as play_id, taxi_id, played_ms, completed" +
