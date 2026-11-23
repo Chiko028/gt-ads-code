@@ -92,6 +92,7 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/device/auth/token": DEVICE,
   "POST /v1/device/heartbeat": DEVICE,
   "POST /v1/device/events": DEVICE,
+  "POST /v1/device/spot-plays": DEVICE,
   "GET /v1/device/downloads/:id": SIGNED_DOWNLOAD,
   "GET /v1/device/manifest": DEVICE,
   // CX-148: Geraetekonfiguration und Download-Freigabe (Bearer); Download selbst per Ticket.
@@ -146,6 +147,8 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "GET /v1/admin/status": human("devices.read"),
   // CX-049 / R-404: lesende Wiedergabe-Statistik und Geraeteverfuegbarkeit.
   "GET /v1/admin/statistics": human("devices.read"),
+  // CX-159: lesende Monatsauswertung der Spot-Abspielnachweise.
+  "GET /v1/admin/spot-plays/summary": human("devices.read"),
 
   // CX-051 / R-406: gekennzeichneter CSV-Kundenbericht (nur lesend).
   "GET /v1/admin/reports/customer.csv": human("campaigns.read"),

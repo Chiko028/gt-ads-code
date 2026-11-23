@@ -56,6 +56,7 @@ import {
   registerDeviceEventRoutes,
   type DeviceEventIngest,
 } from "./deviceEvents.js";
+import { registerSpotPlayRoutes } from "./spotPlayRoutes.js";
 import { registerPlayoutPreviewRoute } from "./playoutPreview.js";
 import { registerTaxiActivationRoute } from "./taxiActivationRoutes.js";
 import { TaxiActivationService } from "../modules/taxiActivation/index.js";
@@ -302,6 +303,16 @@ export function registerHttpComposition(
     registerDeviceEventRoutes(scope, {
       ingest: deps.telemetryIngest,
       deviceAuth: deps.deviceAuth,
+    });
+
+    // CX-159: authentifizierter Spot-Abspieleingang und geschuetzte
+    // Monatsauswertung. Die Route delegiert ausschliesslich an das neue
+    // SpotPlay-Modul; es entsteht keine zweite Aggregation.
+    registerSpotPlayRoutes(scope, {
+      pool: deps.pool,
+      deviceAuth: deps.deviceAuth,
+      adminAuth: deps.adminAuth,
+      now: deps.now,
     });
   });
 }

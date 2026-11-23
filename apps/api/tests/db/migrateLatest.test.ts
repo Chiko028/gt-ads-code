@@ -29,6 +29,7 @@ const EXPECTED_MIGRATIONS = [
   "0014_cx_128_device_inventory.up.sql",
   "0015_cx_057_operators.up.sql",
   "0016_taxi_structures.up.sql",
+  "0017_spot_plays.up.sql",
 ];
 
 let maintenancePool: Pool;
@@ -103,7 +104,7 @@ afterAll(async () => {
 }, 60_000);
 
 describe("CX-131 migrateLatest", () => {
-  it("wendet auf leerer Datenbank alle Migrationen 0001 bis 0016 in Reihenfolge an", async () => {
+  it("wendet auf leerer Datenbank alle Migrationen 0001 bis 0017 in Reihenfolge an", async () => {
     const { pool } = await createTestDatabase();
     try {
       const applied = await migrateLatest(pool);
@@ -114,6 +115,7 @@ describe("CX-131 migrateLatest", () => {
         "device_taxi_assignments",
         "media_objects",
         "operators",
+        "spot_plays",
       ]) {
         expect(await tableExists(pool, table)).toBe(true);
       }
