@@ -404,6 +404,7 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     onlineThresholdSeconds: config.onlineThresholdSeconds,
     now,
     ...(manifestRefresh ? { manifestRefresh } : {}),
+    downloadSecret: config.downloadSecret ?? null,
   });
   app.decorate("adminAuthService", adminAuthService);
 

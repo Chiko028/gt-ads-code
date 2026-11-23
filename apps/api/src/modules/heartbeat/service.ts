@@ -50,6 +50,8 @@ export class HeartbeatService {
       seenAt: serverTime,
       seq: input.seq,
       clockOffsetMs,
+      appVersion: input.appVersion,
+      osVersion: input.osVersion,
     });
 
     if (updated === null) {

@@ -427,6 +427,7 @@ const OPERATOR_WRITE_RIGHTS: Readonly<
   "operators.manage": false,
   "operations.read": false,
   "operations.manage": false,
+  "appReleases.manage": false,
 });
 
 function operatorMayWrite(action: AccessAction): boolean {
@@ -464,6 +465,7 @@ function concreteUrl(template: string): string {
 interface PayloadFixture {
   payload?: unknown;
   contentType?: string;
+  urlSuffix?: string;
 }
 
 /**
@@ -539,6 +541,22 @@ const PAYLOADS: Readonly<Record<string, PayloadFixture>> = Object.freeze({
       revision: 0,
     },
   },
+  "POST /v1/admin/app-releases": {
+    payload: Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from("SYN-CX056-APK"),
+    ]),
+    contentType: "application/octet-stream",
+    urlSuffix:
+      "?version_code=9001&version_name=" +
+      encodeURIComponent("SYN-CX056-APK") +
+      "&sha256=" +
+      "a".repeat(64),
+  },
+  "PATCH /v1/admin/app-releases/:id": { payload: { rollout: "pilot" } },
+  "PATCH /v1/admin/devices/:id/update-channel": {
+    payload: { update_channel: "pilot" },
+  },
   "POST /v1/admin/media": {
     payload: Buffer.from("SYN-CX056-MEDIENPROBE"),
     contentType: "application/octet-stream",
@@ -561,7 +579,7 @@ function injectWrite(
       : jsonHeaders(options.cookie, options.extraHeaders);
   return app.inject({
     method: route.method as "POST" | "PUT" | "PATCH" | "DELETE",
-    url: concreteUrl(route.url),
+    url: concreteUrl(route.url) + (fixture?.urlSuffix ?? ""),
     headers: requestHeaders,
     payload: fixture?.payload as Record<string, unknown> | Buffer | undefined,
     remoteAddress: "192.0.2.240",
@@ -590,6 +608,9 @@ describe("CX-056 Matrix der Verwaltungs-Schreibrouten", () => {
         "PUT /v1/admin/taxis/:id/groups",
         "POST /v1/admin/taxis",
         "PATCH /v1/admin/taxis/:id",
+        "POST /v1/admin/app-releases",
+        "PATCH /v1/admin/app-releases/:id",
+        "PATCH /v1/admin/devices/:id/update-channel",
       ]),
     );
     expect(routes.length).toBeGreaterThanOrEqual(17);
@@ -617,6 +638,9 @@ describe("CX-056 Matrix der Verwaltungs-Schreibrouten", () => {
         "PUT /v1/admin/taxis/:id/groups",
         "POST /v1/admin/taxis",
         "PATCH /v1/admin/taxis/:id",
+        "POST /v1/admin/app-releases",
+        "PATCH /v1/admin/app-releases/:id",
+        "PATCH /v1/admin/devices/:id/update-channel",
       ]),
     );
 

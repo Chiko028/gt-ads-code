@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,7 +74,7 @@ const TRUNCATE_SQL = [
   "  taxi_groups, taxi_group_memberships, taxis, device_taxi_assignments,",
   "  tablet_admin_states, device_inventory, control_config_taxi,",
   "  control_config_changes, remote_control_deliveries,",
-  "  remote_control_commands, remote_control_taxi_state",
+  "  remote_control_commands, remote_control_taxi_state, app_releases, app_release_device_reports",
   " restart identity cascade",
 ].join("\n");
 
@@ -739,6 +739,95 @@ const ROUTE_MUTATIONS: Readonly<Record<string, RouteMutation>> = {
       );
       expect(response.statusCode).toBe(200);
       return { response, targetId: INVENTORY_DEVICE_ID };
+    },
+  },
+  "POST /v1/admin/app-releases": {
+    expectedAction: "app_release.created",
+    expectedStatus: 201,
+    actorType: "admin",
+    actorId: ADMIN_ACTOR_ID,
+    targetType: "app_release",
+    persistsRequestId: false,
+    run: async (targetApp, cookie) => {
+      const content = Buffer.concat([
+        Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+        Buffer.from("SYN-CX058-APK-PROBE"),
+      ]);
+      const sha256 = createHash("sha256").update(content).digest("hex");
+      const response = await targetApp.inject({
+        method: "POST",
+        url:
+          "/v1/admin/app-releases?version_code=9001&version_name=" +
+          encodeURIComponent("SYN-CX058-APK") +
+          "&sha256=" +
+          sha256,
+        headers: adminHeaders(cookie, {
+          "content-type": "application/octet-stream",
+        }),
+        payload: content,
+        remoteAddress: REMOTE_ADDRESS,
+      });
+      expect(response.statusCode, response.body).toBe(201);
+      const body = response.json() as { id: string };
+      return { response, targetId: body.id };
+    },
+  },
+  "PATCH /v1/admin/app-releases/:id": {
+    expectedAction: "app_release.rollout.changed",
+    expectedStatus: 200,
+    actorType: "admin",
+    actorId: ADMIN_ACTOR_ID,
+    targetType: "app_release",
+    persistsRequestId: false,
+    run: async (targetApp, cookie) => {
+      const content = Buffer.concat([
+        Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+        Buffer.from("SYN-CX058-APK-ROLLOUT"),
+      ]);
+      const sha256 = createHash("sha256").update(content).digest("hex");
+      const created = await targetApp.inject({
+        method: "POST",
+        url:
+          "/v1/admin/app-releases?version_code=9002&version_name=" +
+          encodeURIComponent("SYN-CX058-APK-ROLLOUT") +
+          "&sha256=" +
+          sha256,
+        headers: adminHeaders(cookie, {
+          "content-type": "application/octet-stream",
+        }),
+        payload: content,
+        remoteAddress: REMOTE_ADDRESS,
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const id = (created.json() as { id: string }).id;
+      const response = await injectJson(
+        targetApp,
+        "PATCH",
+        "/v1/admin/app-releases/" + id,
+        cookie,
+        { rollout: "pilot" },
+      );
+      expect(response.statusCode).toBe(200);
+      return { response, targetId: id };
+    },
+  },
+  "PATCH /v1/admin/devices/:id/update-channel": {
+    expectedAction: "device.update_channel.changed",
+    expectedStatus: 200,
+    actorType: "admin",
+    actorId: ADMIN_ACTOR_ID,
+    targetType: "device",
+    persistsRequestId: false,
+    run: async (targetApp, cookie) => {
+      const response = await injectJson(
+        targetApp,
+        "PATCH",
+        "/v1/admin/devices/" + ACTIVE_DEVICE_A_ID + "/update-channel",
+        cookie,
+        { update_channel: "pilot" },
+      );
+      expect(response.statusCode).toBe(200);
+      return { response, targetId: ACTIVE_DEVICE_A_ID };
     },
   },
   "POST /v1/admin/media": {

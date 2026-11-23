@@ -52,7 +52,8 @@ export type AccessAction =
   | "groups.read"
   | "operators.manage"
   | "operations.read"
-  | "operations.manage";
+  | "operations.manage"
+  | "appReleases.manage";
 
 export type RoutePolicy =
   | { readonly category: "human"; readonly action: AccessAction }
@@ -98,6 +99,10 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   // CX-148: Geraetekonfiguration und Download-Freigabe (Bearer); Download selbst per Ticket.
   "GET /v1/device/config": DEVICE,
   "GET /v1/device/media/:id/grant": DEVICE,
+  // CX-168: App-Update, Ticket-Download und Rueckmeldung.
+  "GET /v1/device/app-update": DEVICE,
+  "GET /v1/device/app-downloads/:id": DEVICE,
+  "POST /v1/device/app-update/report": DEVICE,
 
   // CX-054 / R-503: geraetegebundener Pausenabruf und Quittierung.
   "GET /v1/device/commands": DEVICE,
@@ -141,6 +146,11 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "POST /v1/admin/operators/:operatorId/disable": human("operators.manage"),
 
   // Menschliche Verwaltung: Geraete.
+  // CX-168: App-Versionen lesen unter devices.read; Verwalten nur Admin.
+  "GET /v1/admin/app-releases": human("devices.read"),
+  "POST /v1/admin/app-releases": human("appReleases.manage"),
+  "PATCH /v1/admin/app-releases/:id": human("appReleases.manage"),
+  "PATCH /v1/admin/devices/:id/update-channel": human("appReleases.manage"),
   "GET /v1/admin/devices": human("devices.read"),
   "GET /v1/admin/devices/:id": human("devices.read"),
   // CX-048 / R-403: lesender Taxi-/Tabletstatus einschliesslich Tagesauswertung.
@@ -243,6 +253,7 @@ const ALL_ACTIONS: readonly AccessAction[] = [
   "operators.manage",
   "operations.read",
   "operations.manage",
+  "appReleases.manage",
 ];
 
 const ROLE_ACTIONS: Readonly<Record<Role, ReadonlySet<AccessAction>>> = Object.freeze({

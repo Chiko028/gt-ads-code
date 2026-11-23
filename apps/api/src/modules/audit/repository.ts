@@ -36,6 +36,9 @@ export const AUDIT_ACTIONS = Object.freeze({
   remoteControlPauseSet: "remote_control.pause.set",
   controlConfigUpdated: "control_config.taxi.update",
   inventoryUpdated: "device.inventory.updated",
+  appReleaseCreated: "app_release.created",
+  appReleaseRolloutChanged: "app_release.rollout.changed",
+  deviceUpdateChannelChanged: "device.update_channel.changed",
 });
 
 /**
@@ -74,6 +77,10 @@ export const AUDIT_WRITE_ROUTE_ACTIONS: Readonly<Record<string, string>> =
     "POST /v1/admin/taxis/:taxi_id/resume": AUDIT_ACTIONS.remoteControlPauseSet,
     "PATCH /v1/admin/inventory/:tabletId": AUDIT_ACTIONS.inventoryUpdated,
     "POST /v1/admin/media": AUDIT_ACTIONS.mediaCreated,
+    "POST /v1/admin/app-releases": AUDIT_ACTIONS.appReleaseCreated,
+    "PATCH /v1/admin/app-releases/:id": AUDIT_ACTIONS.appReleaseRolloutChanged,
+    "PATCH /v1/admin/devices/:id/update-channel":
+      AUDIT_ACTIONS.deviceUpdateChannelChanged,
   });
 
 /** Menschliche Schreibrouten ohne Aenderungsaudit (reine Sitzungsaktion). */

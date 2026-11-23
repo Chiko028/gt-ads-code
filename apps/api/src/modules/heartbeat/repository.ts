@@ -12,6 +12,9 @@ export interface RecordHeartbeatInput {
   seq: number;
   /** server_time - device_time in Millisekunden. */
   clockOffsetMs: bigint;
+  /** app_version/os_version duerfen nur der neueste seq setzen. */
+  appVersion?: string;
+  osVersion?: string;
 }
 
 export interface RecordHeartbeatResult {
@@ -50,7 +53,11 @@ export async function recordHeartbeat(
       "update devices",
       "   set last_seen_at = greatest(last_seen_at, $2),",
       "       last_seq = greatest(last_seq, $3::bigint),",
-      "       last_clock_offset_ms = $4::bigint",
+      "       last_clock_offset_ms = $4::bigint,",
+      "       app_version = case when $5::text is not null and $3::bigint >= last_seq",
+      "                          then $5 else app_version end,",
+      "       os_version = case when $6::text is not null and $3::bigint >= last_seq",
+      "                         then $6 else os_version end",
       " where id = $1",
       "   and state = 'active'",
       " returning last_seq::text as last_seq",
@@ -60,6 +67,8 @@ export async function recordHeartbeat(
       input.seenAt,
       String(input.seq),
       input.clockOffsetMs.toString(),
+      input.appVersion ?? null,
+      input.osVersion ?? null,
     ],
   );
   return result.rows[0] ?? null;

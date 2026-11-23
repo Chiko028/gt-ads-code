@@ -57,6 +57,7 @@ import {
   type DeviceEventIngest,
 } from "./deviceEvents.js";
 import { registerSpotPlayRoutes } from "./spotPlayRoutes.js";
+import { registerAppReleaseRoutes } from "./appReleaseRoutes.js";
 import { registerPlayoutPreviewRoute } from "./playoutPreview.js";
 import { registerTaxiActivationRoute } from "./taxiActivationRoutes.js";
 import { TaxiActivationService } from "../modules/taxiActivation/index.js";
@@ -94,6 +95,8 @@ export interface HttpCompositionDeps {
   now?: () => Date;
   /** CX-148: Manifest-Neuberechnung (CX-041); ohne Signierschluessel nicht gesetzt. */
   manifestRefresh?: ManifestRefreshTrigger;
+  /** CX-168: Download-Geheimnis fuer App-Update-Tickets. */
+  downloadSecret?: string | null;
 }
 
 export function registerHttpComposition(
@@ -303,6 +306,17 @@ export function registerHttpComposition(
     registerDeviceEventRoutes(scope, {
       ingest: deps.telemetryIngest,
       deviceAuth: deps.deviceAuth,
+    });
+
+    // CX-168: App-Updates. Upload, Freigabe, Kanal, Ticket-Download und
+    // Rueckmeldung laufen ausschliesslich ueber das App-Release-Modul.
+    registerAppReleaseRoutes(scope, {
+      pool: deps.pool,
+      adminAuth: deps.adminAuth,
+      deviceAuth: deps.deviceAuth,
+      storageRoot: deps.mediaUpload.serviceOptions.storageRoot,
+      downloadSecret: deps.downloadSecret ?? null,
+      now: deps.now,
     });
 
     // CX-159: authentifizierter Spot-Abspieleingang und geschuetzte
