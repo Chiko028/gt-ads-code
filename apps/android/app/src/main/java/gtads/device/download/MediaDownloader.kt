@@ -56,6 +56,8 @@ class MediaDownloader internal constructor(
     private val directory: File,
     baseUrl: String,
     private val openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
+    /** Erlaubter Downloadpfad; App-Updates nutzen /v1/device/app-downloads/ mit derselben Pruefung. */
+    private val pathPrefix: String = DOWNLOAD_PATH_PREFIX,
     private val onMainThread: () -> Boolean = { Looper.myLooper() == Looper.getMainLooper() },
 ) {
     private val baseUrl: String = baseUrl
@@ -66,7 +68,7 @@ class MediaDownloader internal constructor(
         baseUrl: String,
         openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
         onMainThread: () -> Boolean = { Looper.myLooper() == Looper.getMainLooper() },
-    ) : this(File(context.filesDir, MEDIA_DIRECTORY), baseUrl, openConnection, onMainThread)
+    ) : this(File(context.filesDir, MEDIA_DIRECTORY), baseUrl, openConnection, DOWNLOAD_PATH_PREFIX, onMainThread)
 
     fun download(grantUrl: String, media: VerifiedMedia): MediaDownloadResult {
         if (onMainThread()) return MediaDownloadResult.InvalidInput
@@ -277,7 +279,8 @@ class MediaDownloader internal constructor(
 
     /**
      * Nur HTTPS, gleiche Origin wie die konfigurierte Basis und ein Pfad unter
-     * /v1/device/downloads/<id> mit nichtleerem ticket-Query sind zulaessig.
+     * [pathPrefix]<id> (Standard /v1/device/downloads/) mit nichtleerem
+     * ticket-Query sind zulaessig.
      */
     private fun resolveGrant(raw: String): URL? {
         val normalized = normalizeServerBaseUrl(baseUrl) ?: return null
@@ -288,7 +291,7 @@ class MediaDownloader internal constructor(
             if (!grant.host.equals(base.host, ignoreCase = true)) return null
             if (effectivePort(grant) != effectivePort(base)) return null
             if (grant.userInfo != null || grant.ref != null) return null
-            val prefix = (base.path ?: "").trimEnd('/') + DOWNLOAD_PATH_PREFIX
+            val prefix = (base.path ?: "").trimEnd('/') + pathPrefix
             if (!grant.path.startsWith(prefix)) return null
             val id = grant.path.removePrefix(prefix)
             if (id.isEmpty() || id.contains('/')) return null

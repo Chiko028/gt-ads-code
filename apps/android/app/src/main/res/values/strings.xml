@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Name der App im Launcher und in den Einstellungen. -->
+    <string name="app_name" translatable="false">GT Ads</string>
     <!-- Feste deutsche Anzeigemeldungen der Registrierungsoberflaeche. -->
     <string name="registration_message_loading">Registrierungszustand wird geladen</string>
     <string name="registration_message_progress">Registrierung laeuft</string>
@@ -18,6 +20,6 @@
     <!-- Neutraler technischer Leerzustand der Offline-Wiedergabe; kein Ersatzinhalt. -->
     <string name="playback_message_empty">Keine lokalen Inhalte verfuegbar</string>
     <!-- CX-092 / R-909: eingebauter statischer Fallback, keine Kampagne, kein Download. -->
-    <string name="playback_fallback_brand" translatable="false">GT-Ads</string>
-    <string name="playback_fallback_description">Statischer GT-Ads-Platzhalter</string>
+    <string name="playback_fallback_brand" translatable="false">GT Ads</string>
+    <string name="playback_fallback_description">Statischer GT Ads-Platzhalter</string>
 </resources>

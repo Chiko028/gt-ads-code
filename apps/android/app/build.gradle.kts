@@ -13,8 +13,33 @@ android {
         targetSdk = 35
         // Pflicht: Registrierung und Heartbeat senden app_version; ohne versionName
         // war sie leer und der Server lehnte die Registrierung als ungueltig ab.
-        versionCode = 1
-        versionName = "0.1.0"
+        // App-Updates: Jede ausgelieferte Version braucht einen hoeheren versionCode
+        // und einen eigenen versionName. Beim Bau ueberschreibbar:
+        //   gradle assembleRelease -PgtadsVersionCode=3 -PgtadsVersionName=0.3.0
+        versionCode = (project.findProperty("gtadsVersionCode") as String?)?.toInt() ?: 2
+        versionName = (project.findProperty("gtadsVersionName") as String?) ?: "0.2.0"
+    }
+
+    // App-Updates: Android nimmt Updates nur mit demselben Signaturschluessel an.
+    // Der Release-Schluessel liegt ausserhalb des Repos; ohne Angaben entsteht kein
+    // signierter Release-Build (Debug-Builds bleiben unveraendert).
+    val releaseStore = (project.findProperty("gtadsKeystore") as String?)?.let { file(it) }
+    signingConfigs {
+        if (releaseStore != null) {
+            create("release") {
+                storeFile = releaseStore
+                storePassword = project.findProperty("gtadsKeystorePassword") as String?
+                keyAlias = (project.findProperty("gtadsKeyAlias") as String?) ?: "gtads"
+                keyPassword = (project.findProperty("gtadsKeyPassword") as String?)
+                    ?: (project.findProperty("gtadsKeystorePassword") as String?)
+            }
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            if (releaseStore != null) signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     compileOptions {

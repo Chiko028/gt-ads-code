@@ -83,7 +83,7 @@ class PlaybackFallbackTest {
             assertEquals(0, port.playCalls)
         }
 
-        // In der Activity erscheint der eingebaute GT-Ads-Platzhalter.
+        // In der Activity erscheint der eingebaute GT Ads-Platzhalter.
         PlaybackRuntime.installForTest(
             controllerFactory = { _, listener ->
                 PlaybackController(
@@ -102,7 +102,7 @@ class PlaybackFallbackTest {
             activity.setup()
             val placeholder = activity.get().findViewById<TextView>(R.id.playback_empty)
             assertEquals(View.VISIBLE, placeholder.visibility)
-            assertEquals("GT-Ads", placeholder.text.toString())
+            assertEquals("GT Ads", placeholder.text.toString())
         } finally {
             activity.destroy()
         }

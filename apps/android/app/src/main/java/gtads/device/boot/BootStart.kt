@@ -142,11 +142,11 @@ class AndroidBootPlatform(context: Context) : BootPlatform {
     override fun notify(intent: PendingIntent) {
         val manager = app.getSystemService(NotificationManager::class.java) ?: return
         manager.createNotificationChannel(
-            NotificationChannel(BootStart.CHANNEL_ID, "GT-Ads Start", NotificationManager.IMPORTANCE_DEFAULT),
+            NotificationChannel(BootStart.CHANNEL_ID, "GT Ads Start", NotificationManager.IMPORTANCE_DEFAULT),
         )
         val notification = Notification.Builder(app, BootStart.CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("GT-Ads")
+            .setContentTitle("GT Ads")
             .setContentText("Tippen, um die Wiedergabe zu starten")
             .setContentIntent(intent)
             .setAutoCancel(true)

@@ -31,6 +31,8 @@ object SyncScheduler {
         ensurePeriodic(app)
         // CX-094: Wiederaufnahme des Ereignisuploads ueber dieselbe Registrierungsanbindung.
         gtads.device.telemetry.EventUploadScheduler.onRegistrationConfirmed(app)
+        // App-Updates: seltene, eigene Pruefung (Start + alle 6 h), nicht im 15-Minuten-Takt.
+        gtads.device.update.AppUpdateScheduler.ensure(app)
     }
 
     fun enqueueOneTime(context: Context) {
@@ -51,6 +53,8 @@ object SyncScheduler {
         if (RegistrationRepository(app).readBinding() == null) return
         // CX-094: App-Start plant den Upload (vorhandene Arbeit bleibt erhalten).
         gtads.device.telemetry.EventUploadScheduler.enqueue(app)
+        // App-Updates: seltene, eigene Pruefung (Start + alle 6 h), nicht im 15-Minuten-Takt.
+        gtads.device.update.AppUpdateScheduler.ensure(app)
         val request = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
             .setConstraints(
                 Constraints.Builder()

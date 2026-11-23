@@ -4,7 +4,13 @@
          nicht auf das Zusammenfuehren von Bibliotheksmanifesten verlassen. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <application android:usesCleartextTraffic="false">
+    <!-- App-Updates aus der Ferne: Installation ueber PackageInstaller (als Device Owner still). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <application
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="false">
         <activity
             android:name="gtads.device.MainActivity"
             android:exported="true">
@@ -33,6 +39,18 @@
                 android:resource="@xml/gtads_device_admin" />
             <intent-filter>
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+        <!-- App-Updates: Ergebnis der Installationssitzung (nur von der eigenen PendingIntent). -->
+        <receiver
+            android:name="gtads.device.update.AppUpdateInstallReceiver"
+            android:exported="false" />
+        <!-- App-Updates: nach dem Ersetzen der App den normalen Startpfad oeffnen und melden. -->
+        <receiver
+            android:name="gtads.device.update.AppUpdatedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
     </application>
