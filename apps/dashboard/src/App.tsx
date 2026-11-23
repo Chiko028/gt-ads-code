@@ -12,6 +12,7 @@ import { PageErrorBoundary } from "./navigation/PageErrorBoundary";
 import type { DashboardRouteId } from "./navigation/routes";
 import type { OperationsClient } from "./operations/operationsApi";
 import { OperationsPage } from "./operations/OperationsPage";
+import { AppUpdatesPanel } from "./operations/AppUpdatesPanel";
 import { PlayoutPreviewPage } from "./playout/PlayoutPreviewPage";
 import type { StatisticsClient } from "./statistics/statisticsApi";
 import { StatisticsPage } from "./statistics/StatisticsPage";
@@ -89,7 +90,11 @@ export function App({
         )}
         operationsPage={guardedPage(
           "betrieb",
-          <OperationsPage client={operationsClient} fetchImpl={fetchImpl} />,
+          <>
+            <OperationsPage client={operationsClient} fetchImpl={fetchImpl} />
+            {/* App-Updates aus der Ferne: Versionen hochladen und freigeben. */}
+            <AppUpdatesPanel fetchImpl={fetchImpl} />
+          </>,
         )}
       />
     </AdminShell>
