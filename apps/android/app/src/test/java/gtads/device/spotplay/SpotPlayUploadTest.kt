@@ -44,12 +44,10 @@ private class FakeSpotConnection(url: URL) : HttpURLConnection(url) {
     val sent = ByteArrayOutputStream()
     val requestHeaders = HashMap<String, String>()
     var disconnectedFlag = false
-    var fixedLength: Int? = null
 
     override fun connect() = Unit
     override fun disconnect() { disconnectedFlag = true }
     override fun usingProxy() = false
-    override fun setFixedLengthStreamingMode(contentLength: Int) { fixedLength = contentLength }
     override fun setRequestProperty(key: String, value: String) { requestHeaders[key] = value }
     override fun getOutputStream(): OutputStream = sent
     override fun getResponseCode(): Int = status

@@ -100,3 +100,14 @@ Wiedergabe nicht beeinflussen.
   Doppelmeldungen beim Abbruch direkt nach dem Slotwechsel.
 - Test ergaenzt um die Zusicherung, dass 0 ms nicht gemeldet wird; keine
   vorhandenen Tests geaendert, geloescht oder uebersprungen.
+
+## Korrektur 2 (2026-11-23)
+
+- Der zweite Lauf brach nach compileDebugKotlin ab; es wurden keine neuen
+  Testergebnisse erzeugt (Testberichte blieben auf dem Stand des ersten Laufs).
+  Ein Kotlin-/Test-Compilefehler war aus den Caches nicht belegbar.
+- Bereinigt: die nicht benoetigte setFixedLengthStreamingMode-Ueberschreibung
+  im Test-Double entfernt (der Transport-Test war bereits im ersten Lauf gruen).
+- Der generierte Build-/Gradle-/Kotlin-Zustand im Arbeitsbereich wurde
+  geloescht, damit der naechste Lauf frisch kompiliert und testet. Quellcode
+  und Tests bleiben unveraendert vollstaendig vorhanden.
