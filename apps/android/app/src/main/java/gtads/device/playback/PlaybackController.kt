@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.view.View
 import gtads.device.manifest.ActiveManifest
 import gtads.device.manifest.ManifestSlot
+import gtads.device.spotplay.SpotPlayRuntime
 import java.time.Clock
 import java.time.Instant
 
@@ -34,6 +35,12 @@ enum class PlaybackUiState {
  * - der Timer wird auf die frueheste Grenze aus Slotdauer, Kampagnenende und
  *   Pruefintervall geplant und ist abbrechbar.
  *
+ * CX-160 ergaenzt den Abspielnachweis: Jeder tatsaechlich gestartete Spot wird
+ * beim Ende genau einmal an [spotPlays] gemeldet - vollstaendig bei Player-Ende
+ * und bei erreichter Slotdauer, nicht vollstaendig bei Fenster-/Uhrende, Fehler
+ * und [stop]. Die Dauer wird monoton gemessen und auf die Slotdauer begrenzt.
+ * Fehler der Senke werden geschluckt; sie aendern weder Auswahl noch Zustand.
+ *
  * Ein neuer aktivierter Schnappschuss wird nur am Slotwechsel gelesen. Ein
  * fehlender oder unvollstaendiger Kandidat ersetzt die laufende Auswahl nicht.
  * Fehlende oder fehlerhafte Medien werden hoechstens einmal je Durchlauf
@@ -53,6 +60,8 @@ class PlaybackController internal constructor(
     private val playbackPermitted: () -> Boolean = { true },
     /** CX-098: Android-Zeit-/Zeitzonenaenderungen; lebenszyklusgebunden angemeldet. */
     private val clockChanges: ClockChangeSource = NoClockChanges,
+    /** CX-160: Senke fuer beendete Spots; Fehler duerfen die Wiedergabe nicht stoeren. */
+    private val spotPlays: SpotPlaySink = SpotPlaySink.NONE,
 ) {
     /** Produktive Verdrahtung: lokaler Speicher, Main-Looper, Systemuhren. */
     constructor(context: Context, listener: (PlaybackUiState) -> Unit) : this(
@@ -62,6 +71,7 @@ class PlaybackController internal constructor(
         timer = HandlerPlaybackTimer(),
         listener = listener,
         clockChanges = AndroidClockChangeSource(context),
+        spotPlays = SpotPlayRuntime.sink(context),
     )
 
     /** Produktive Verdrahtung mit externer CX-083-Freigabe. */
@@ -77,6 +87,7 @@ class PlaybackController internal constructor(
         listener = listener,
         playbackPermitted = playbackPermitted,
         clockChanges = AndroidClockChangeSource(context),
+        spotPlays = SpotPlayRuntime.sink(context),
     )
 
     private val planner = PlaybackPlanner(clock)
@@ -93,6 +104,8 @@ class PlaybackController internal constructor(
     private var slotStartedMono = 0L
     private var playingGeneration: Long? = null
     private var previousPosition: Int? = null
+    private var spotStartedAt: Instant? = null
+    private var spotReported = false
     private val skipped = LinkedHashSet<Int>()
 
     private val observer = PlaybackObserver { event -> handleEvent(event) }
@@ -118,6 +131,8 @@ class PlaybackController internal constructor(
         stopAt = null
         playingGeneration = null
         previousPosition = null
+        spotStartedAt = null
+        spotReported = false
         val current = refreshSnapshot()
         if (current == null) {
             // Noch kein aktivierter Stand (z. B. nicht registriert): Anzeige unveraendert.
@@ -132,6 +147,8 @@ class PlaybackController internal constructor(
     /** Beendet Wiedergabe und Timer und gibt den Player frei; mehrfach aufrufbar. */
     fun stop() {
         running = false
+        // CX-160: Ein abgebrochener Spot wird mit gemessener Dauer, nicht voll, gemeldet.
+        reportFinished(completed = false)
         unsubscribeClock()
         cancelTimer()
         playingGeneration = null
@@ -139,6 +156,8 @@ class PlaybackController internal constructor(
         stopAt = null
         previousPosition = null
         snapshot = null
+        spotStartedAt = null
+        spotReported = false
         skipped.clear()
         releaseAdapter()
         publish(PlaybackUiState.IDLE)
@@ -205,11 +224,14 @@ class PlaybackController internal constructor(
             is PlaybackEvent.Started -> Unit
             is PlaybackEvent.Ended -> {
                 if (event.generation == playingGeneration) {
+                    // CX-160: Der Player hat den Spot zu Ende gespielt.
+                    reportFinished(completed = true)
                     advanceFrom(previousPosition, null)
                 }
             }
             is PlaybackEvent.Failed -> {
                 if (event.generation == playingGeneration) {
+                    reportFinished(completed = false)
                     advanceFrom(previousPosition, previousPosition)
                 }
             }
@@ -283,6 +305,9 @@ class PlaybackController internal constructor(
             slot = decision.slot
             stopAt = decision.stopAt
             slotStartedMono = monotonicMillis()
+            // CX-160: Wanduhrbeginn genau beim Slotstart, Duration wird monoton gemessen.
+            spotStartedAt = clock.instant()
+            spotReported = false
             playingGeneration = prepared.generation
             previousPosition = position
             publish(PlaybackUiState.PLAYING)
@@ -325,6 +350,10 @@ class PlaybackController internal constructor(
     }
 
     private fun stopCurrentPlayback() {
+        // CX-160: Kein Spot endet ohne Meldung, aber jeder hoechstens einmal.
+        reportFinished(completed = false)
+        spotStartedAt = null
+        spotReported = false
         playingGeneration = null
         slot = null
         stopAt = null
@@ -332,6 +361,33 @@ class PlaybackController internal constructor(
             adapter?.stop()
         } catch (_: Exception) {
             // Der alte Player wird unabhaengig davon nicht weiter verwendet.
+        }
+    }
+
+    /**
+     * CX-160: Meldet den laufenden Spot genau einmal. Die Dauer ist monoton
+     * gemessen, nie negativ und auf die Slotdauer begrenzt; eine fehlerhafte
+     * Senke wird geschluckt und aendert die Wiedergabe nicht.
+     */
+    private fun reportFinished(completed: Boolean) {
+        val currentSlot = slot ?: return
+        val startedAt = spotStartedAt ?: return
+        if (spotReported) return
+        spotReported = true
+        val elapsed = (monotonicMillis() - slotStartedMono).coerceAtLeast(0L)
+        val playedMs = elapsed.coerceAtMost(currentSlot.durationMs)
+        try {
+            spotPlays.report(
+                SpotPlayRecord(
+                    campaignId = currentSlot.campaignId,
+                    mediaId = currentSlot.media.mediaId,
+                    startedAt = startedAt,
+                    playedMs = playedMs,
+                    completed = completed,
+                ),
+            )
+        } catch (_: Throwable) {
+            // Eine fehlerhafte Senke darf die Wiedergabe nicht beeinflussen.
         }
     }
 
@@ -389,7 +445,10 @@ class PlaybackController internal constructor(
         // REV-195: Laufzeitberechtigung aus dem Planer (dieselbe Regel wie bei der Auswahl), nur die
         // spotbezogenen Grenzen (stopAt, Spotdauer) bleiben hier.
         val stillPlayable = planner.isPlayable(currentSlot)
-        if (!stillPlayable || !nowUtc.isBefore(limit) || elapsed >= currentSlot.durationMs) {
+        val durationReached = elapsed >= currentSlot.durationMs
+        if (!stillPlayable || !nowUtc.isBefore(limit) || durationReached) {
+            // CX-160: Nur die volle Slotdauer gilt als vollstaendig; Fenster-/Uhrende nicht.
+            reportFinished(completed = durationReached)
             advanceFrom(previousPosition, null)
         } else {
             scheduleCheck()

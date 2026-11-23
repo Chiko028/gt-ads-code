@@ -22,6 +22,23 @@ class OutgoingEvent(val eventId: String, payloadBytes: ByteArray) {
     fun payloadBytes(): ByteArray = bytes.copyOf()
 }
 
+/**
+ * CX-160: Die beiden Geraetebatches mit demselben geschlossenen Umschlag.
+ *
+ * [EVENTS] ist der bisherige Vertrag (CX-046, Wurzel "events", ID "event_id",
+ * Antwort "accepted_event_ids"). [SPOT_PLAYS] ist der Abspielnachweis aus
+ * CX-159 (Wurzel "plays", ID "play_id", Antwort "accepted_play_ids").
+ */
+enum class BatchRoute(
+    val path: String,
+    val wrapper: String,
+    val idField: String,
+    val acceptedField: String,
+) {
+    EVENTS("/v1/device/events", "events", "event_id", "accepted_event_ids"),
+    SPOT_PLAYS("/v1/device/spot-plays", "plays", "play_id", "accepted_play_ids"),
+}
+
 /** Ergebnis eines einzelnen Uebertragungsversuchs (CX-093 / R-910). */
 sealed interface EventTransportResult {
     /** Nur die vom Server ausdruecklich bestaetigten IDs (accepted_event_ids, CX-046). */
@@ -41,16 +58,18 @@ sealed interface EventTransportResult {
 }
 
 /**
- * Begrenzter HTTPS-Transport fuer POST /v1/device/events (CX-046) mit der vorhandenen
+ * Begrenzter HTTPS-Transport fuer POST /v1/device/events (CX-046) und
+ * POST /v1/device/spot-plays (CX-160) mit der vorhandenen
  * Geraeteauthentifizierung aus CX-074 (DeviceAuthClient, Bearer-Nachweis).
  *
  * Der Adapter loescht keine Pufferdaten, wiederholt nicht selbststaendig und startet
- * keinen Hintergrundjob; ueber bestaetigte Ereignisse entscheidet ausschliesslich die
+ * keinen Hintergrundjob; ueber bestaetigte Eintraege entscheidet ausschliesslich die
  * Serverantwort. Zugangsnachweise und Nutzdaten erscheinen in keinem Ergebnis.
  */
 class DeviceEventTransport(
     private val baseUrl: String,
     private val obtainToken: () -> DeviceAuthResult,
+    private val route: BatchRoute = BatchRoute.EVENTS,
     private val openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
     private val onMainThread: () -> Boolean = { Looper.myLooper() == Looper.getMainLooper() },
 ) {
@@ -58,8 +77,9 @@ class DeviceEventTransport(
     constructor(
         baseUrl: String,
         auth: DeviceAuthClient,
+        route: BatchRoute = BatchRoute.EVENTS,
         openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
-    ) : this(baseUrl, auth::obtainToken, openConnection)
+    ) : this(baseUrl, auth::obtainToken, route, openConnection)
 
     fun send(events: List<OutgoingEvent>): EventTransportResult {
         if (onMainThread()) return EventTransportResult.InvalidInput
@@ -121,11 +141,14 @@ class DeviceEventTransport(
         else -> EventTransportResult.Rejected(status)
     }
 
-    /** {"events":[...]} aus den unveraenderten Nutzdaten; jede Nutzlast muss ein Objekt mit passender event_id sein. */
+    /**
+     * {"events":[...]} bzw. {"plays":[...]} aus den unveraenderten Nutzdaten; jede
+     * Nutzlast muss ein Objekt mit der passenden ID der Route sein.
+     */
     private fun batchBody(events: List<OutgoingEvent>): ByteArray? {
         val ids = HashSet<String>()
         val out = ByteArrayOutputStream()
-        out.write(BATCH_PREFIX)
+        out.write(("{\"" + route.wrapper + "\":[").toByteArray(Charsets.UTF_8))
         events.forEachIndexed { index, event ->
             if (event.eventId.isEmpty() || !ids.add(event.eventId)) return null
             val payload = event.payloadBytes()
@@ -134,7 +157,7 @@ class DeviceEventTransport(
             } catch (_: JSONException) {
                 return null
             }
-            if (parsed !is JSONObject || parsed.opt("event_id") != event.eventId) return null
+            if (parsed !is JSONObject || parsed.opt(route.idField) != event.eventId) return null
             if (index > 0) out.write(','.code)
             out.write(payload)
         }
@@ -142,7 +165,7 @@ class DeviceEventTransport(
         return out.toByteArray()
     }
 
-    /** accepted_event_ids muss ein Array aus Strings sein, die alle in diesem Batch gesendet wurden. */
+    /** Die Bestaetigungsliste der Route muss ein Array aus gesendeten IDs sein. */
     private fun acceptedIds(bytes: ByteArray, sentIds: Set<String>): Set<String>? {
         val root = try {
             JSONTokener(String(bytes, Charsets.UTF_8)).nextValue()
@@ -150,7 +173,7 @@ class DeviceEventTransport(
             return null
         }
         if (root !is JSONObject) return null
-        val array = root.opt("accepted_event_ids") as? JSONArray ?: return null
+        val array = root.opt(route.acceptedField) as? JSONArray ?: return null
         val accepted = LinkedHashSet<String>()
         for (i in 0 until array.length()) {
             val id = array.opt(i) as? String ?: return null
@@ -188,14 +211,14 @@ class DeviceEventTransport(
             return null
         }
         return try {
-            URL(base.protocol, base.host, base.port, (base.path ?: "") + EVENTS_PATH)
+            URL(base.protocol, base.host, base.port, (base.path ?: "") + route.path)
         } catch (_: Exception) {
             null
         }
     }
 
     companion object {
-        /** Serverseitige Batchgrenze (CX-046: 1 bis 100 Ereignisse). */
+        /** Serverseitige Batchgrenze (CX-046/CX-159: 1 bis 100 Eintraege). */
         const val MAX_BATCH_EVENTS = 100
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 15_000
@@ -203,8 +226,6 @@ class DeviceEventTransport(
         const val MAX_RETRY_AFTER_SECONDS = 86_400L
         private const val READ_BUFFER_BYTES = 8_192
         private const val API_VERSION = "1"
-        private const val EVENTS_PATH = "/v1/device/events"
-        private val BATCH_PREFIX = "{\"events\":[".toByteArray(Charsets.UTF_8)
         private val BATCH_SUFFIX = "]}".toByteArray(Charsets.UTF_8)
     }
 }

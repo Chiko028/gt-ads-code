@@ -28,8 +28,11 @@ class InMemoryUploadGate : UploadGate {
     }
 }
 
-class SharedPreferencesUploadGate(context: Context) : UploadGate {
-    private val preferences = context.applicationContext.getSharedPreferences("event-upload", Context.MODE_PRIVATE)
+class SharedPreferencesUploadGate(
+    context: Context,
+    preferencesName: String = DEFAULT_PREFERENCES_NAME,
+) : UploadGate {
+    private val preferences = context.applicationContext.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
     override fun suspendedReason(): String? = preferences.getString(KEY_REASON, null)
     override fun suspend(reason: String) {
         preferences.edit().putString(KEY_REASON, reason).commit()
@@ -42,6 +45,7 @@ class SharedPreferencesUploadGate(context: Context) : UploadGate {
         preferences.edit().putLong(KEY_NOT_BEFORE, value).commit()
     }
     private companion object {
+        const val DEFAULT_PREFERENCES_NAME = "event-upload"
         const val KEY_REASON = "suspended"
         const val KEY_NOT_BEFORE = "not-before-ms"
     }
@@ -78,7 +82,13 @@ class EventUploadCoordinator(
     private val gate: UploadGate,
     private val wallClockMs: () -> Long = System::currentTimeMillis,
     private val batchSize: Int = DEFAULT_BATCH_SIZE,
+    /** CX-160: Ereignispuffer oder Spot-Puffer; nur diese beiden Tabellen sind erlaubt. */
+    private val table: String = TABLE_TELEMETRY_EVENTS,
 ) {
+    init {
+        require(table == TABLE_TELEMETRY_EVENTS || table == TABLE_SPOT_PLAYS) { "unsupported table" }
+    }
+
     fun runOnce(): UploadOutcome {
         gate.suspendedReason()?.let { return UploadOutcome.Stopped(it) }
         if (wallClockMs() < gate.notBeforeMs()) return UploadOutcome.Deferred
@@ -108,7 +118,7 @@ class EventUploadCoordinator(
 
     private fun readBatch(): List<OutgoingEvent> =
         database.rawQuery(
-            "select event_id, payload_bytes from telemetry_events where device_id = ? order by seq limit ?",
+            "select event_id, payload_bytes from " + table + " where device_id = ? order by seq limit ?",
             arrayOf(deviceId, batchSize.toString()),
         ).use { cursor ->
             val list = ArrayList<OutgoingEvent>()
@@ -122,7 +132,7 @@ class EventUploadCoordinator(
         database.beginTransaction()
         try {
             for (id in ids) {
-                removed += database.delete("telemetry_events", "event_id = ? and device_id = ?", arrayOf(id, deviceId))
+                removed += database.delete(table, "event_id = ? and device_id = ?", arrayOf(id, deviceId))
             }
             database.setTransactionSuccessful()
         } finally {
@@ -132,9 +142,11 @@ class EventUploadCoordinator(
     }
 
     private fun hasRemaining(): Boolean =
-        database.rawQuery("select 1 from telemetry_events where device_id = ? limit 1", arrayOf(deviceId)).use { it.moveToFirst() }
+        database.rawQuery("select 1 from " + table + " where device_id = ? limit 1", arrayOf(deviceId)).use { it.moveToFirst() }
 
     companion object {
         const val DEFAULT_BATCH_SIZE = 100
+        const val TABLE_TELEMETRY_EVENTS = "telemetry_events"
+        const val TABLE_SPOT_PLAYS = "spot_plays"
     }
 }

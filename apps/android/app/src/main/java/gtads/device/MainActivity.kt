@@ -143,6 +143,16 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             // Ohne WorkManager bleibt die Registrierung nutzbar.
         }
+        // CX-160: Mit vorhandener Bindung den Ereignis- und Spot-Upload anstossen;
+        // ein Fehler einzelner Scheduler darf den Vordergrund nicht verhindern.
+        try {
+            if (gtads.device.registration.RegistrationRepository(this).readBinding() != null) {
+                SyncScheduler.enqueueOneTime(this)
+                gtads.device.spotplay.SpotPlayUploadScheduler.onAppStarted(this)
+            }
+        } catch (_: Exception) {
+            // Ohne WorkManager/Bindung bleibt die Wiedergabe nutzbar.
+        }
         // CX-153: Nur der aktive Lebenszyklus darf Entscheidungen umsetzen;
         // der Basisstand trennt diesen Startversuch von frueheren.
         playbackActive = true
