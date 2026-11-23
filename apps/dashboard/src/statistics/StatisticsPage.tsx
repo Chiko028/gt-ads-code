@@ -1,10 +1,13 @@
 /**
- * CX-050 / R-405: eingebundene Statistikseite.
+ * CX-050 / R-405: eingebundene Statistikseite; CX-161 ergaenzt oben die
+ * verstaendliche Monatsuebersicht der Abspielnachweise.
  *
  * Die Seite zeigt die Antwort der vorhandenen CX-049-Route unveraendert:
  * gemeldete Wiedergaben nach Kampagne/Geraet/Taxi getrennt von
  * Geraeteverfuegbarkeit und Sync-Fehlern. Es gibt keine Aggregation im
- * Browser, keine Charts, keinen Export und keine Stammdatenbeschaffung.
+ * Browser und keine Charts. Die technischen Angaben bleiben unterhalb der
+ * Monatsuebersicht eingeklappt erreichbar; der CSV-Kundenbericht stammt aus
+ * der Monatsroute aus CX-159.
  *
  * Filter werden ausschliesslich gemeinsam ueber "Anwenden" abgeschickt.
  * Zeitfelder sind ausdruecklich UTC; initial sind die letzten sieben
@@ -17,6 +20,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FetchLike } from "../admin/adminApi";
 import { isAdminApiError } from "../admin/adminApi";
 import { useOptionalAdminSession } from "../admin/AdminShell";
+import type { SpotPlaySummaryClient } from "./spotPlaysApi";
+import { createSpotPlaySummaryClient } from "./spotPlaysApi";
+import { SpotPlaySummary } from "./SpotPlaySummary";
 import type {
   DeviceQualityRow,
   PlayRow,
@@ -39,6 +45,11 @@ export interface StatisticsPageProps {
   readonly client?: StatisticsClient;
   /** Alias fuer den injizierten Statistikclient. */
   readonly statisticsClient?: StatisticsClient;
+  /**
+   * Injizierter Client der Monatsuebersicht (CX-161). Ohne Angabe wird er
+   * nur gebaut, wenn auch kein Statistikclient injiziert ist.
+   */
+  readonly spotPlaysClient?: SpotPlaySummaryClient;
   /** Injizierbares fetch fuer den Standardclient. */
   readonly fetchImpl?: FetchLike;
   /** Injizierbare Uhr fuer den initialen Sieben-Tage-Zeitraum. */
@@ -354,6 +365,7 @@ function DefinitionBlock({ data }: { readonly data: StatisticsResponse }) {
 export function StatisticsPage({
   client,
   statisticsClient: statisticsClientProp,
+  spotPlaysClient: spotPlaysClientProp,
   fetchImpl,
   now,
 }: StatisticsPageProps = {}) {
@@ -387,6 +399,29 @@ export function StatisticsPage({
       createStatisticsClient({ fetchImpl, onUnauthorized: invalidateSession }),
     [client, statisticsClientProp, fetchImpl, invalidateSession],
   );
+
+  // CX-161: Ist bereits ein Statistikclient injiziert, wird ohne eigenen
+  // Spot-Client bewusst keiner gebaut. So bleiben bestehende Tests und
+  // Einbettungen ohne Netzaufruf, und die Uebersicht erscheint nur, wenn
+  // sie ausdruecklich mit einem Client versehen ist.
+  const spotSummaryClient = useMemo(() => {
+    if (spotPlaysClientProp !== undefined) {
+      return spotPlaysClientProp;
+    }
+    if (client !== undefined || statisticsClientProp !== undefined) {
+      return null;
+    }
+    return createSpotPlaySummaryClient({
+      fetchImpl,
+      onUnauthorized: invalidateSession,
+    });
+  }, [
+    client,
+    statisticsClientProp,
+    spotPlaysClientProp,
+    fetchImpl,
+    invalidateSession,
+  ]);
 
   const apply = useCallback(async () => {
     const validated = validateRange(fromInput, toInput);
@@ -450,10 +485,19 @@ export function StatisticsPage({
   return (
     <section aria-labelledby="page-heading" data-page-state={pageState}>
       <h2 id="page-heading">Statistik</h2>
-      <p>
-        Gemeldete Wiedergaben und Gerätequalität werden getrennt ausgewiesen.
-        Wiedergaben sind keine Sichtkontakte.
-      </p>
+
+      {spotSummaryClient === null ? null : (
+        <SpotPlaySummary client={spotSummaryClient} now={now} />
+      )}
+
+      <details>
+        <summary>
+          Technische Details (Gerätequalität, Messdefinition)
+        </summary>
+        <p>
+          Gemeldete Wiedergaben und Gerätequalität werden getrennt ausgewiesen.
+          Wiedergaben sind keine Sichtkontakte.
+        </p>
 
       <form onSubmit={handleSubmit} aria-label="Statistikfilter" noValidate>
         <p>
@@ -571,6 +615,7 @@ export function StatisticsPage({
           </section>
         </div>
       ) : null}
+      </details>
     </section>
   );
 }
