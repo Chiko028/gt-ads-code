@@ -376,6 +376,9 @@ class PlaybackController internal constructor(
         spotReported = true
         val elapsed = (monotonicMillis() - slotStartedMono).coerceAtLeast(0L)
         val playedMs = elapsed.coerceAtMost(currentSlot.durationMs)
+        // CX-160: 0 ms heisst, es wurde nichts gezeigt (z. B. Abbruch direkt nach
+        // dem Slotwechsel); der Puffer verwirft solche Nachweise ohnehin.
+        if (playedMs <= 0L) return
         try {
             spotPlays.report(
                 SpotPlayRecord(

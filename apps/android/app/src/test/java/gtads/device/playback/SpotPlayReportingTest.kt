@@ -112,6 +112,7 @@ class SpotPlayReportingTest {
 
         f.controller.stop()
         assertEquals("kein zweiter Nachweis fuer denselben Spot", 1, records.size)
+        assertTrue("0 ms wird nicht gemeldet", records.none { it.playedMs == 0L })
     }
 
     @Test

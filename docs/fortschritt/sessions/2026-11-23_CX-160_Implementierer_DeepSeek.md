@@ -88,3 +88,15 @@ Wiedergabe nicht beeinflussen.
   oder den Client auf die Zaehler verpflichten).
 - Testausfuehrung und assembleDebug konnten in der Sandbox mangels
   Gradle/JDK nicht belegt werden.
+
+## Korrektur 1 (2026-11-23)
+
+- Ursache des Testfehlers: Nach dem regulaeren Slotende startet der Controller
+  im Ein-Slot-Manifest denselben Slot erneut. Ein direkt danach folgendes
+  stop() meldete diesen neuen Spot mit 0 ms als weiteren (nicht vollen)
+  Nachweis; der Test "genau einmal" sah dadurch zwei Meldungen.
+- Fix im Code: reportFinished meldet keine Nachweise mit playedMs <= 0. Das
+  entspricht dem Puffer, der 0-ms-Nachweise ohnehin verwirft, und verhindert
+  Doppelmeldungen beim Abbruch direkt nach dem Slotwechsel.
+- Test ergaenzt um die Zusicherung, dass 0 ms nicht gemeldet wird; keine
+  vorhandenen Tests geaendert, geloescht oder uebersprungen.
