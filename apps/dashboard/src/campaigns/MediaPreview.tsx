@@ -31,7 +31,7 @@ const NO_MEDIA_MESSAGE = "Zuerst ein Medium auswählen.";
 const NO_HASH_MESSAGE =
   "Für dieses Medium ist kein SHA-256 gespeichert; die lokale Vorschau ist nicht möglich.";
 const OVERSIZE_MESSAGE =
-  "Die Datei ist zu groß. Maximal erlaubt sind 20.000.000 Bytes; sie wird nicht zur Vorschau geladen.";
+  "Die Datei ist zu groß. Maximal erlaubt sind 1.000.000.000 Bytes; sie wird nicht zur Vorschau geladen.";
 const MISMATCH_MESSAGE =
   "Die Datei gehört nicht zu diesem Medium (SHA-256 stimmt nicht überein).";
 const MATCH_MESSAGE = "Lokale Vorschau: SHA-256 bestätigt.";
@@ -190,7 +190,7 @@ export function MediaPreview({ media }: MediaPreviewProps) {
         disabled={media === null}
         accept="video/*"
       />
-      <p>Maximal 20.000.000 Bytes.</p>
+      <p>Maximal 1.000.000.000 Bytes.</p>
 
       {file === null ? (
         <p>Lokale Originaldatei für Vorschau auswählen</p>

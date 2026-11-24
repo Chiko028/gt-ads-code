@@ -8,8 +8,8 @@
  * application/octet-stream und optionalem Namen in der Query.
  */
 
-/** Dezimale Obergrenze aus CX-031 (MEDIA_UPLOAD_MAX_BYTES). */
-export const MEDIA_UPLOAD_MAX_BYTES = 20_000_000;
+/** Dezimale Obergrenze (1 GB) wie im Serverprofil (MEDIA_UPLOAD_MAX_BYTES). */
+export const MEDIA_UPLOAD_MAX_BYTES = 1_000_000_000;
 
 export const MEDIA_UPLOAD_PATH = "/v1/admin/media";
 

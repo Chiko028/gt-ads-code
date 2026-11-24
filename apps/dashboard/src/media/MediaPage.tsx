@@ -116,7 +116,7 @@ function uploadErrorForStatus(status: number): string {
     return "Der Server hat den Dateityp abgelehnt (415).";
   }
   if (status === 422) {
-    return "Der Server hat die Datei als ungültiges Medienformat abgelehnt (422).";
+    return "Der Server hat die Datei als ungültiges Medienformat abgelehnt (422). Erlaubt: MP4 (H.264), 1920×1080, 30 fps, ohne Ton, 5 bis 60 Sekunden.";
   }
   if (status === 400) {
     return "Die Upload-Anfrage wurde vom Server als ungültig abgelehnt (400).";

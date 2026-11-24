@@ -623,7 +623,7 @@ describe("CX-040 Kampagnenseite", () => {
     const huge = new File([new Uint8Array([1])], "riesig.mp4", {
       type: "video/mp4",
     });
-    Object.defineProperty(huge, "size", { value: 20_000_001 });
+    Object.defineProperty(huge, "size", { value: 1_000_000_001 });
     await user.upload(
       within(region).getByLabelText("Lokale Originaldatei für Vorschau auswählen"),
       huge,
