@@ -188,12 +188,14 @@ describe("CX-003 Medienprofilprüfung: einzelne Profilverstöße", () => {
 });
 
 describe("CX-003 Medienprofilprüfung: Dateigröße", () => {
-  it("akzeptiert genau 20.000.000 Byte", () => {
-    expect(validateMediaProfile(validInput({ sizeBytes: 20_000_000 }))).toEqual({ valid: true });
+  it("akzeptiert genau 1.000.000.000 Byte (L-01)", () => {
+    expect(validateMediaProfile(validInput({ sizeBytes: 1_000_000_000 }))).toEqual({ valid: true });
   });
 
-  it("akzeptiert 19.999.999 Byte", () => {
-    expect(validateMediaProfile(validInput({ sizeBytes: 19_999_999 }))).toEqual({ valid: true });
+  it("akzeptiert 999.999.999 Byte und die frueheren Grenzwerte 20.000.000/20.000.001 Byte", () => {
+    expect(validateMediaProfile(validInput({ sizeBytes: 999_999_999 }))).toEqual({ valid: true });
+    expect(validateMediaProfile(validInput({ sizeBytes: 20_000_000 }))).toEqual({ valid: true });
+    expect(validateMediaProfile(validInput({ sizeBytes: 20_000_001 }))).toEqual({ valid: true });
   });
 
   it("lehnt 1.000.000.001 Byte mit file_too_large ab", () => {
@@ -359,9 +361,15 @@ describe("CX-003 Medienprofilprüfung: Dauer", () => {
     expect(validateMediaProfile(validInput({ durationSeconds: 15 }))).toEqual({ valid: true });
   });
 
-  it("lehnt positive Dauern ungleich 15 Sekunden nicht allein wegen der Dauer ab", () => {
-    for (const durationSeconds of [0.5, 1, 8, 15.5, 16, 30, 60, 120]) {
+  it("akzeptiert Dauern von 5 bis 60 Sekunden einschließlich", () => {
+    for (const durationSeconds of [5, 8, 15.5, 16, 30, 60, 60.0004]) {
       expect(validateMediaProfile(validInput({ durationSeconds }))).toEqual({ valid: true });
+    }
+  });
+
+  it("lehnt Dauern außerhalb von 5 bis 60 Sekunden ab", () => {
+    for (const durationSeconds of [0.5, 4.99, 60.01, 120]) {
+      expect(codesOf(validInput({ durationSeconds }))).toEqual(["unsupported_duration"]);
     }
   });
 
@@ -389,7 +397,7 @@ describe("CX-003 Medienprofilprüfung: Reproduzierbarkeit und Reinheit", () => {
 
   it("liefert bei wiederholter Prüfung identische Ergebnisse", () => {
     const input = Object.freeze(
-      validInput({ container: "mov", audioStreamCount: 1, sizeBytes: 20_000_001 }),
+      validInput({ container: "mov", audioStreamCount: 1, sizeBytes: 1_000_000_001 }),
     );
     const first = validateMediaProfile(input);
     const second = validateMediaProfile(input);

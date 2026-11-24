@@ -51,6 +51,7 @@ const MIGRATIONS = [
   "0009_campaign_customers.up.sql",
   "0010_cx_041_manifest_refresh.up.sql",
   "0011_cx_078_media_deletion.up.sql",
+  "0017_media_size_1000mb.up.sql",
 ];
 const VALID_PROFILE: MediaProfileMetadata = {
   container: "mp4",
@@ -420,26 +421,36 @@ describe("CX-030 / R-201 Medienspeicher", () => {
     expect(await restarted.getReadyMedia(stagingId)).toBeNull();
   }, 30_000);
 
-  it("akzeptiert genau 20.000.000 Byte, lehnt ein Byte mehr, ungueltige Profile und manipulierte Namen ohne sichtbares Medium ab", async () => {
+  it("akzeptiert 20.000.001 Byte (L-01: Grenze jetzt 1000 MB, Datenbank inklusive), lehnt ungueltige Profile und manipulierte Namen ohne sichtbares Medium ab", async () => {
     const service = makeService();
-    const exact = patternBytes(20_000_000);
+    const exact = patternBytes(20_000_001);
     const accepted = await service.createMedia({
       displayName: "SYN-Grenze.mp4",
       content: streamOf(exact, 256 * 1024),
       metadata: metadata(),
     });
-    expect(accepted.sizeBytes).toBe(20_000_000);
+    expect(accepted.sizeBytes).toBe(20_000_001);
     expect(accepted.sha256).toBe(sha256Of(exact));
     expect(await mediaCount("ready")).toBe(1);
 
-    const over = patternBytes(20_000_001);
-    await expect(
-      service.createMedia({
-        displayName: "SYN-ZuGross.mp4",
-        content: streamOf(over, 256 * 1024),
-        metadata: metadata(),
-      }),
-    ).rejects.toMatchObject({ code: "invalid_media_profile" });
+    // Die Datenbankgrenze folgt der Profilgrenze: 1.000.000.000 ja, ein Byte mehr nein.
+    const client = await (pool as Pool).connect();
+    await client.query("begin");
+    try {
+      await client.query(
+        "update media_objects set size_bytes = 1000000000 where id = $1::uuid",
+        [accepted.id],
+      );
+      await expect(
+        client.query(
+          "update media_objects set size_bytes = 1000000001 where id = $1::uuid",
+          [accepted.id],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
     expect(await mediaCount("ready")).toBe(1);
     expect(await mediaCount("staging")).toBe(0);
 
@@ -870,4 +881,105 @@ describe("CX-030 / R-201 Medienspeicher", () => {
     );
     expect(Number(count.rows[0]?.count ?? "0")).toBe(0);
   }, 30_000);
+});
+
+async function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks);
+}
+
+describe("L-01 serverseitiger Medienleser und Auslieferung grosser Medien", () => {
+  it("liest ohne Aufrufer-Metadaten das Profil mit dem injizierten Leser aus der gespeicherten Temp-Datei", async () => {
+    const bytes = patternBytes(70_000);
+    const seen: Array<{ path: string; content: Buffer }> = [];
+    const service = makeService({
+      metadataReader: async (filePath) => {
+        seen.push({ path: filePath, content: await readFile(filePath) });
+        return { ...VALID_PROFILE };
+      },
+    });
+
+    const created = await service.createMedia({
+      displayName: "SYN-Leser.mp4",
+      content: streamOf(bytes, 4096),
+      metadata: undefined,
+    });
+
+    expect(created.profile).toEqual(VALID_PROFILE);
+    expect(created.sizeBytes).toBe(70_000);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.path.endsWith(created.id + ".part")).toBe(true);
+    expect(seen[0]?.content.equals(bytes)).toBe(true);
+    expect(await mediaCount("ready")).toBe(1);
+  });
+
+  it("lehnt ab, wenn der Leser nichts erkennt, fehlschlaegt oder fehlt, ohne sichtbares Medium oder Reste", async () => {
+    const readers: Array<MediaServiceOptions["metadataReader"]> = [
+      async () => undefined,
+      async () => {
+        throw new Error("SYN-Lesefehler");
+      },
+      undefined,
+    ];
+    for (const metadataReader of readers) {
+      const service = makeService(metadataReader === undefined ? {} : { metadataReader });
+      await expect(
+        service.createMedia({
+          displayName: "SYN-Unlesbar.mp4",
+          content: streamOf(patternBytes(512)),
+          metadata: undefined,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_media_profile" });
+    }
+    expect(await mediaCount()).toBe(0);
+    expect(await readdir(join(storageRoot, "staging"))).toEqual([]);
+  });
+
+  it("Aufrufer-Metadaten haben Vorrang; der Leser wird dann nicht aufgerufen", async () => {
+    let calls = 0;
+    const service = makeService({
+      metadataReader: async () => {
+        calls += 1;
+        return undefined;
+      },
+    });
+    await service.createMedia({
+      displayName: "SYN-Vorrang.mp4",
+      content: streamOf(patternBytes(256)),
+      metadata: metadata(),
+    });
+    expect(calls).toBe(0);
+  });
+
+  it("getReadyMediaFile liefert Bereiche als Strom ohne erneuten Hash und meldet fehlende oder veraenderte Dateien als nicht vorhanden", async () => {
+    const service = makeService();
+    const bytes = patternBytes(300_000);
+    const created = await service.createMedia({
+      displayName: "SYN-Strom.mp4",
+      content: streamOf(bytes),
+      metadata: metadata(),
+    });
+
+    const file = await service.getReadyMediaFile(created.id);
+    expect(file).not.toBeNull();
+    const ready = file as NonNullable<typeof file>;
+    expect(ready.sha256).toBe(sha256Of(bytes));
+    expect(ready.sizeBytes).toBe(300_000);
+    expect((await collect(ready.openRange(0, 299_999))).equals(bytes)).toBe(true);
+    expect(
+      (await collect(ready.openRange(1000, 1999))).equals(bytes.subarray(1000, 2000)),
+    ).toBe(true);
+
+    expect(await service.getReadyMediaFile(randomUUID())).toBeNull();
+
+    // Abweichende Groesse und fehlende Datei werden per Dateistatus erkannt;
+    // den Inhalt (SHA-256) prueft das Geraet nach dem Download.
+    await writeFile(join(storageRoot, "objects", created.id), bytes.subarray(0, 1000));
+    expect(await service.getReadyMediaFile(created.id)).toBeNull();
+    await rm(join(storageRoot, "objects", created.id));
+    expect(await service.getReadyMediaFile(created.id)).toBeNull();
+  });
 });

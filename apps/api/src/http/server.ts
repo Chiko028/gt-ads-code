@@ -29,6 +29,11 @@ import {
 } from "../modules/registration/routes.js";
 import { DeviceAuthService } from "../modules/deviceAuth/service.js";
 import { registerDeviceAuthRoutes } from "../modules/deviceAuth/routes.js";
+import {
+  InfoCardService,
+  registerInfoCardRoute,
+  startInfoCardRefresh,
+} from "../modules/infoCards/index.js";
 import { HeartbeatService } from "../modules/heartbeat/service.js";
 import { createTelemetryIngestService } from "../modules/telemetry/index.js";
 import { registerHeartbeatRoutes } from "../modules/heartbeat/routes.js";
@@ -50,6 +55,7 @@ import { registerAuditReadRoutes } from "./auditRead.js";
 import {
   createMedia,
   listReadyMedia,
+  readMp4Metadata,
   type MediaServiceOptions,
 } from "../modules/media/index.js";
 import type { MediaUploadDeps } from "./mediaUpload.js";
@@ -371,6 +377,8 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
   const mediaServiceOptions: MediaServiceOptions = {
     pool,
     storageRoot: resolveMediaStorageRoot(),
+    // L-01: Profilmetadaten liest der Server selbst aus der gespeicherten Datei.
+    metadataReader: readMp4Metadata,
     ...(manifestRefresh ? { manifestRefresh } : {}),
   };
   const mediaUpload: MediaUploadDeps =
@@ -407,6 +415,11 @@ export function createServer(input: AppConfig | ApiServerOptions): FastifyInstan
     downloadSecret: config.downloadSecret ?? null,
   });
   app.decorate("adminAuthService", adminAuthService);
+
+  // Info-Karten (Wetter, Schlagzeilen): ohne Freischaltung kein ausgehender Abruf.
+  const infoCards = new InfoCardService(now);
+  registerInfoCardRoute(app, { service: infoCards, deviceAuth: deviceAuthService });
+  if (config.infoCardsEnabled === true) startInfoCardRefresh(app, infoCards);
 
   // CX-148: Auslieferung an die Tablets (Konfiguration, Download-Freigabe, Download).
   registerDeviceDeliveryRoutes(app, {

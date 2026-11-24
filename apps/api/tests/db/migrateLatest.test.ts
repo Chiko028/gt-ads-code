@@ -31,6 +31,7 @@ const EXPECTED_MIGRATIONS = [
   "0016_taxi_structures.up.sql",
   "0017_spot_plays.up.sql",
   "0018_app_releases.up.sql",
+  "0019_media_size_1gb.up.sql",
 ];
 
 let maintenancePool: Pool;

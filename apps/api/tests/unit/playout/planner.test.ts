@@ -276,7 +276,7 @@ describe("CX-025: ungültige Belegungen werden durch CX-024 abgewiesen", () => {
     ).toBe(true);
 
     const badMedia = makeInput(12);
-    badMedia.bookings[3].media.durationMs = 14_999;
+    badMedia.bookings[3].media.durationMs = 4_999;
     badMedia.bookings[3].media.sha256 = "not-a-hash";
     const mediaErrors = expectRejectedByCx024(badMedia);
     expect(mediaErrors.some((error) => error.code === "invalid_spot_duration")).toBe(
@@ -335,11 +335,29 @@ describe("CX-025: Strukturprüfung des serialisierbaren Plans", () => {
     ).toBe(true);
 
     const duration = clone(plan);
-    duration.entries[5].durationMs = 15_001;
+    duration.entries[5].durationMs = 60_001;
     expect(
       expectInvalidPlan(duration).some(
         (error) => error.code === "invalid_spot_duration",
       ),
+    ).toBe(true);
+  });
+
+  it("plant gemischte Spotdauern und prüft die Summe", () => {
+    const input = makeInput(12);
+    input.bookings[0].media.durationMs = 5_000;
+    input.bookings[1].media.durationMs = 60_000;
+    const plan = buildLoopPlan(input);
+    expect(plan.entries.map((entry) => entry.durationMs).slice(0, 3)).toEqual([
+      5_000, 60_000, 15_000,
+    ]);
+    expect(plan.totalDurationMs).toBe(215_000);
+    expect(expectValidPlan(plan)).toEqual(plan);
+
+    const changed = clone(plan);
+    changed.entries[2].durationMs = 20_000;
+    expect(
+      expectInvalidPlan(changed).some((error) => error.code === "invalid_total_duration"),
     ).toBe(true);
   });
 

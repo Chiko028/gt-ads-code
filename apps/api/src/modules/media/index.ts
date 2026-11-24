@@ -8,7 +8,9 @@ export {
   MediaProfileRejectedError,
   MediaStorageError,
 } from "./errors.js";
-export { validateMediaProfile } from "./profile.js";
+export { MEDIA_MAX_SIZE_BYTES, validateMediaProfile } from "./profile.js";
+export { readMp4Metadata, frameRateOf } from "./mp4Reader.js";
+export type { Mp4Metadata } from "./mp4Reader.js";
 export type {
   MediaProfileError,
   MediaProfileErrorCode,
@@ -26,6 +28,7 @@ export {
   createMediaService,
   deleteMedia,
   getReadyMedia,
+  getReadyMediaFile,
   listReadyMedia,
   normalizeDisplayName,
   recoverStagingMedia,
@@ -50,9 +53,11 @@ export type {
   MediaDeletionResult,
   MediaListPage,
   MediaMetadata,
+  MediaMetadataReader,
   MediaProfileMetadata,
   MediaRecoveryResult,
   MediaServiceOptions,
   MediaSqlPool,
   ReadyMedia,
+  ReadyMediaFile,
 } from "./types.js";

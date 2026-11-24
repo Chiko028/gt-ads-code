@@ -7,9 +7,16 @@
  * pro Anfrage wird dessen oeffentliche createMedia-Schnittstelle genau einmal
  * aufgerufen. Der Adapter erfindet weder Profilmetadaten noch Speicherpfade.
  *
- * Der Content-Type-Parser und die Medienprofilgrenze sind auf den gekapselten
+ * Der Content-Type-Parser und die Groessengrenze sind auf den gekapselten
  * Plugin-Kontext dieser Route beschraenkt; globale Parser bleiben unveraendert.
+ *
+ * L-01 (1000 MB): Der Body wird nicht mehr gepuffert, sondern als Strom an
+ * createMedia weitergereicht, das ihn direkt in die temporaere Datei
+ * schreibt. Die Grenze prueft der Adapter selbst: ein zu grosses
+ * Content-Length wird vor dem Lesen, ein zu langer Strom beim Ueberschreiten
+ * mit 413 abgewiesen.
  */
+import type { Readable } from "node:stream";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   MediaInUseError,
@@ -36,11 +43,15 @@ export const MEDIA_UPLOAD_PATH = "/v1/admin/media";
 /** Einzige registrierte Loeschroute (siehe Rechtekern-Katalog). */
 export const MEDIA_DELETE_PATH = "/v1/admin/media/:id";
 
-/**
- * Obergrenze des Uploads: exakt die Medienprofilgrenze aus CX-155 / R-202
- * (einschliesslich, dezimale 1.000 MB). Es gibt keine zweite Festlegung.
- */
+/** Obergrenze des Uploads: exakt die Medienprofilgrenze (dezimale 1.000 MB). */
 export const MEDIA_UPLOAD_MAX_BYTES = MEDIA_MAX_SIZE_BYTES;
+
+/**
+ * Antwort-Header eines 422 mit den stabilen Profilfehler-Codes
+ * (kommagetrennt), damit das Dashboard den Grund nennen kann. Der Fehlerkoerper
+ * bleibt unveraendert der API-Vertrag.
+ */
+export const MEDIA_PROFILE_ERRORS_HEADER = "X-Media-Profile-Errors";
 
 /** Obergrenze des optionalen Anzeigenamens. */
 export const MEDIA_UPLOAD_MAX_NAME_LENGTH = 128;
@@ -112,6 +123,11 @@ export interface MediaUploadDeps {
   ) => Promise<ReadyMedia>;
   /** Produktionsoptionen des vorhandenen Speichers (Pool und Ablageort). */
   serviceOptions: MediaServiceOptions;
+  /**
+   * Obergrenze in Byte; Standard MEDIA_UPLOAD_MAX_BYTES. Nur Tests setzen
+   * einen kleineren Wert, damit keine Gigabyte erzeugt werden muessen.
+   */
+  maxBytes?: number;
 }
 
 /** Explizite oeffentliche Projektion; enthaelt keine internen Felder. */
@@ -170,9 +186,27 @@ function isOctetStream(contentType: string | undefined): boolean {
   return mediaType === OCTET_STREAM;
 }
 
-/** Die gepufferten Bytes werden unveraendert als ein Chunk weitergereicht. */
-async function* bufferedContent(body: Buffer): AsyncGenerator<Uint8Array> {
-  yield body;
+function isReadable(value: unknown): value is Readable {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] ===
+      "function" &&
+    typeof (value as { pipe?: unknown }).pipe === "function"
+  );
+}
+
+function tooLarge(): ApiError {
+  return new ApiError("invalid_request", { statusCode: 413, headers: { Connection: "close" } });
+}
+
+/** Content-Length als ganze Zahl oder null, falls nicht (eindeutig) gesetzt. */
+function declaredLength(value: unknown): number | null {
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) {
+    return null;
+  }
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }
 
 function toResponse(created: ReadyMedia): MediaUploadResponse {
@@ -212,8 +246,14 @@ async function handleUpload(
 
   const { name } = parseQuery(request.query);
   const body = request.body;
-  if (!Buffer.isBuffer(body)) {
+  if (!isReadable(body)) {
     throw ApiError.invalidRequest();
+  }
+
+  const maxBytes = deps.maxBytes ?? MEDIA_UPLOAD_MAX_BYTES;
+  const declared = declaredLength(request.headers["content-length"]);
+  if (declared !== null && declared > maxBytes) {
+    throw tooLarge();
   }
 
   let created: ReadyMedia;
@@ -222,21 +262,31 @@ async function handleUpload(
       // Ohne optionalen Namen wird keine Bezeichnung erfunden; der bestehende
       // CX-030-Service entscheidet ueber die Gueltigkeit.
       displayName: name ?? "",
-      content: enforceMediaUploadLimit(bufferedContent(body)),
+      content: enforceMediaUploadLimit(
+        // Ein Abbruch beendet nur das Lesen; die Verbindung bleibt fuer die
+        // 413-Antwort offen und wird danach geschlossen.
+        body.iterator({ destroyOnReturn: false }) as AsyncIterable<Uint8Array>,
+        maxBytes,
+      ),
       // Der HTTP-Adapter fuehrt keine Medienanalyse durch. Profilmetadaten
-      // stammen aus dem vorhandenen serverseitigen Leser der Modulkomposition
-      // (CX-033); bis dahin wird kein Metadatensatz vorgetaeuscht.
+      // liest der Service mit dem serverseitigen MP4-Leser aus der
+      // gespeicherten Datei (L-01); hier wird nichts vorgetaeuscht.
       metadata: undefined,
       actorType: "admin",
       actorId: principal.id,
     });
   } catch (error) {
     if (isMediaUploadTooLarge(error)) {
-      throw new ApiError("invalid_request", { statusCode: 413 });
+      throw tooLarge();
     }
     if (error instanceof MediaProfileRejectedError) {
-      // Bestehender typisierter Profilfehler: bereinigt als 422.
-      throw new ApiError("invalid_request", { statusCode: 422 });
+      // Bestehender typisierter Profilfehler: bereinigt als 422. Nur die
+      // stabilen Codes gehen als Header mit, nie Meldungstexte.
+      const codes = [...new Set(error.errors.map((entry) => entry.code))];
+      throw new ApiError("invalid_request", {
+        statusCode: 422,
+        headers: { [MEDIA_PROFILE_ERRORS_HEADER]: codes.join(",") },
+      });
     }
     if (error instanceof MediaInputError) {
       throw ApiError.invalidRequest();
@@ -258,17 +308,15 @@ export function registerMediaUploadRoute(
   deps: MediaUploadDeps,
 ): void {
   void app.register(async (scope) => {
-    scope.addContentTypeParser(
-      OCTET_STREAM,
-      { parseAs: "buffer", bodyLimit: MEDIA_UPLOAD_MAX_BYTES },
-      (_request, body, done) => {
-        done(null, body);
-      },
-    );
+    // Kein Puffern: der Rohstrom wird als Body weitergereicht; die Grenze
+    // prueft handleUpload (Content-Length vorab, Strom beim Lesen).
+    scope.addContentTypeParser(OCTET_STREAM, (_request, payload, done) => {
+      done(null, payload);
+    });
 
     scope.post<{ Querystring: Record<string, unknown> }>(
       MEDIA_UPLOAD_PATH,
-      { bodyLimit: MEDIA_UPLOAD_MAX_BYTES },
+      { bodyLimit: deps.maxBytes ?? MEDIA_UPLOAD_MAX_BYTES },
       async (request, reply) => {
         const response = await handleUpload(deps, request);
         reply.code(201).type("application/json; charset=utf-8").send(response);

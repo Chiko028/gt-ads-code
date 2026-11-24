@@ -32,7 +32,9 @@ import {
   type MediaProfileMetadata,
   type MediaRecoveryResult,
   type MediaServiceOptions,
+  type MediaMetadataReader,
   type ReadyMedia,
+  type ReadyMediaFile,
 } from "./types.js";
 import { randomUUID } from "node:crypto";
 
@@ -208,6 +210,7 @@ export class MediaService {
   private readonly idFactory: () => string;
   private readonly auditWriter: MediaAuditWriter | undefined;
   private readonly manifestRefresh: ManifestRefreshTrigger | undefined;
+  private readonly metadataReader: MediaMetadataReader | undefined;
 
   constructor(options: MediaServiceOptions) {
     this.pool = options.pool;
@@ -217,6 +220,7 @@ export class MediaService {
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.auditWriter = options.auditWriter;
     this.manifestRefresh = options.manifestRefresh;
+    this.metadataReader = options.metadataReader;
   }
 
   private scheduleRefresh(): void {
@@ -267,7 +271,11 @@ export class MediaService {
       await handle.close();
       handle = null;
 
-      const candidate = profileCandidate(input.metadata, digestSize);
+      const metadata =
+        input.metadata === undefined
+          ? await this.readStoredMetadata(id)
+          : input.metadata;
+      const candidate = profileCandidate(metadata, digestSize);
       const validation = validateMediaProfile(candidate);
       if (!validation.valid) {
         throw new MediaProfileRejectedError(validation.errors);
@@ -429,6 +437,33 @@ export class MediaService {
     return this.toReadyMedia(metadata);
   }
 
+  /**
+   * L-01: Auslieferung ohne Volllesen. Status und Groesse werden geprueft,
+   * der Hash nicht erneut (er wurde beim Upload ueber die gespeicherten Bytes
+   * gebildet; das Geraet prueft ihn nach dem Download selbst).
+   */
+  async getReadyMediaFile(id: string): Promise<ReadyMediaFile | null> {
+    if (!isMediaId(id)) {
+      throw new MediaInputError(
+        "invalid_media_id",
+        "Der Medien-Schluessel ist keine gueltige UUID.",
+      );
+    }
+
+    await this.storage.ensureLayout();
+    const metadata = await this.repository.findReady(id);
+    if (metadata === null) {
+      return null;
+    }
+    if (!(await this.storage.finalSizeMatches(metadata.id, metadata.sizeBytes))) {
+      return null;
+    }
+    return {
+      ...metadata,
+      openRange: (start, end) => this.storage.openFinalRange(metadata.id, start, end),
+    };
+  }
+
   async listReadyMedia(query: ListReadyMediaQuery = {}): Promise<MediaListPage> {
     await this.storage.ensureLayout();
     return this.repository.listReady(query);
@@ -557,6 +592,22 @@ export class MediaService {
     });
   }
 
+  /**
+   * Liest Profilmetadaten mit dem injizierten Leser aus der temporaeren
+   * Datei. Ohne Leser oder bei Lesefehlern bleibt es bei undefined; die
+   * Profilpruefung lehnt dann mit invalid_metadata ab.
+   */
+  private async readStoredMetadata(id: string): Promise<unknown> {
+    if (this.metadataReader === undefined) {
+      return undefined;
+    }
+    try {
+      return await this.metadataReader(this.storage.tempPath(id));
+    } catch {
+      return undefined;
+    }
+  }
+
   private async *writeThrough(
     source: AsyncIterable<Uint8Array>,
     handle: FileHandle,
@@ -661,6 +712,13 @@ export function getReadyMedia(
   id: string,
 ): Promise<ReadyMedia | null> {
   return new MediaService(options).getReadyMedia(id);
+}
+
+export function getReadyMediaFile(
+  options: MediaServiceOptions,
+  id: string,
+): Promise<ReadyMediaFile | null> {
+  return new MediaService(options).getReadyMediaFile(id);
 }
 
 export function listReadyMedia(

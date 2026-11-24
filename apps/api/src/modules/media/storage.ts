@@ -184,6 +184,28 @@ export class LocalMediaStorage {
     return digest.sizeBytes === sizeBytes && digest.sha256 === sha256;
   }
 
+  /** Nur Dateistatus: reguläre Datei mit genau der erwarteten Groesse. */
+  async finalSizeMatches(id: string, sizeBytes: number): Promise<boolean> {
+    try {
+      const info = await stat(this.finalPath(id));
+      return info.isFile() && info.size === sizeBytes;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return false;
+      }
+      throw new MediaStorageError(
+        "file_stat_failed",
+        "Die Speicherdatei konnte nicht geprueft werden.",
+        { cause: error },
+      );
+    }
+  }
+
+  /** Strom der Bytes [start, end] (inklusive) der finalen Datei. */
+  openFinalRange(id: string, start: number, end: number): NodeJS.ReadableStream {
+    return createReadStream(this.finalPath(id), { start, end });
+  }
+
   async readFinal(id: string, expectedSize: number): Promise<Buffer> {
     const path = this.finalPath(id);
     let info;

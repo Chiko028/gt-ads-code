@@ -15,6 +15,9 @@
 import { validateCampaignRuntime } from "../campaigns/runtimeWindow.js";
 import {
   MAX_MEDIA_SIZE_BYTES,
+  MAX_SPOT_DURATION_MS,
+  MIN_SPOT_DURATION_MS,
+  isAllowedSpotDurationMs,
   SPOT_DURATION_MS,
   validateBookings,
   type BookingValidationError,
@@ -43,7 +46,7 @@ export {
   type LoopPlanSpot,
 } from "./types.js";
 
-/** L-03: Jeder Spot dieser Schleife dauert exakt 15 Sekunden. */
+/** L-03: Standarddauer eines Spots. */
 export { SPOT_DURATION_MS };
 
 const MIN_SLOT_COUNT = 12;
@@ -354,7 +357,7 @@ function buildLegacyPlan(input: unknown): LegacyLoopPlan {
   return {
     taxiId: result.value.taxiId,
     slotCount: result.value.slotCount,
-    loopDurationMs: result.value.slotCount * SPOT_DURATION_MS,
+    loopDurationMs: spots.reduce((sum, spot) => sum + spot.durationMs, 0),
     spots,
   };
 }
@@ -412,7 +415,7 @@ function createCollector(): ValidationCollector {
 
 /**
  * Prüft ausschließlich die serialisierbare Planstruktur: 12–16 Plätze,
- * lückenlose eindeutige Positionen, 15000 ms je Spot, korrekte Gesamtdauer,
+ * lückenlose eindeutige Positionen, 5000–60000 ms je Spot, korrekte Gesamtdauer,
  * nichtleere IDs, gültige SHA-256-/Bytewerte und gültige Laufzeitfenster über
  * CX-004. Taxi-/Gruppenzuweisungen sind absichtlich nicht Teil des Plans.
  */
@@ -565,11 +568,11 @@ export function validateLoopPlan(input: unknown): LoopPlanValidationResult {
     }
 
     const durationMs = candidate.durationMs;
-    if (typeof durationMs !== "number" || durationMs !== SPOT_DURATION_MS) {
+    if (!isAllowedSpotDurationMs(durationMs)) {
       collector.add(
         "invalid_spot_duration",
         `entries[${index}].durationMs`,
-        `Der Spot an Position ${expectedPosition} muss exakt ${SPOT_DURATION_MS} ms dauern.`,
+        `Der Spot an Position ${expectedPosition} muss zwischen ${MIN_SPOT_DURATION_MS} und ${MAX_SPOT_DURATION_MS} ms dauern.`,
         expectedPosition,
       );
       durationSumValid = false;
@@ -597,7 +600,7 @@ export function validateLoopPlan(input: unknown): LoopPlanValidationResult {
         candidate.mediaId as string,
         candidate.sha256 as string,
         candidate.sizeBytes as number,
-        SPOT_DURATION_MS,
+        candidate.durationMs as number,
         runtime.value.startAt,
         runtime.value.endAt,
       ),
@@ -626,23 +629,11 @@ export function validateLoopPlan(input: unknown): LoopPlanValidationResult {
       "totalDurationMs",
       "totalDurationMs muss eine nicht negative ganze Zahl sein.",
     );
-  } else if (slotCountValid && input.totalDurationMs !== slotCount * SPOT_DURATION_MS) {
+  } else if (durationSumValid && input.totalDurationMs !== durationSum) {
     collector.add(
       "invalid_total_duration",
       "totalDurationMs",
-      `totalDurationMs muss ${slotCount * SPOT_DURATION_MS} ms betragen.`,
-    );
-  }
-
-  if (
-    durationSumValid &&
-    slotCountValid &&
-    durationSum !== slotCount * SPOT_DURATION_MS
-  ) {
-    collector.add(
-      "invalid_total_duration",
-      "entries",
-      "Die Summe der Eintragsdauern entspricht nicht der erwarteten Gesamtdauer.",
+      `totalDurationMs muss der Summe der Eintragsdauern (${durationSum} ms) entsprechen.`,
     );
   }
 

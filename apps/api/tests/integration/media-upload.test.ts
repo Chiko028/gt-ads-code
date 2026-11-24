@@ -19,6 +19,7 @@ import { hashPassword } from "../../src/crypto/password.js";
 import { migrateLatest } from "../../src/db/migrate.js";
 import { createServer } from "../../src/http/server.js";
 import {
+  MEDIA_PROFILE_ERRORS_HEADER,
   MEDIA_UPLOAD_MAX_BYTES,
   type MediaUploadDeps,
 } from "../../src/http/mediaUpload.js";
@@ -462,6 +463,7 @@ describe("CX-031 Upload-HTTP-Adapter", () => {
       let serviceCalls = 0;
       const deps: MediaUploadDeps = {
         serviceOptions: { pool, storageRoot },
+        maxBytes: 20_000_000,
         createMedia: async (options, input) => {
           serviceCalls += 1;
           return createMedia(options, input);
@@ -474,9 +476,9 @@ describe("CX-031 Upload-HTTP-Adapter", () => {
       // synthetischen Chunks tatsaechlich ueberschritten.
       const response = await app.inject({
         method: "POST",
-        url: UPLOAD_URL,
+        url: UPLOAD_URL + "?name=SYN-Abbruch.mp4",
         headers: uploadHeaders(cookie, { origin: ORIGIN }),
-        payload: Readable.from(syntheticChunks(MEDIA_UPLOAD_MAX_BYTES + 1)),
+        payload: Readable.from(syntheticChunks(20_000_001)),
         remoteAddress: "192.0.2.247",
       });
 
@@ -486,17 +488,66 @@ describe("CX-031 Upload-HTTP-Adapter", () => {
       };
       expect(body.error.code).toBe("invalid_request");
       expect(typeof body.error.request_id).toBe("string");
-      expect(serviceCalls).toBe(0);
+      // Der Strom laeuft an; der Abbruch raeumt die temporaere Datei auf.
+      expect(serviceCalls).toBe(1);
 
       const rows = await pool.query(
         "select count(*)::int as count from media_objects",
       );
       expect(rows.rows[0].count).toBe(0);
-      expect(await readdir(storageRoot, { recursive: true })).toEqual([]);
+      const left = await readdir(storageRoot, { recursive: true, withFileTypes: true });
+      expect(left.filter((entry) => entry.isFile())).toEqual([]);
     } finally {
       await rm(storageRoot, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it("weist ein zu grosses Content-Length vor jedem Lesen mit 413 ab", async () => {
+    const upload = uploadDouble(readyMedia("SYN-Laenge.mp4"));
+    upload.deps.maxBytes = 1_000;
+    const app = await buildApp({ mediaUpload: upload.deps });
+    const cookie = await loginCookie(app);
+    const response = await app.inject({
+      method: "POST",
+      url: UPLOAD_URL,
+      headers: uploadHeaders(cookie, { origin: ORIGIN }),
+      payload: Buffer.alloc(1_001, 0x43),
+      remoteAddress: "192.0.2.250",
+    });
+    expect(response.statusCode).toBe(413);
+    expect(upload.spy).not.toHaveBeenCalled();
+  });
+
+  it("reicht den Body als Strom in Teilstuecken weiter, statt ihn vorab zu puffern", async () => {
+    const upload = uploadDouble(readyMedia("SYN-Strom.mp4"));
+    const chunkSizes: number[] = [];
+    const inner = upload.deps.createMedia;
+    upload.deps.createMedia = async (options, input) => {
+      const original = input.content;
+      return inner(options, {
+        ...input,
+        content: (async function* () {
+          for await (const chunk of original) {
+            chunkSizes.push(chunk.byteLength);
+            yield chunk;
+          }
+        })(),
+      });
+    };
+    const app = await buildApp({ mediaUpload: upload.deps });
+    const cookie = await loginCookie(app);
+    const parts = Array.from({ length: 8 }, (_, index) => Buffer.alloc(64 * 1024, index));
+    const response = await app.inject({
+      method: "POST",
+      url: UPLOAD_URL + "?name=SYN-Strom.mp4",
+      headers: uploadHeaders(cookie, { origin: ORIGIN }),
+      payload: Readable.from(parts),
+      remoteAddress: "192.0.2.251",
+    });
+    expect(response.statusCode).toBe(201);
+    expect(chunkSizes.length).toBeGreaterThan(1);
+    expect(upload.received.equals(Buffer.concat(parts))).toBe(true);
+  });
 
   it("beantwortet einen typisierten Profilfehler mit 422 und einen unerwarteten Fehler bereinigt mit 500, ohne SQL- oder Pfadmarker in Antwort und Logs", async () => {
     const profileError = new MediaProfileRejectedError([
@@ -523,6 +574,10 @@ describe("CX-031 Upload-HTTP-Adapter", () => {
       remoteAddress: "192.0.2.248",
     });
     expect(rejected.statusCode).toBe(422);
+    // L-01: nur die stabilen Codes als Header, nie die Meldungstexte.
+    expect(rejected.headers[MEDIA_PROFILE_ERRORS_HEADER.toLowerCase()]).toBe(
+      "unsupported_container",
+    );
     const rejectedBody = rejected.json() as {
       error: { code: string; message: string; request_id: string };
     };

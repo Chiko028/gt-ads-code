@@ -199,7 +199,15 @@ export type DownloadMediaContent = Uint8Array | AsyncIterable<Uint8Array>;
 export interface DownloadMediaRecord {
   sha256: string;
   sizeBytes: number;
-  content: DownloadMediaContent;
+  /** Vollstaendiger Inhalt; wird je Anfrage gelesen und gehasht. */
+  content?: DownloadMediaContent;
+  /**
+   * L-01: Bereichszugriff fuer grosse Medien. Ist er gesetzt, wird der Inhalt
+   * nicht gesammelt und nicht erneut gehasht; sizeBytes muss vom Zugriff
+   * bereits gegen die gespeicherte Datei geprueft sein. Liefert die Bytes
+   * [start, end] (inklusive) als Strom.
+   */
+  openRange?: (start: number, end: number) => NodeJS.ReadableStream;
 }
 
 /** Injizierter Medienzugriff (Port auf den vorhandenen CX-005-Zugriff). */
@@ -212,6 +220,8 @@ export interface DownloadResult {
   status: number;
   headers: Record<string, string>;
   bytes: Uint8Array;
+  /** L-01: Bytes als Strom statt in bytes (nur bei 200/206 mit openRange). */
+  stream?: NodeJS.ReadableStream;
   /** Nur bei Fehlern gesetzt; enthält niemals Ticket- oder Query-Werte. */
   error?: DownloadErrorCode;
 }
@@ -823,6 +833,77 @@ function etagFor(sha256: string): string {
 }
 
 /**
+ * L-01: Antwort fuer einen Bereichszugriff (openRange). Gleiche Range-,
+ * If-Range- und Header-Regeln wie der gepufferte Weg, aber ohne Sammeln und
+ * ohne erneuten Hash; die Bytes werden erst beim Senden gelesen.
+ */
+function streamedResponse(
+  record: DownloadMediaRecord,
+  rangeHeader: string | null | undefined,
+  ifRangeHeader: string | null | undefined,
+): DownloadResult {
+  const openRange = record.openRange as NonNullable<DownloadMediaRecord["openRange"]>;
+  const sizeBytes = record.sizeBytes;
+  if (sizeBytes <= 0) {
+    return reject(500, "media_unavailable");
+  }
+  const etag = etagFor(record.sha256);
+
+  let range: ByteRange | null = null;
+  if (rangeHeader !== null && rangeHeader !== undefined) {
+    const ifRange = ifRangeHeader?.trim();
+    if (ifRange === undefined || ifRange === etag) {
+      const parsed = parseRangeHeader(rangeHeader, sizeBytes);
+      if (parsed.kind === "invalid") {
+        return reject(400, parsed.code);
+      }
+      if (parsed.kind === "unsatisfiable") {
+        return reject(416, "unsatisfiable_range", {
+          "Content-Range": `bytes */${sizeBytes}`,
+          "Content-Length": "0",
+        });
+      }
+      if (parsed.kind === "range") {
+        range = parsed.range;
+      }
+    }
+  }
+
+  let stream: NodeJS.ReadableStream;
+  try {
+    stream =
+      range === null ? openRange(0, sizeBytes - 1) : openRange(range.start, range.end);
+  } catch {
+    return reject(500, "media_unavailable");
+  }
+
+  if (range === null) {
+    return {
+      status: 200,
+      headers: {
+        ETag: etag,
+        "Accept-Ranges": "bytes",
+        "Content-Length": String(sizeBytes),
+      },
+      bytes: new Uint8Array(0),
+      stream,
+    };
+  }
+
+  return {
+    status: 206,
+    headers: {
+      ETag: etag,
+      "Accept-Ranges": "bytes",
+      "Content-Length": String(range.end - range.start + 1),
+      "Content-Range": `bytes ${range.start}-${range.end}/${sizeBytes}`,
+    },
+    bytes: new Uint8Array(0),
+    stream,
+  };
+}
+
+/**
  * Bearbeitet einen Download-Auftrag.
  *
  * Fehler führen immer zu einem Ergebnis ohne Bytes. Erfolgreiche Antworten
@@ -910,9 +991,13 @@ export async function processDownloadRequest(
     return reject(409, "media_metadata_mismatch");
   }
 
+  if (typeof record.openRange === "function") {
+    return streamedResponse(record, input.rangeHeader, input.ifRangeHeader);
+  }
+
   let bytes: Uint8Array;
   try {
-    bytes = await collectContent(record.content);
+    bytes = await collectContent(record.content as DownloadMediaContent);
   } catch (error) {
     if (error instanceof DownloadError) {
       return reject(500, error.code);

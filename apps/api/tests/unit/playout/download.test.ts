@@ -1,4 +1,5 @@
 import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
   buildDownloadTicketMacMessage,
@@ -684,3 +685,110 @@ describe("CX-008 Download und Byte-Ranges", () => {
   });
 });
 
+
+describe("L-01 Download grosser Medien als Strom (openRange)", () => {
+  function streamingSource(
+    calls: Array<[number, number]>,
+    overrides: Partial<DownloadMediaRecord> = {},
+  ): DownloadMediaSource {
+    return {
+      read: async (mediaId: string): Promise<DownloadMediaRecord | null> => {
+        if (mediaId !== MEDIA_ID) {
+          return null;
+        }
+        return {
+          sha256: MEDIA_SHA,
+          sizeBytes: MEDIA_BYTES.byteLength,
+          openRange: (start, end) => {
+            calls.push([start, end]);
+            return Readable.from([MEDIA_BYTES.subarray(start, end + 1)]);
+          },
+          ...overrides,
+        };
+      },
+    };
+  }
+
+  async function streamed(result: DownloadResult): Promise<Buffer> {
+    expect(result.stream).toBeDefined();
+    const chunks: Buffer[] = [];
+    for await (const chunk of result.stream as NodeJS.ReadableStream) {
+      chunks.push(Buffer.from(chunk as Uint8Array));
+    }
+    return Buffer.concat(chunks);
+  }
+
+  it("liefert ohne Range die ganze Datei als Strom mit denselben Headern, ohne Inhalt zu sammeln", async () => {
+    const calls: Array<[number, number]> = [];
+    const result = await handle(issueTicket(), { mediaSource: streamingSource(calls) });
+    expect(result.status).toBe(200);
+    expect(result.headers).toEqual({
+      ETag: `"${MEDIA_SHA}"`,
+      "Accept-Ranges": "bytes",
+      "Content-Length": "1024",
+    });
+    expectNoBytes(result);
+    expect(calls).toEqual([[0, 1023]]);
+    expect((await streamed(result)).equals(MEDIA_BYTES)).toBe(true);
+  });
+
+  it("liefert Ranges als 206 und oeffnet nur den angefragten Bereich", async () => {
+    const calls: Array<[number, number]> = [];
+    const source = streamingSource(calls);
+    const grant = issueTicket();
+
+    const closed = await handle(grant, { mediaSource: source, rangeHeader: "bytes=10-19" });
+    expect(closed.status).toBe(206);
+    expect(closed.headers["Content-Range"]).toBe("bytes 10-19/1024");
+    expect(closed.headers["Content-Length"]).toBe("10");
+    expect((await streamed(closed)).equals(MEDIA_BYTES.subarray(10, 20))).toBe(true);
+
+    const suffix = await handle(grant, { mediaSource: source, rangeHeader: "bytes=-16" });
+    expect(suffix.headers["Content-Range"]).toBe("bytes 1008-1023/1024");
+    expect((await streamed(suffix)).equals(MEDIA_BYTES.subarray(1008))).toBe(true);
+
+    // If-Range mit fremdem ETag: ganze Datei.
+    const full = await handle(grant, {
+      mediaSource: source,
+      rangeHeader: "bytes=10-19",
+      ifRangeHeader: '"anders"',
+    });
+    expect(full.status).toBe(200);
+    expect(calls).toEqual([[10, 19], [1008, 1023], [0, 1023]]);
+  });
+
+  it("weist ungueltige und nicht erfuellbare Ranges sowie abweichende Metadaten ohne Oeffnen ab", async () => {
+    const calls: Array<[number, number]> = [];
+    const grant = issueTicket();
+    const unsatisfiable = await handle(grant, {
+      mediaSource: streamingSource(calls),
+      rangeHeader: "bytes=5000-",
+    });
+    expect(unsatisfiable.status).toBe(416);
+    expect(unsatisfiable.headers["Content-Range"]).toBe("bytes */1024");
+
+    const invalid = await handle(grant, {
+      mediaSource: streamingSource(calls),
+      rangeHeader: "bytes=1-2,4-5",
+    });
+    expect(invalid.status).toBe(400);
+
+    const mismatch = await handle(grant, {
+      mediaSource: streamingSource(calls, { sha256: "f".repeat(64) }),
+    });
+    expect(mismatch.status).toBe(409);
+    expect(mismatch.error).toBe("media_metadata_mismatch");
+
+    const failing = await handle(grant, {
+      mediaSource: streamingSource(calls, {
+        openRange: () => {
+          throw new Error("SYN-weg");
+        },
+      }),
+    });
+    expect(failing.status).toBe(500);
+    expect(failing.error).toBe("media_unavailable");
+    expect(failing.stream).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+});

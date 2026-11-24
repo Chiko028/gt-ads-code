@@ -9,13 +9,13 @@
  *
  * Geraeterouten (Bearer der vorhandenen Geraeteauthentifizierung):
  *   GET  /v1/device/app-update
- *   GET  /v1/device/app-downloads/:id   (zusaetzlich HMAC-Ticket)
+ *   GET  /v1/device/app-downloads/:id   (nur HMAC-Ticket wie /v1/device/downloads; Ticket bindet Geraet + Version)
  *   POST /v1/device/app-update/report
  *
  * Es gibt keine zweite Speicherung und keinen zweiten Rechtepfad; alle
  * Fachaenderungen laufen ueber modules/appReleases.
  */
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import type { AdminAuthService } from "../modules/adminAuth/service.js";
 import type { DeviceAuthService } from "../modules/deviceAuth/service.js";
@@ -28,6 +28,7 @@ import {
   AppReleaseValidationError,
   createAppReleaseService,
   issueAppDownloadTicket,
+  verifyAppDownloadTicket,
   APP_RELEASE_MAX_BYTES,
   type AppReleaseOverview,
 } from "../modules/appReleases/index.js";
@@ -299,32 +300,14 @@ export function registerAppReleaseRoutes(
     },
   });
 
-  // Download: Ticket bindet Tablet und Version; Range/If-Range wie CX-008.
-  // Ein gesperrtes Tablet liefert 404 (nicht 403), damit der Zustand nicht
-  // von einer zurueckgezogenen Version unterscheidbar ist.
-  const downloadGuard = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-  ): Promise<void> => {
-    try {
-      await deviceGuard(request, reply);
-    } catch (error) {
-      if (error instanceof ApiError && error.code === "device_revoked") {
-        throw ApiError.notFound();
-      }
-      throw error;
-    }
-  };
-
+  // Download: wie der Medien-Download (CX-008) nur mit signiertem Ticket, ohne Bearer.
+  // Das HMAC-Ticket bindet Tablet, Version und Ablaufzeit; der Dienst prueft
+  // zusaetzlich, dass das Tablet aktiv ist und die Version fuer es freigegeben ist.
+  // Gesperrtes Tablet -> 404 (nicht unterscheidbar von einer zurueckgezogenen Version).
   registerJsonRoute(app, {
     method: "GET",
     url: DEVICE_APP_DOWNLOAD_PATH,
-    onRequest: downloadGuard,
     handler: async (request, reply) => {
-      const context = request.deviceAuth;
-      if (context === undefined) {
-        throw ApiError.unauthorized();
-      }
       requireApiVersion(request.headers as Record<string, unknown>);
       const query = request.query;
       if (!isRecord(query)) {
@@ -335,11 +318,18 @@ export function registerAppReleaseRoutes(
       if (keys.length !== 1 || keys[0] !== "ticket" || typeof ticket !== "string" || ticket.length === 0) {
         throw ApiError.forbidden();
       }
+      if (deps.downloadSecret === null || deps.downloadSecret === undefined) {
+        throw ApiError.forbidden();
+      }
+      const payload = verifyAppDownloadTicket({ ticket, secret: deps.downloadSecret, now: clock() });
+      if (payload === null) {
+        throw ApiError.forbidden();
+      }
       const releaseId = String((request.params as { id?: unknown }).id ?? "");
       const result = await service.download({
         releaseId,
         ticket,
-        deviceId: context.deviceId,
+        deviceId: payload.deviceId,
         rangeHeader:
           typeof request.headers.range === "string" ? request.headers.range : null,
         ifRangeHeader:

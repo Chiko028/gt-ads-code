@@ -98,10 +98,11 @@ const POLICY_CATALOG: Readonly<Record<string, RoutePolicy>> = Object.freeze({
   "GET /v1/device/manifest": DEVICE,
   // CX-148: Geraetekonfiguration und Download-Freigabe (Bearer); Download selbst per Ticket.
   "GET /v1/device/config": DEVICE,
+  "GET /v1/device/info": DEVICE,
   "GET /v1/device/media/:id/grant": DEVICE,
   // CX-168: App-Update, Ticket-Download und Rueckmeldung.
   "GET /v1/device/app-update": DEVICE,
-  "GET /v1/device/app-downloads/:id": DEVICE,
+  "GET /v1/device/app-downloads/:id": SIGNED_DOWNLOAD,
   "POST /v1/device/app-update/report": DEVICE,
 
   // CX-054 / R-503: geraetegebundener Pausenabruf und Quittierung.

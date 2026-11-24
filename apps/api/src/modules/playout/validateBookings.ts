@@ -12,8 +12,22 @@
 
 import { validateCampaignRuntime } from "../campaigns/runtimeWindow.js";
 
-/** L-03: Jeder Spot dieser Schleife dauert exakt 15 Sekunden. */
+/** L-03: Standarddauer eines Spots; keine Pflichtlänge. */
 export const SPOT_DURATION_MS = 15_000;
+
+/** Zulässige Spotdauer, beide Grenzen einschließlich. */
+export const MIN_SPOT_DURATION_MS = 5_000;
+export const MAX_SPOT_DURATION_MS = 60_000;
+
+/** Ganze Millisekunden innerhalb der zulässigen Spotdauer. */
+export function isAllowedSpotDurationMs(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= MIN_SPOT_DURATION_MS &&
+    value <= MAX_SPOT_DURATION_MS
+  );
+}
 
 /** Kleinste zulässige Platzanzahl. */
 export const MIN_SLOT_COUNT = 12;
@@ -22,7 +36,7 @@ export const MIN_SLOT_COUNT = 12;
 export const MAX_SLOT_COUNT = 16;
 
 /** Obergrenze für eine geprüfte Medien-Byteanzahl (CX-005). */
-export const MAX_MEDIA_SIZE_BYTES = 20_000_000;
+export const MAX_MEDIA_SIZE_BYTES = 1_000_000_000;
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -405,12 +419,12 @@ function checkMedia(
     valid = false;
   }
 
-  if (value.durationMs !== SPOT_DURATION_MS) {
+  if (!isAllowedSpotDurationMs(value.durationMs)) {
     pushError(
       errors,
       "invalid_spot_duration",
       "media.durationMs",
-      `Der Spot an Position ${label} muss exakt ${SPOT_DURATION_MS} ms dauern.`,
+      `Der Spot an Position ${label} muss zwischen ${MIN_SPOT_DURATION_MS} und ${MAX_SPOT_DURATION_MS} ms dauern.`,
       { position, sequence: sequenceBase + 4 },
     );
     valid = false;

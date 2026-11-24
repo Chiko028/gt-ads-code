@@ -8,13 +8,14 @@
  * Binärformatanalyse.
  *
  * Profil (L-01): MP4, H.264, 1920x1080, 30 fps, ohne Audiospur, maximal
- * 1.000.000.000 Byte (dezimale 1.000 MB, einschließlich). 15 Sekunden sind laut
- * L-03 ein Standard und keine harte Uploadgrenze; die Dauer wird daher nur
- * auf Plausibilität geprüft.
+ * 1.000.000.000 Byte (dezimale 1.000 MB, einschließlich). Dauer 5 bis 60
+ * Sekunden (einschließlich, auf ganze Millisekunden gerundet wie im Manifest).
  *
  * Die Funktion ist rein: keine Seiteneffekte, keine Mutation der Eingabe, keine
  * I/O, kein Logging.
  */
+
+import { isAllowedSpotDurationMs } from "../playout/validateBookings.js";
 
 /** Normalisierte Medienmetadaten eines serverseitigen Medienlesers. */
 export interface MediaProfileInput {
@@ -37,7 +38,8 @@ export type MediaProfileErrorCode =
   | "unsupported_resolution"
   | "unsupported_frame_rate"
   | "audio_not_allowed"
-  | "file_too_large";
+  | "file_too_large"
+  | "unsupported_duration";
 
 export interface MediaProfileError {
   code: MediaProfileErrorCode;
@@ -59,6 +61,11 @@ const REQUIRED_FRAME_RATE = 30;
  * CX-155 / R-202: 1.000.000.000 Byte (dezimale 1.000 MB).
  */
 export const MEDIA_MAX_SIZE_BYTES = 1_000_000_000;
+
+/** Dieselben Grenzen wie in der Ausspielplanung, damit ein Upload nicht erst dort scheitert. */
+function durationAllowed(seconds: number): boolean {
+  return isAllowedSpotDurationMs(Math.round(seconds * 1000));
+}
 
 type FieldKind = "text" | "positiveInteger" | "nonNegativeInteger" | "positiveNumber";
 
@@ -163,7 +170,7 @@ function frameRateIsThirty(numerator: number, denominator: number): boolean {
  * Bei ungültiger Struktur oder ungültigen Werttypen wird ausschließlich
  * `invalid_metadata` mit den betroffenen Feldern geliefert. Bei strukturell
  * gültiger Eingabe werden alle Profilverletzungen in fester Reihenfolge
- * (Container, Codec, Auflösung, Bildrate, Audio, Größe) gesammelt.
+ * (Container, Codec, Auflösung, Bildrate, Audio, Größe, Dauer) gesammelt.
  */
 export function validateMediaProfile(input: unknown): MediaProfileResult {
   const structuralErrors = structureErrors(input);
@@ -220,6 +227,14 @@ export function validateMediaProfile(input: unknown): MediaProfileResult {
       code: "file_too_large",
       field: "sizeBytes",
       message: "Die Dateigröße überschreitet die zulässigen 1.000 MB.",
+    });
+  }
+
+  if (!durationAllowed(metadata.durationSeconds)) {
+    errors.push({
+      code: "unsupported_duration",
+      field: "durationSeconds",
+      message: "Die Videodauer muss zwischen 5 und 60 Sekunden liegen.",
     });
   }
 

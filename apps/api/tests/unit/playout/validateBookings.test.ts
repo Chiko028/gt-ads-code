@@ -336,17 +336,25 @@ describe("CX-024: Platzanzahl, Positionen und Spotdauer", () => {
       field: "position",
     },
     {
-      name: "Spotdauer 14999 ms",
+      name: "Spotdauer 4999 ms",
       mutate: (input) => {
-        input.bookings[0].media.durationMs = 14_999;
+        input.bookings[0].media.durationMs = 4_999;
       },
       code: "invalid_spot_duration",
       field: "media.durationMs",
     },
     {
-      name: "Spotdauer 15001 ms",
+      name: "Spotdauer 60001 ms",
       mutate: (input) => {
-        input.bookings[0].media.durationMs = 15_001;
+        input.bookings[0].media.durationMs = 60_001;
+      },
+      code: "invalid_spot_duration",
+      field: "media.durationMs",
+    },
+    {
+      name: "Spotdauer mit Bruchteil",
+      mutate: (input) => {
+        input.bookings[0].media.durationMs = 15_000.5;
       },
       code: "invalid_spot_duration",
       field: "media.durationMs",
@@ -530,7 +538,7 @@ describe("CX-024: Zielzuordnung, Kampagnenstatus und Medienreferenzen", () => {
       field: "media.sizeBytes",
     },
     {
-      name: "Byteanzahl über 20000000",
+      name: "Byteanzahl über 1000000000",
       mutate: (input) => {
         input.bookings[0].media.sizeBytes = MAX_MEDIA_SIZE_BYTES + 1;
       },

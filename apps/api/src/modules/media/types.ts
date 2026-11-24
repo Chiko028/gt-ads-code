@@ -112,6 +112,22 @@ export interface MediaServiceOptions {
    */
   auditWriter?: MediaAuditWriter;
   manifestRefresh?: ManifestRefreshTrigger;
+  /**
+   * L-01: serverseitiger Medienleser. Liefert der Aufrufer keine Metadaten,
+   * liest der Service sie nach dem Speichern aus der temporaeren Datei.
+   */
+  metadataReader?: MediaMetadataReader;
+}
+
+/** Liest Profilmetadaten aus einer gespeicherten Datei (undefined = unlesbar). */
+export type MediaMetadataReader = (filePath: string) => Promise<unknown>;
+
+/**
+ * Bereitgestelltes Medium fuer die Auslieferung grosser Dateien: Groesse per
+ * Dateistatus geprueft, Bytes nur bereichsweise als Strom.
+ */
+export interface ReadyMediaFile extends MediaMetadata {
+  openRange(start: number, end: number): NodeJS.ReadableStream;
 }
 
 export interface MediaRecoveryResult {

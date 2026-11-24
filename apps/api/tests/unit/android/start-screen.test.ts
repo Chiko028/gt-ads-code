@@ -75,9 +75,16 @@ describe("Android-Startbildschirm-Manifest", () => {
     "android.permission.INTERNET",
     "android.permission.POST_NOTIFICATIONS",
     "android.permission.RECEIVE_BOOT_COMPLETED",
+    // CX-163 App-Updates: Installation der eigenen, signaturgeprueften Updates.
+    "android.permission.REQUEST_INSTALL_PACKAGES",
   ];
   const KIOSK_RECEIVER = "gtads.device.kiosk.KioskAdminReceiver";
-  const ALLOWED_RECEIVERS = ["gtads.device.boot.BootReceiver", KIOSK_RECEIVER];
+  // CX-163 App-Updates: Installationsergebnis und MY_PACKAGE_REPLACED - nur intern (exported=false).
+  const INTERNAL_RECEIVERS = [
+    "gtads.device.update.AppUpdateInstallReceiver",
+    "gtads.device.update.AppUpdatedReceiver",
+  ];
+  const ALLOWED_RECEIVERS = ["gtads.device.boot.BootReceiver", KIOSK_RECEIVER, ...INTERNAL_RECEIVERS];
   // CX-150: Receiver, die nur mit genau dieser android:permission am selben Element erlaubt sind.
   const REQUIRED_RECEIVER_PERMISSION: Record<string, string> = {
     [KIOSK_RECEIVER]: "android.permission.BIND_DEVICE_ADMIN",
@@ -96,6 +103,9 @@ describe("Android-Startbildschirm-Manifest", () => {
       }
       if (receiver.getAttributeNS(ANDROID_NS, "directBootAware") === "true") {
         problems.push(`${name}: directBootAware`);
+      }
+      if (INTERNAL_RECEIVERS.includes(name) && receiver.getAttributeNS(ANDROID_NS, "exported") !== "false") {
+        problems.push(`${name}: muss android:exported="false" sein`);
       }
       const required = REQUIRED_RECEIVER_PERMISSION[name];
       if (required !== undefined) {

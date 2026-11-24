@@ -38,6 +38,8 @@ export interface AppConfig {
   readonly downloadSecret?: string | null;
   /** CX-148: Takt des begrenzten Manifest-Laufs fuer offene Taxis. */
   readonly manifestDrainIntervalSeconds?: number;
+  /** Info-Karten: ausgehende Abrufe von Wetter und Schlagzeilen; Standard aus. */
+  readonly infoCardsEnabled?: boolean;
 }
 
 /**
@@ -227,6 +229,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     registrationCodePepper,
     adminPasswordHash,
     ...readDeliveryConfig(env),
+    infoCardsEnabled: readBoolean(env, "GT_ADS_INFO_CARDS", false),
     manifestDrainIntervalSeconds: readInteger(env, "GT_ADS_MANIFEST_DRAIN_INTERVAL_S", 60, 5, 86_400),
     registrationCodeTtlSeconds: readInteger(
       env,

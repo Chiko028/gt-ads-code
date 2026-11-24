@@ -13,7 +13,6 @@
  * Geheimnisse (privater Schluessel, Download-Secret) verlassen den Prozess nie.
  */
 import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import type { AppConfig } from "../../config.js";
@@ -22,8 +21,8 @@ import { createDeviceAuthMiddleware } from "../deviceAuth/middleware.js";
 import type { DeviceAuthService } from "../deviceAuth/service.js";
 import { createSqlDeviceManifestReader, type DeviceManifestReader } from "../deviceManifest/reader.js";
 import { ManifestRefreshService } from "../manifestRefresh/index.js";
-import { getReadyMedia } from "../media/service.js";
-import { LocalMediaStorage, isMediaId } from "../media/storage.js";
+import { getReadyMediaFile } from "../media/service.js";
+import { isMediaId } from "../media/storage.js";
 import type { MediaServiceOptions } from "../media/types.js";
 import {
   DownloadError,
@@ -120,15 +119,19 @@ export interface DeviceDeliveryDeps {
   reader?: DeviceManifestReader;
 }
 
-/** Medienquelle fuer CX-008: nur fertige Medien aus dem lokalen Speicher. */
+/**
+ * Medienquelle fuer CX-008: nur fertige Medien aus dem lokalen Speicher.
+ * L-01 (bis 1000 MB): kein Volllesen und kein Hash je Anfrage; ausgeliefert
+ * wird nur der angefragte Bereich als Strom. Das Geraet prueft SHA-256 nach
+ * dem vollstaendigen Download selbst.
+ */
 function mediaSource(options: MediaServiceOptions): DownloadMediaSource {
   return {
     async read(mediaId: string) {
       if (!isMediaId(mediaId)) return null;
-      const media = await getReadyMedia(options, mediaId).catch(() => null);
+      const media = await getReadyMediaFile(options, mediaId).catch(() => null);
       if (media === null || media === undefined) return null;
-      const bytes = await readFile(new LocalMediaStorage(options.storageRoot).finalPath(mediaId));
-      return { sha256: media.sha256, sizeBytes: media.sizeBytes, content: new Uint8Array(bytes) };
+      return { sha256: media.sha256, sizeBytes: media.sizeBytes, openRange: media.openRange };
     },
   };
 }
@@ -234,6 +237,7 @@ export function registerDeviceDeliveryRoutes(app: FastifyInstance, deps: DeviceD
     });
     for (const [name, value] of Object.entries(result.headers)) reply.header(name, value);
     reply.header("Cache-Control", "no-store");
+    if (result.stream !== undefined) return reply.code(result.status).send(result.stream);
     return reply.code(result.status).send(Buffer.from(result.bytes));
   });
   }

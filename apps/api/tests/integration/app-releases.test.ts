@@ -549,7 +549,7 @@ describe("CX-168 App-Updates", () => {
     expect(blocked.statusCode).toBe(404);
   });
 
-  it("bindet das Ticket an das Tablet", async () => {
+  it("bindet das Ticket an das Tablet und braucht keinen Bearer", async () => {
     const cookie = await loginCookie();
     const deviceA = await insertDevice("SYN-CX168-Tablet-A", "stable");
     const deviceB = await insertDevice("SYN-CX168-Tablet-B", "stable");
@@ -560,10 +560,27 @@ describe("CX-168 App-Updates", () => {
 
     const update = await appUpdate(tokenA);
     const pathA = (update.json() as { update: { download_path: string } }).update.download_path;
-    const wrongTablet = await download(tokenB, pathA);
-    expect(wrongTablet.statusCode).toBe(403);
-    const rightTablet = await download(tokenA, pathA);
-    expect(rightTablet.statusCode).toBe(200);
+    // Wie der Medien-Download (CX-008): Das signierte Ticket ist die Berechtigung,
+    // ein Bearer ist nicht noetig (die ausgelieferte App laedt ohne Bearer).
+    const withoutBearer = await app.inject({
+      method: "GET",
+      url: pathA,
+      headers: { host: HOST, "x-gt-ads-api-version": "1" },
+      remoteAddress: "192.0.2.155",
+    });
+    expect(withoutBearer.statusCode, withoutBearer.body).toBe(200);
+    expect(Buffer.from(withoutBearer.rawPayload).equals(release.content)).toBe(true);
+    // Ein fremder Bearer aendert nichts an der Bindung: das Ticket gilt fuer Tablet A.
+    const otherBearer = await download(tokenB, pathA);
+    expect(otherBearer.statusCode).toBe(200);
+    // Manipuliertes Ticket (Signatur passt nicht) -> 403.
+    const tampered = pathA.slice(0, -2) + (pathA.endsWith("AA") ? "BB" : "AA");
+    const forged = await download(tokenA, tampered);
+    expect(forged.statusCode).toBe(403);
+    // Das Ticket ist an Tablet A gebunden: wird A gesperrt, liefert es 404.
+    await pool.query("update devices set state = 'revoked' where id = $1::uuid", [deviceA]);
+    const revokedA = await download(tokenB, pathA);
+    expect(revokedA.statusCode).toBe(404);
   });
 
   it("nimmt die Rueckmeldung mit 204 an und lehnt 400, 401 und 404 ab", async () => {
