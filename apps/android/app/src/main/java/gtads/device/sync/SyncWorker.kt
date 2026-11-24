@@ -56,6 +56,14 @@ class SyncWorker(
         } catch (_: Exception) {
             // Befehlsabruf beeinflusst das Synchronisierungsergebnis nicht.
         }
+        // Info-Karten (Wetter, Schlagzeilen): hoechstens alle drei Stunden, best effort.
+        try {
+            gtads.device.info.InfoSync.runFor(applicationContext)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Info-Karten beeinflussen das Synchronisierungsergebnis nicht.
+        }
         return try {
             when (coordinator.run()) {
                 SyncRunResult.Activated,

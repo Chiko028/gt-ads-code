@@ -49,6 +49,7 @@ class MainActivity : Activity() {
     private lateinit var registrationScroll: View
     private lateinit var playbackSurface: FrameLayout
     private lateinit var playbackEmpty: TextView
+    private lateinit var infoCard: gtads.device.info.InfoCardView
 
     private var playback: PlaybackController? = null
     private var playbackView: View? = null
@@ -90,6 +91,7 @@ class MainActivity : Activity() {
         registrationScroll = findViewById(R.id.registration_scroll)
         playbackSurface = findViewById(R.id.playback_surface)
         playbackEmpty = findViewById(R.id.playback_empty)
+        infoCard = findViewById(R.id.info_card)
 
         // Code weder sichern noch vorschlagen oder automatisch ausfuellen.
         codeInput.isSaveEnabled = false
@@ -294,6 +296,8 @@ class MainActivity : Activity() {
     }
 
     private fun renderPlayback(state: PlaybackUiState) {
+        val card = playback?.currentInfoCard
+        infoCard.visibility = if (state == PlaybackUiState.INFO && card != null) View.VISIBLE else View.GONE
         when (state) {
             PlaybackUiState.IDLE -> {
                 registrationScroll.visibility = View.VISIBLE
@@ -304,6 +308,11 @@ class MainActivity : Activity() {
                 ensurePlaybackView()
                 registrationScroll.visibility = View.GONE
                 playbackSurface.visibility = View.VISIBLE
+                playbackEmpty.visibility = View.GONE
+            }
+            PlaybackUiState.INFO -> {
+                if (card != null) infoCard.show(card)
+                registrationScroll.visibility = View.GONE
                 playbackEmpty.visibility = View.GONE
             }
             PlaybackUiState.EMPTY -> {

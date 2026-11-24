@@ -3,6 +3,10 @@ package gtads.device.playback
 import android.content.Context
 import android.os.SystemClock
 import android.view.View
+import gtads.device.info.InfoCard
+import gtads.device.info.InfoCardRotation
+import gtads.device.info.InfoCards
+import gtads.device.info.InfoStore
 import gtads.device.manifest.ActiveManifest
 import gtads.device.manifest.ManifestSlot
 import gtads.device.spotplay.SpotPlayRuntime
@@ -19,6 +23,9 @@ enum class PlaybackUiState {
 
     /** Aktivierter Stand vorhanden, aber kein zulaessiger lokaler Spot. */
     EMPTY,
+
+    /** Info-Karte zwischen zwei Spots; kein Spot laeuft. */
+    INFO,
 }
 
 /**
@@ -62,6 +69,8 @@ class PlaybackController internal constructor(
     private val clockChanges: ClockChangeSource = NoClockChanges,
     /** CX-160: Senke fuer beendete Spots; Fehler duerfen die Wiedergabe nicht stoeren. */
     private val spotPlays: SpotPlaySink = SpotPlaySink.NONE,
+    /** Naechste Info-Karte oder null; Fehler und Fehlen ueberspringen die Karte. */
+    private val infoCards: () -> InfoCard? = { null },
 ) {
     /** Produktive Verdrahtung: lokaler Speicher, Main-Looper, Systemuhren. */
     constructor(context: Context, listener: (PlaybackUiState) -> Unit) : this(
@@ -72,6 +81,7 @@ class PlaybackController internal constructor(
         listener = listener,
         clockChanges = AndroidClockChangeSource(context),
         spotPlays = SpotPlayRuntime.sink(context),
+        infoCards = infoProvider(context),
     )
 
     /** Produktive Verdrahtung mit externer CX-083-Freigabe. */
@@ -88,6 +98,7 @@ class PlaybackController internal constructor(
         playbackPermitted = playbackPermitted,
         clockChanges = AndroidClockChangeSource(context),
         spotPlays = SpotPlayRuntime.sink(context),
+        infoCards = infoProvider(context),
     )
 
     private val planner = PlaybackPlanner(clock)
@@ -107,6 +118,11 @@ class PlaybackController internal constructor(
     private var spotStartedAt: Instant? = null
     private var spotReported = false
     private val skipped = LinkedHashSet<Int>()
+    private var completedSinceInfo = 0
+
+    /** Waehrend [PlaybackUiState.INFO] die sichtbare Karte, sonst null. */
+    var currentInfoCard: InfoCard? = null
+        private set
 
     private val observer = PlaybackObserver { event -> handleEvent(event) }
 
@@ -159,6 +175,7 @@ class PlaybackController internal constructor(
         spotStartedAt = null
         spotReported = false
         skipped.clear()
+        completedSinceInfo = 0
         releaseAdapter()
         publish(PlaybackUiState.IDLE)
     }
@@ -191,10 +208,11 @@ class PlaybackController internal constructor(
 
     /**
      * CX-092: Wiedergabe ist erlaubt, der Scheduler liefert aber keinen gueltigen
-     * lokalen Eintrag; angezeigt wird der statische Platzhalter. Fuer den
+     * lokalen Eintrag (Platzhalter), oder es laeuft eine Info-Karte. Fuer den
      * Watchdog ist das kein festhaengender Video-Player.
      */
-    fun isStaticFallback(): Boolean = running && state == PlaybackUiState.EMPTY
+    fun isStaticFallback(): Boolean =
+        running && (state == PlaybackUiState.EMPTY || state == PlaybackUiState.INFO)
 
     /** CX-089: Fortschrittsprobe der laufenden Wiedergabe (Generation, Position) oder null. */
     fun progressSample(): gtads.device.watchdog.PlaybackProgress? {
@@ -226,7 +244,7 @@ class PlaybackController internal constructor(
                 if (event.generation == playingGeneration) {
                     // CX-160: Der Player hat den Spot zu Ende gespielt.
                     reportFinished(completed = true)
-                    advanceFrom(previousPosition, null)
+                    advanceAfterSpot(completed = true)
                 }
             }
             is PlaybackEvent.Failed -> {
@@ -236,6 +254,30 @@ class PlaybackController internal constructor(
                 }
             }
         }
+    }
+
+    /** Nach [InfoCards.EVERY_SPOTS] vollstaendigen Spots folgt genau eine Info-Karte. */
+    private fun advanceAfterSpot(completed: Boolean) {
+        if (completed && running) {
+            completedSinceInfo++
+            if (completedSinceInfo >= InfoCards.EVERY_SPOTS) {
+                val card = try {
+                    infoCards()
+                } catch (_: Exception) {
+                    null
+                }
+                if (card != null) {
+                    completedSinceInfo = 0
+                    cancelTimer()
+                    stopCurrentPlayback()
+                    currentInfoCard = card
+                    publish(PlaybackUiState.INFO)
+                    timerHandle = timer.schedule(InfoCards.SHOW_MS) { onTimer() }
+                    return
+                }
+            }
+        }
+        advanceFrom(previousPosition, null)
     }
 
     private fun advanceFrom(previous: Int?, failedPosition: Int?) {
@@ -452,7 +494,7 @@ class PlaybackController internal constructor(
         if (!stillPlayable || !nowUtc.isBefore(limit) || durationReached) {
             // CX-160: Nur die volle Slotdauer gilt als vollstaendig; Fenster-/Uhrende nicht.
             reportFinished(completed = durationReached)
-            advanceFrom(previousPosition, null)
+            advanceAfterSpot(completed = durationReached)
         } else {
             scheduleCheck()
         }
@@ -485,6 +527,7 @@ class PlaybackController internal constructor(
     }
 
     private fun publish(next: PlaybackUiState) {
+        if (next != PlaybackUiState.INFO) currentInfoCard = null
         if (state == next) return
         state = next
         listener(next)
@@ -493,5 +536,10 @@ class PlaybackController internal constructor(
     private companion object {
         const val DEFAULT_TICK_MS = 1_000L
         const val MAX_IDLE_RECHECK_MS = 60_000L
+
+        fun infoProvider(context: Context): () -> InfoCard? {
+            val store = InfoStore(context.applicationContext.filesDir)
+            return InfoCardRotation(store::read)::next
+        }
     }
 }
